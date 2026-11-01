@@ -194,6 +194,10 @@ def build_interactive_map_html(report: dict[str, Any]) -> str:
     geometry_note_raw = str(aoi.get("geometry_note", ""))[:500] if isinstance(aoi, dict) else ""
     geometry_note = html.escape(geometry_note_raw)
     geometry_note_class = "" if geometry_note_raw else "hidden"
+    reference = request.get("reference", {}) if isinstance(request, dict) else {}
+    reference_wkt = reference.get("polygon_wkt", "") if isinstance(reference, dict) else ""
+    reference_warning_raw = str(reference.get("warning", ""))[:500] if isinstance(reference, dict) else ""
+    reference_warning = html.escape(reference_warning_raw)
     start = html.escape(str(dates.get("start", "?"))) if isinstance(dates, dict) else "?"
     end = html.escape(str(dates.get("end", "?"))) if isinstance(dates, dict) else "?"
     template = """<!doctype html>
@@ -360,7 +364,7 @@ if (typeof L === "undefined") {
         "__AOI__": aoi_label,
         "__GEOMETRY_NOTE__": geometry_note,
         "__GEOMETRY_NOTE_CLASS__": geometry_note_class,
-        "__REFERENCE_NOTE__": html.escape(reference_warning or ("Separate reference polygon; stability not independently verified." if reference_wkt else "No separate reference polygon supplied.")),
+        "__REFERENCE_NOTE__": reference_warning or ("Separate reference polygon; stability not independently verified." if reference_wkt else "No separate reference polygon supplied."),
         "__START__": start,
         "__END__": end,
     }
