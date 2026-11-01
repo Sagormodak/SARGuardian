@@ -11,6 +11,31 @@ import {
 
 type StoredRun = KnownPlaceAnalysisRun & { execute_downloads: boolean };
 
+type CandidateTransfer = {
+  schemaVersion: 'sarguardian-known-place-candidate/1.0';
+  measurementWkt: string;
+  candidate: {
+    candidateId: string; productType: 'GOFF'; metric: string; evidenceClass: string; status: string;
+    supportPairs: number; pixelCount: number; approximateAreaM2: number; productIds: string[];
+    pairIntervals: Array<Record<string, unknown>>; geometryOriginalVertices: number; geometrySuggestedVertices: number;
+    geometrySimplified: boolean; interpretation: string;
+  };
+};
+
+function consumeCandidateTransfer(): CandidateTransfer | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem('sarguardian.knownPlaceCandidate.v1');
+    if (!raw) return null;
+    window.sessionStorage.removeItem('sarguardian.knownPlaceCandidate.v1');
+    const value = JSON.parse(raw) as Partial<CandidateTransfer>;
+    if (value.schemaVersion !== 'sarguardian-known-place-candidate/1.0') return null;
+    if (typeof value.measurementWkt !== 'string' || !value.measurementWkt.startsWith('POLYGON')) return null;
+    if (!value.candidate || value.candidate.productType !== 'GOFF' || typeof value.candidate.candidateId !== 'string') return null;
+    return value as CandidateTransfer;
+  } catch { return null; }
+}
+
 type Props = {
   user: User;
   aoiWkt: string | null;
@@ -74,6 +99,7 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
   const [confirmRawDownloads, setConfirmRawDownloads] = useState(false);
   const [pendingAction, setPendingAction] = useState<'dry-run' | 'analysis' | null>(null);
   const [run, setRun] = useState<StoredRun | null>(() => loadStoredRun(user.uid));
+  const [candidateTransfer] = useState<CandidateTransfer | null>(() => consumeCandidateTransfer());
   const [error, setError] = useState('');
   const [pollError, setPollError] = useState('');
   const handleMeasurementChange = useCallback((wkt: string) => setMeasurementWkt(wkt), []);
@@ -158,6 +184,23 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
         coherence_neighbours: coherenceNeighbours,
         allowed_release_ids: allowedReleaseIds.trim(),
         reference_wkt: referenceWkt,
+        candidate_context: candidateTransfer ? {
+          source: 'FIND_DISPLACEMENTS',
+          candidate_id: candidateTransfer.candidate.candidateId,
+          product_type: 'GOFF',
+          metric: candidateTransfer.candidate.metric,
+          evidence_class: candidateTransfer.candidate.evidenceClass,
+          status: candidateTransfer.candidate.status,
+          support_pairs: candidateTransfer.candidate.supportPairs,
+          pixel_count: candidateTransfer.candidate.pixelCount,
+          approx_area_m2: candidateTransfer.candidate.approximateAreaM2,
+          product_ids: candidateTransfer.candidate.productIds,
+          pair_intervals: candidateTransfer.candidate.pairIntervals,
+          geometry_original_vertices: candidateTransfer.candidate.geometryOriginalVertices,
+          geometry_suggested_vertices: candidateTransfer.candidate.geometrySuggestedVertices,
+          geometry_simplified: candidateTransfer.candidate.geometrySimplified,
+          interpretation: candidateTransfer.candidate.interpretation,
+        } : null,
         geometry_height_m: height,
         execute_downloads: executeDownloads,
         confirm_raw_downloads: executeDownloads && confirmRawDownloads,
@@ -188,8 +231,15 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
         </div>
         <p className="catalog-notice">The original map AOI is retained as an outer selection boundary. The Measurement Polygon is the area whose pairwise motion is summarized; the separate Reference Polygon supplies background comparison. A selected reference area is not assumed to be stable ground.</p>
         {!aoiWkt && <p className="catalog-error" role="alert">A valid outer AOI is required. Go back to the map and draw your polygon.</p>}
+        {candidateTransfer && <div className="catalog-notice known-place-candidate-handoff" role="status">
+          <strong>Suggested Measurement Polygon imported from Find Displacements</strong>
+          <span>{candidateTransfer.candidate.candidateId} · GOFF offset-anomaly candidate · {candidateTransfer.candidate.supportPairs} supporting pair(s) · {candidateTransfer.candidate.pixelCount} pixels</span>
+          <span>{candidateTransfer.candidate.geometrySimplified ? `Boundary simplified from ${candidateTransfer.candidate.geometryOriginalVertices} to ${candidateTransfer.candidate.geometrySuggestedVertices} vertices; inspect and edit it before measurement.` : `${candidateTransfer.candidate.geometrySuggestedVertices} boundary vertices transferred; inspect and edit before measurement.`}</span>
+          <span>Candidate evidence is not measured ground motion or a confirmed landslide. Draw the separate reference polygon and verify the proposed measurement area.</span>
+        </div>}
         <KnownPlacePolygonEditor
           outerAoiWkt={aoiWkt}
+          initialMeasurementWkt={candidateTransfer?.measurementWkt ?? null}
           onMeasurementChange={handleMeasurementChange}
           onReferenceChange={handleReferenceChange}
           onValidationChange={handlePolygonValidation}
