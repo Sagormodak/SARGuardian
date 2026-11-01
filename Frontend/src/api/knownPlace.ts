@@ -5,7 +5,9 @@ export type KnownPlaceAnalysisMode = 'exploratory' | 'retrospective_validation';
 export type KnownPlaceRunState = 'dispatching' | 'queued' | 'in_progress' | 'completed';
 
 export type KnownPlaceAnalysisInput = {
+  /** Inner Measurement Polygon; the original map AOI is carried separately. */
   aoi_wkt: string;
+  scope_aoi_wkt: string;
   start_date: string;
   end_date: string;
   hazard_mode: KnownPlaceHazardMode;
