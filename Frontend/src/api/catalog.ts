@@ -247,7 +247,7 @@ export async function getInteractiveDashboardHtml(
   }
   const token = await getFirebaseIdToken(user);
   await ensureProcessingServiceAwake(onStatus);
-  onStatus?.('Retrieving and checksum-verifying the saved private dashboard bundle…');
+  onStatus?.('Retrieving the saved result bundle and verifying its checksum…');
   const response = await fetchArchivedResult(
     `${API_BASE}/api/displacement-jobs/${encodeURIComponent(safeId)}/dashboard`,
     {
