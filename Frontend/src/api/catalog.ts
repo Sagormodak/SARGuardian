@@ -111,6 +111,54 @@ export type DisplacementJob = Partial<DisplacementProcessingOptions> & {
 const configuredApiUrl = (import.meta.env.VITE_SARGUARDIAN_API_URL as string | undefined)?.trim();
 const API_BASE = (configuredApiUrl || 'http://localhost:8000').replace(/\/+$/, '');
 
+type ProcessingServiceStatusHandler = (message: string) => void;
+
+// Render Free web services sleep after 15 minutes without inbound traffic.
+// A small health check wakes the API before we ask it to retrieve a saved Drive
+// bundle. Retry only the wake-up request; never redispatch the science workflow.
+const PROCESSING_SERVICE_WAKE_DELAYS_MS = [0, 5_000, 10_000, 15_000, 20_000, 20_000] as const;
+
+async function ensureProcessingServiceAwake(onStatus?: ProcessingServiceStatusHandler): Promise<void> {
+  let lastFailure = 'The processing service did not respond.';
+  for (let attempt = 0; attempt < PROCESSING_SERVICE_WAKE_DELAYS_MS.length; attempt += 1) {
+    const delay = PROCESSING_SERVICE_WAKE_DELAYS_MS[attempt];
+    if (delay > 0) {
+      onStatus?.(`Waking the result service (${attempt + 1}/${PROCESSING_SERVICE_WAKE_DELAYS_MS.length})…`);
+      await new Promise<void>((resolve) => globalThis.setTimeout(resolve, delay));
+    } else {
+      onStatus?.('Connecting to the saved-results service…');
+    }
+
+    try {
+      const response = await fetch(`${API_BASE}/health`, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+      });
+      const contentType = response.headers.get('content-type') || '';
+      if (response.ok && contentType.toLowerCase().includes('application/json')) {
+        const payload = await response.json().catch(() => null) as { status?: string } | null;
+        if (payload?.status === 'ok') {
+          onStatus?.('Result service is ready. Retrieving the saved result…');
+          return;
+        }
+        lastFailure = 'The processing service returned an invalid health response.';
+      } else {
+        lastFailure = `The processing service is starting (HTTP ${response.status}).`;
+        // A missing route or authorization error is a configuration problem,
+        // not a cold start. Do not waste a minute retrying it.
+        if (response.status >= 400 && response.status < 500 && response.status !== 429) break;
+      }
+    } catch {
+      lastFailure = 'Could not reach the processing service yet.';
+    }
+  }
+
+  throw new Error(
+    `The result service did not become ready. ${lastFailure} Your saved result has not been reprocessed or deleted; retry once the service is available.`,
+  );
+}
+
 export async function searchNisarCatalog(input: CatalogSearchRequest, user: Pick<User, 'getIdToken'> | null): Promise<CatalogResponse> {
   if (!user) throw new Error('Sign in before checking the NISAR archive.');
   if (input.productType !== 'GUNW' && input.productType !== 'GOFF' && input.productType !== 'BOTH') {
@@ -151,6 +199,7 @@ export async function searchNisarCatalog(input: CatalogSearchRequest, user: Pick
 export async function getInteractiveDashboardHtml(
   jobId: string,
   user: Pick<User, 'getIdToken'> | null,
+  onStatus?: ProcessingServiceStatusHandler,
 ): Promise<string> {
   const safeId = jobId.trim();
   if (!/^[0-9a-f-]{36}$/i.test(safeId)) throw new Error('Invalid displacement job ID.');
@@ -161,6 +210,7 @@ export async function getInteractiveDashboardHtml(
     throw new Error('Google Maps is not configured. Check VITE_GOOGLE_MAPS_API_KEY in the frontend deployment.');
   }
   const token = await getFirebaseIdToken(user);
+  await ensureProcessingServiceAwake(onStatus);
   let response: Response;
   try {
     response = await fetch(`${API_BASE}/api/displacement-jobs/${encodeURIComponent(safeId)}/dashboard`, {
@@ -283,11 +333,13 @@ export async function downloadDisplacementArtifact(
   jobId: string,
   artifactIndex: number,
   user: Pick<User, 'getIdToken'> | null,
+  onStatus?: ProcessingServiceStatusHandler,
 ): Promise<Blob> {
   if (!jobId.trim() || !Number.isInteger(artifactIndex) || artifactIndex < 0) {
     throw new Error('A valid job and artifact are required.');
   }
   const token = await getFirebaseIdToken(user);
+  await ensureProcessingServiceAwake(onStatus);
   let response: Response;
   try {
     response = await fetch(`${API_BASE}/api/displacement-jobs/${encodeURIComponent(jobId.trim())}/artifacts/${artifactIndex}`, {
