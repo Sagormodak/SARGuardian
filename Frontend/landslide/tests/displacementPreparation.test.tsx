@@ -35,6 +35,26 @@ describe('dashboard opens in a new same-origin tab', () => {
 });
 
 
+describe('saved result viewer readiness', () => {
+  it('distinguishes a retained downloadable bundle from a dashboard that never passed validation', () => {
+    const job = {
+      id: '736bd4e6-8963-43be-a916-bc62336c8557',
+      state: 'succeeded',
+      retention_mode: 'derived-only',
+      result_summary: {
+        web_dashboard: { status: 'NOT_AVAILABLE' },
+        storage_verification: { status: 'PASS' },
+        artifacts: [{ path: 'aoi-derived-results.zip' }],
+      },
+    } as never;
+    const html = renderToStaticMarkup(<ScientificResults job={job} user={{ getIdToken: vi.fn() } as never} />);
+    expect(html).toContain('result package is still retained and checksum-verified');
+    expect(html).toContain('interactive dashboard did not pass viewer validation');
+    expect(html).toContain('Download complete result package');
+    expect(html).not.toContain('Public Discovery');
+  });
+});
+
 describe('archive result disclosure layout', () => {
   it('keeps each archived result selector collapsed until the user opens that job', () => {
     const job = {
