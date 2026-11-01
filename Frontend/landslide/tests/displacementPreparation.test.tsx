@@ -26,6 +26,10 @@ describe('dashboard opens in a new same-origin tab', () => {
     expect(html).toContain('Explore the Evidence');
     expect(html).toContain('Scientific Evidence');
     expect(html).not.toContain('Load dashboard in Processing');
+    expect(html).toContain('aria-label=\"Open Public Discovery\"');
+    expect(html).toContain('aria-label=\"Open Explore the Evidence\"');
+    expect(html).toContain('aria-label=\"Open Scientific Evidence\"');
+    expect(html).not.toContain('Open Public Discovery</button></div>');
     expect(html).not.toContain('<iframe');
   });
 });
