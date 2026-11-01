@@ -105,6 +105,36 @@ def test_accepts_installed_google_oauth_configuration() -> None:
     assert config.parent_folder_id == "13BIAepPGLlYYmscUlNPeMCdtepYshjT4"
 
 
+
+def test_accepts_parent_folder_environment_name_used_by_github_actions() -> None:
+    config = drive.load_drive_config({
+        "GOOGLE_DRIVE_OAUTH_CLIENT_JSON": json.dumps({"web": {
+            "client_id": "client",
+            "client_secret": "secret",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }}),
+        "GOOGLE_DRIVE_REFRESH_TOKEN": "refresh",
+        "GOOGLE_DRIVE_PARENT_FOLDER_ID": "13BIAepPGLlYYmscUlNPeMCdtepYshjT4",
+    })
+
+    assert config.parent_folder_id == "13BIAepPGLlYYmscUlNPeMCdtepYshjT4"
+
+
+def test_prefers_legacy_folder_id_when_both_drive_folder_names_are_present() -> None:
+    config = drive.load_drive_config({
+        "GOOGLE_DRIVE_OAUTH_CLIENT_JSON": json.dumps({"web": {
+            "client_id": "client",
+            "client_secret": "secret",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }}),
+        "GOOGLE_DRIVE_REFRESH_TOKEN": "refresh",
+        "GOOGLE_DRIVE_FOLDER_ID": "13BIAepPGLlYYmscUlNPeMCdtepYshjT4",
+        "GOOGLE_DRIVE_PARENT_FOLDER_ID": "14BIAepPGLlYYmscUlNPeMCdtepYshjT4",
+    })
+
+    assert config.parent_folder_id == "13BIAepPGLlYYmscUlNPeMCdtepYshjT4"
+
+
 def test_rejects_incomplete_or_untrusted_google_oauth_configuration() -> None:
     with pytest.raises(drive.DriveUploadError, match="incomplete"):
         drive.load_drive_config({
