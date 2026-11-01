@@ -4,8 +4,6 @@ import type { DisplacementJob } from '../../src/api/catalog';
 import { downloadDisplacementArtifact } from '../../src/api/catalog';
 import { buildDashboardRouteUrl, type DashboardView } from '../../src/dashboardDocument';
 
-type DashboardView = 'public' | 'evidence' | 'science';
-
 const dashboardViews: Array<{ id: DashboardView; title: string; audience: string; description: string }> = [
   {
     id: 'public',
@@ -26,34 +24,6 @@ const dashboardViews: Array<{ id: DashboardView; title: string; audience: string
     description: 'Measurement diagnostics, quality gates, acquisition networks and provenance.',
   },
 ];
-
-function dashboardHtmlWithPreferredView(html: string, view: DashboardView): string {
-  const script = `<script id="sarguardian-preferred-dashboard-view">
-(function () {
-  var preferredView = ${JSON.stringify(view)};
-  function selectPreferredView() {
-    var button = document.querySelector('[data-sg-mode="' + preferredView + '"]');
-    if (!button) return false;
-    if (button.getAttribute('aria-selected') !== 'true') button.click();
-    return true;
-  }
-  function start() {
-    if (selectPreferredView()) return;
-    var observer = new MutationObserver(function () {
-      if (selectPreferredView()) observer.disconnect();
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-    window.setTimeout(function () { observer.disconnect(); }, 5000);
-  }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start, { once: true });
-  } else {
-    start();
-  }
-})();
-</script>`;
-  return /<\/body>/i.test(html) ? html.replace(/<\/body>/i, `${script}</body>`) : `${html}${script}`;
-}
 
 function dashboardAvailable(job: DisplacementJob): boolean {
   if (job.state !== 'succeeded' || !job.result_summary) return false;

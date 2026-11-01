@@ -19,18 +19,18 @@ export function buildDashboardRouteUrl(origin: string, jobId: string, view: Dash
  */
 export function withDashboardPreferredView(html: string, view: DashboardView, origin: string): string {
   const safeOrigin = new URL(origin).origin;
-  const headPattern = /<head\\b[^>]*>/i;
+  const headPattern = /<head\b[^>]*>/i;
   const headMatch = html.match(headPattern);
   if (!headMatch) throw new Error('The saved dashboard document has no HTML head section.');
 
-  const withoutExistingBase = html.replace(/<base\\b[^>]*>/gi, '');
+  const withoutExistingBase = html.replace(/<base\b[^>]*>/gi, '');
   const withBrowserContext = withoutExistingBase.replace(
     headPattern,
-    `${headMatch[0]}<base href="${safeOrigin}/"><meta name="referrer" content="origin">`,
+    \`\${headMatch[0]}<base href="\${safeOrigin}/"><meta name="referrer" content="origin">\`,
   );
-  const script = `<script id="sarguardian-preferred-dashboard-view">
+  const script = \`<script id="sarguardian-preferred-dashboard-view">
 (function () {
-  var preferredView = ${JSON.stringify(view)};
+  var preferredView = \${JSON.stringify(view)};
   function selectPreferredView() {
     var button = document.querySelector('[data-sg-mode="' + preferredView + '"]');
     if (!button) return false;
@@ -51,10 +51,10 @@ export function withDashboardPreferredView(html: string, view: DashboardView, or
     start();
   }
 })();
-</script>`;
+</script>\`;
   return /<\\/body>/i.test(withBrowserContext)
-    ? withBrowserContext.replace(/<\\/body>/i, `${script}</body>`)
-    : `${withBrowserContext}${script}`;
+    ? withBrowserContext.replace(/<\\/body>/i, \`\${script}</body>\`)
+    : \`\${withBrowserContext}\${script}\`;
 }
 
 export function writeDashboardDocument(target: Pick<Document, 'open' | 'write' | 'close'>, html: string): void {

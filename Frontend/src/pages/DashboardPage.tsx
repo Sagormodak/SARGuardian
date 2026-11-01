@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { User } from 'firebase/auth';
 import { getInteractiveDashboardHtml } from '../api/catalog';
 import { withDashboardPreferredView, writeDashboardDocument, type DashboardView } from '../dashboardDocument';
@@ -16,7 +16,7 @@ type DashboardPageProps = {
 
 const JOB_ID_PATTERN = /^[0-9a-f-]{36}$/i;
 
-function DashboardRouteShell({ children }: { children: React.ReactNode }) {
+function DashboardRouteShell({ children }: { children: ReactNode }) {
   return (
     <div className="home-page archive-page">
       <div className="environment-layer" aria-hidden="true" />
