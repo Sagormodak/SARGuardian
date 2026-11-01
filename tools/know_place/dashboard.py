@@ -127,7 +127,7 @@ def build_dashboard_html(report: dict[str, Any]) -> str:
           <span class="status">{html.escape(str(pair.get('status','UNKNOWN')))}</span></div>
           <canvas id="{canvas_id}" width="420" height="280" aria-label="Horizontal displacement magnitude preview"></canvas>
           <div class="legend"><span>Lower magnitude</span><span class="gradient"></span><span>Higher magnitude</span><span>No data = grey</span><span>→ Arrow: mean direction; symbolic length</span></div>
-          <p class="map-note">AOI outline over a downsampled native-grid displacement preview; not a basemap. CRS EPSG:{html.escape(str(pair.get('epsg','unknown')))}. Raster download: <a href="{html.escape(dashboard_raster_path, quote=True)}">{html.escape(str(pair.get('geotiff_file','not available')))}</a></p>
+          <p class="map-note">White outline: measurement polygon. Dashed blue outline: reference/background polygon. Downsampled preview only; native-grid GeoTIFF remains authoritative. CRS EPSG:{html.escape(str(pair.get('epsg','unknown')))}. Raster download: <a href="{html.escape(dashboard_raster_path, quote=True)}">{html.escape(str(pair.get('geotiff_file','not available')))}</a></p>
         </article>""")
 
     table_rows = []
@@ -281,7 +281,7 @@ for (const item of pairMaps) {{
     ctx.fillStyle=(typeof v==='number'&&Number.isFinite(v))?color((v-lo)/(hi-lo||1)):'#414b5a';
     ctx.fillRect(ox+col*scale,oy+r*scale,Math.ceil(scale),Math.ceil(scale));
   }}
-  const ring=p.aoi_ring_xy||[], dx=Number(p.pixel_size_x_m)||1, dy=Number(p.pixel_size_y_m)||1;
+  const ring=p.aoi_ring_xy||[], referenceRing=p.reference_ring_xy||[], dx=Number(p.pixel_size_x_m)||1, dy=Number(p.pixel_size_y_m)||1;
   const es=p.east_values_m||[], ns=p.north_values_m||[];
   // Direction arrows are orientation-only, not scaled displacement vectors.
   // Draw sparsely so the raster remains visible on a mobile-sized canvas.
@@ -309,6 +309,14 @@ for (const item of pairMaps) {{
       const y=oy+((p.max_y_m-pt[1])/dy)*scale;
       if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
     }});ctx.closePath();ctx.stroke();
+  }}
+  if(referenceRing.length>2) {{
+    ctx.save(); ctx.strokeStyle='#38bdf8'; ctx.lineWidth=2; ctx.setLineDash([5,3]); ctx.beginPath();
+    referenceRing.forEach((pt,i)=>{{
+      const x=ox+((pt[0]-p.min_x_m)/dx)*scale;
+      const y=oy+((p.max_y_m-pt[1])/dy)*scale;
+      if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+    }});ctx.closePath();ctx.stroke();ctx.restore();
   }}
   ctx.fillStyle='#edf3fb';ctx.font='11px system-ui';ctx.fillText('Range '+lo.toFixed(2)+'–'+hi.toFixed(2)+' m',8,14);
 }}
