@@ -798,78 +798,333 @@ def _simplify_geojson_geometry_for_display(geometry: object) -> bool:
     return simplified_any
 
 
-def _serialize_dashboard_manifest_for_browser(manifest: dict) -> tuple[str, bool]:
-    """Bound the browser payload without changing the archived scientific GeoJSON."""
-    screen = manifest.get("aoi_wide_displacement_screen")
-    if not isinstance(screen, dict):
-        screen = {}
-    feature_collection = screen.get("candidate_feature_collection")
-    features = feature_collection.get("features") if isinstance(feature_collection, dict) else None
-    if not isinstance(features, list):
-        blob = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-        if len(blob.encode("utf-8")) > MAX_DASHBOARD_MANIFEST_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail="The dashboard manifest exceeds the bounded browser metadata size. The saved analysis is unchanged; download the original result package.",
-            )
-        return blob, False
+def _dashboard_dict_subset(value: object, keys: tuple[str, ...]) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    return {key: value[key] for key in keys if key in value}
 
-    source_feature_count = len(features)
-    reported_count = screen.get("candidate_count")
-    total_count = max(
-        source_feature_count,
-        reported_count if isinstance(reported_count, int) and not isinstance(reported_count, bool) and reported_count >= 0 else 0,
+
+def _dashboard_list_subset(value: object, keys: tuple[str, ...]) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    return [_dashboard_dict_subset(item, keys) for item in value if isinstance(item, dict)]
+
+
+def _project_dashboard_observation(value: object) -> dict:
+    fields = (
+        "id", "product_type", "granule_name", "reference_date", "secondary_date",
+        "track", "look_direction", "maturity", "crid", "status", "valid_pixels",
+        "screen_valid_pixels", "screen_outlier_pixels", "measurement_pixel_support",
+        "grid_pixels_inside_aoi", "source_sha256", "validation_scope",
     )
-    display_feature_count = min(source_feature_count, MAX_DASHBOARD_CANDIDATE_FEATURES)
-    simplified_any = False
-    properties_compacted = False
-
-    for feature_limit in (MAX_DASHBOARD_CANDIDATE_FEATURES, 50, 20, 0):
-        selected = features[:feature_limit]
-        for feature in selected:
-            if not isinstance(feature, dict):
-                continue
-            geometry = feature.get("geometry")
-            if _simplify_geojson_geometry_for_display(geometry):
-                simplified_any = True
-            properties = feature.get("properties")
-            if isinstance(properties, dict):
-                # These are the properties consumed by the interactive candidate
-                # map. The complete properties remain in the original ZIP export.
-                display_properties = {
-                    key: properties[key]
-                    for key in ("candidate_id", "direction", "track", "area_km2_approx", "pairs_with_candidate")
-                    if key in properties
-                }
-                if display_properties != properties:
-                    properties_compacted = True
-                feature["properties"] = display_properties
-        feature_collection["features"] = selected
-        screen["candidate_features_total"] = total_count
-        screen["candidate_features_displayed"] = len(selected)
-        screen["candidate_features_omitted_from_map"] = max(0, total_count - len(selected))
-        screen["candidate_geometry_simplified_for_display"] = simplified_any
-        screen["candidate_properties_reduced_for_display"] = properties_compacted
-        screen["candidate_overlay_is_complete"] = (
-            len(selected) == total_count and not simplified_any and not properties_compacted
-        )
-        if screen["candidate_features_omitted_from_map"] or simplified_any or properties_compacted:
-            screen["candidate_overlay_display_note"] = (
-                "Browser map uses a bounded display representation of AOI-wide candidate regions. "
-                "The original candidate GeoJSON and scientific artifacts remain unchanged in the saved result ZIP."
-            )
-        blob = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-        if len(blob.encode("utf-8")) <= MAX_DASHBOARD_MANIFEST_BYTES:
-            return blob, bool(
-                screen["candidate_features_omitted_from_map"] or simplified_any or properties_compacted
-            )
-    raise HTTPException(
-        status_code=413,
-        detail=(
-            "The dashboard's non-raster metadata remains too large after safely reducing only the browser candidate overlay. "
-            "The saved analysis is unchanged; download the original result package."
+    row = _dashboard_dict_subset(value, fields)
+    if not isinstance(value, dict):
+        return row
+    row["warnings"] = [
+        str(item)[:600] for item in value.get("warnings", [])[:20]
+    ] if isinstance(value.get("warnings"), list) else []
+    row["native_assets"] = [
+        str(item)[:500] for item in value.get("native_assets", [])[:30]
+    ] if isinstance(value.get("native_assets"), list) else []
+    row["layers"] = [
+        str(item)[:180] for item in value.get("layers", [])[:64]
+    ] if isinstance(value.get("layers"), list) else []
+    row["metrics"] = _dashboard_dict_subset(
+        value.get("metrics"),
+        (
+            "reader_median", "reader_median_name", "reader_median_units",
+            "goff_range_median_mm", "goff_azimuth_median_mm",
+            "goff_detect_floor_mm_day", "goff_range_velocity_mm_day",
+            "mean_coherence", "mean_correlation", "target_measurement_status",
+            "target_local_los_median_mm", "target_local_range_median_mm",
+            "target_local_azimuth_median_mm", "target_mean_coherence",
+            "target_mean_correlation", "target_local_floor_status",
+            "target_local_floor_mm_day", "target_local_floor_ci_lo_mm_day",
+            "target_local_floor_ci_hi_mm_day",
         ),
     )
+    return row
+
+
+def _project_dashboard_layer(value: object) -> dict:
+    # Retain exactly the layer metadata needed for display, pair-grid checks,
+    # legend units and source provenance. Scientific source arrays stay in ZIP.
+    return _dashboard_dict_subset(
+        value,
+        (
+            "id", "observation_id", "product_type", "band", "description",
+            "units", "kind", "source_sha256", "source_asset", "source_crs",
+            "source_transform", "source_width", "source_height", "preview_crs",
+            "preview_transform", "preview_width", "preview_height", "bounds_wgs84",
+            "corners", "valid_pixels", "preview_asset", "display_scale",
+        ),
+    )
+
+
+def _project_dashboard_site_context(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        "place": _dashboard_dict_subset(
+            value.get("place"),
+            ("name", "latitude", "longitude", "inside_aoi", "category"),
+        ),
+        "measurement_target": _dashboard_dict_subset(
+            value.get("measurement_target"),
+            ("status", "latitude", "longitude", "inside_aoi", "reason"),
+        ),
+    }
+
+
+def _project_dashboard_science_pipeline(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    # The full report includes a second copy of common_reference_timeseries,
+    # site_context, per-product diagnostics and log excerpts. The viewer uses
+    # only stage eligibility and compact acquisition-network topology.
+    return {
+        **_dashboard_dict_subset(
+            value,
+            (
+                "schema_version", "science_commit_expected", "overall_status",
+                "network_assessment_status", "structural_validation_is_geophysical_validation",
+                "product_counts", "network_error",
+            ),
+        ),
+        "networks": _dashboard_list_subset(
+            value.get("networks"),
+            (
+                "geometry", "component", "first_epoch", "last_epoch",
+                "n_epochs", "n_pairs", "redundancy",
+                "formal_residual_error_estimable", "topology_status",
+            ),
+        ),
+        "modules": _dashboard_list_subset(
+            value.get("modules"),
+            (
+                "name", "status", "reason", "interpretation", "limitation",
+                "produces", "products", "pairs_parsed", "networks",
+                "minimum_next_evidence", "products_with_measured_local_floor",
+                "products_with_target_window_measurement", "available_related_metrics",
+            ),
+        ),
+        "warnings": [
+            str(item)[:1000] for item in value.get("warnings", [])[:30]
+        ] if isinstance(value.get("warnings"), list) else [],
+    }
+
+
+def _project_dashboard_common_reference(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    components = []
+    for item in value.get("components", []) if isinstance(value.get("components"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        component = _dashboard_dict_subset(
+            item,
+            (
+                "network", "component", "status", "first_epoch", "last_epoch",
+                "epochs_count", "pairs_count", "redundancy",
+            ),
+        )
+        component["series"] = _dashboard_list_subset(
+            item.get("series"),
+            (
+                "epoch", "cumulative_los_mm", "graph_fit_standard_error_mm",
+                "graph_fit_ci95_low_mm", "graph_fit_ci95_high_mm",
+            ),
+        )
+        components.append(component)
+    networks = _dashboard_list_subset(
+        value.get("networks"),
+        (
+            "network", "status", "pairs", "common_pixels_outside_target_buffer",
+            "common_valid_aoi_pixels",
+        ),
+    )
+    return {
+        **_dashboard_dict_subset(
+            value,
+            (
+                "schema_version", "status", "series_are_independent_geophysical_validation",
+                "common_reference_is_independently_validated_stable_ground",
+                "interpretation", "reason",
+            ),
+        ),
+        "components": components,
+        "networks": networks,
+    }
+
+
+def _project_dashboard_candidate_screen(value: object) -> tuple[dict, bool]:
+    screen = value if isinstance(value, dict) else {}
+    source_features = []
+    collection = screen.get("candidate_feature_collection")
+    if isinstance(collection, dict) and isinstance(collection.get("features"), list):
+        source_features = collection["features"]
+
+    reported_count = screen.get("candidate_count")
+    total_count = max(
+        len(source_features),
+        reported_count if isinstance(reported_count, int) and not isinstance(reported_count, bool) and reported_count >= 0 else 0,
+    )
+    selected = source_features[:MAX_DASHBOARD_CANDIDATE_FEATURES]
+    simplified_any = False
+    properties_compacted = False
+    display_features = []
+    for feature in selected:
+        if not isinstance(feature, dict):
+            continue
+        geometry = feature.get("geometry")
+        if _simplify_geojson_geometry_for_display(geometry):
+            simplified_any = True
+        properties = feature.get("properties")
+        display_properties = _dashboard_dict_subset(
+            properties,
+            ("candidate_id", "direction", "track", "area_km2_approx", "pairs_with_candidate"),
+        )
+        if display_properties != (properties if isinstance(properties, dict) else {}):
+            properties_compacted = True
+        display_features.append(
+            {"type": "Feature", "properties": display_properties, "geometry": geometry}
+        )
+
+    source_series = screen.get("series") if isinstance(screen.get("series"), list) else []
+    compact_series = _dashboard_list_subset(
+        source_series,
+        ("series_id", "product_family", "track", "direction", "pair_count", "status"),
+    )
+    browser_screen = {
+        **_dashboard_dict_subset(
+            screen,
+            (
+                "schema_version", "status", "purpose", "target_required",
+                "target_coordinates_used", "candidate_count",
+            ),
+        ),
+        # The viewer uses series.length for its compatible GOFF-series count.
+        # Pair-level rows, source hashes and file paths remain in the ZIP.
+        "series": compact_series,
+        "gunw_per_pixel_stack": _dashboard_dict_subset(
+            screen.get("gunw_per_pixel_stack"),
+            ("status", "interpretation"),
+        ),
+        "candidate_feature_collection": {
+            "type": "FeatureCollection",
+            "features": display_features,
+        },
+        "candidate_features_total": total_count,
+        "candidate_features_displayed": len(display_features),
+        "candidate_features_omitted_from_map": max(0, total_count - len(display_features)),
+        "candidate_geometry_simplified_for_display": simplified_any,
+        "candidate_properties_reduced_for_display": properties_compacted,
+        "candidate_overlay_is_complete": (
+            len(display_features) == total_count and not simplified_any and not properties_compacted
+        ),
+        "candidate_overlay_display_note": (
+            "Candidate polygons are a browser-only display representation. Full candidate GeoJSON, "
+            "pair-level screen receipts and all scientific diagnostics remain in the verified result ZIP."
+        ),
+        "warnings": [
+            str(item)[:1000] for item in screen.get("warnings", [])[:20]
+        ] if isinstance(screen.get("warnings"), list) else [],
+    }
+    return browser_screen, (
+        len(display_features) != len(source_features)
+        or simplified_any
+        or properties_compacted
+        or bool(screen.get("series"))
+        or bool(screen.get("rejected_products"))
+    )
+
+
+def _serialize_dashboard_manifest_for_browser(manifest: dict) -> tuple[str, bool, dict]:
+    """Project the source manifest onto the exact interactive-viewer contract.
+
+    This is intentionally a whitelist, not a blacklist: large duplicated
+    science reports, per-pair candidate receipts, unknown diagnostics and
+    internal processing metadata never enter the browser payload. The verified
+    ZIP and all its original JSON/GeoJSON remain byte-for-byte unchanged.
+    """
+    source = manifest if isinstance(manifest, dict) else {}
+    run = _dashboard_dict_subset(
+        source.get("run"),
+        (
+            "github_run_id", "generated_at_utc", "aoi_wkt_sha256",
+            "science_commit", "orchestration_commit", "workflow_commit",
+        ),
+    )
+    validation = _dashboard_dict_subset(
+        source.get("validation"),
+        (
+            "processing_status", "visual_assets_status",
+            "independent_geophysical_validation", "products_expected",
+            "products_validated",
+        ),
+    )
+    aoi = _dashboard_dict_subset(source.get("aoi"), ("type", "properties", "geometry"))
+    if isinstance(aoi.get("properties"), dict):
+        aoi["properties"] = _dashboard_dict_subset(
+            aoi["properties"], ("name", "aoi_wkt_sha256")
+        )
+    aoi_geometry_simplified = False
+    if isinstance(aoi.get("geometry"), dict):
+        aoi_geometry_simplified = _simplify_geojson_geometry_for_display(aoi["geometry"])
+
+    screen, candidate_overlay_compacted = _project_dashboard_candidate_screen(
+        source.get("aoi_wide_displacement_screen")
+    )
+    projected = {
+        "schema_version": source.get("schema_version"),
+        "run": run,
+        "validation": validation,
+        "aoi": aoi,
+        "aoi_bbox": source.get("aoi_bbox"),
+        "time_window": _dashboard_dict_subset(
+            source.get("time_window"),
+            ("start_date", "end_date", "date_basis", "date_filter_mode"),
+        ),
+        "observations": [
+            _project_dashboard_observation(item)
+            for item in source.get("observations", [])
+            if isinstance(item, dict)
+        ] if isinstance(source.get("observations"), list) else [],
+        "layers": [
+            _project_dashboard_layer(item)
+            for item in source.get("layers", [])
+            if isinstance(item, dict)
+        ] if isinstance(source.get("layers"), list) else [],
+        "science_limitations": [
+            str(item)[:1000] for item in source.get("science_limitations", [])[:30]
+        ] if isinstance(source.get("science_limitations"), list) else [],
+        "science_pipeline": _project_dashboard_science_pipeline(source.get("science_pipeline")),
+        "aoi_wide_displacement_screen": screen,
+        "site_context": _project_dashboard_site_context(source.get("site_context")),
+        "common_reference_timeseries": _project_dashboard_common_reference(
+            source.get("common_reference_timeseries")
+        ),
+        "display_policy": str(source.get("display_policy") or "")[:1200],
+    }
+
+    blob = json.dumps(projected, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    if len(blob.encode("utf-8")) > MAX_DASHBOARD_MANIFEST_BYTES:
+        # Surface component sizes so a future schema expansion can be fixed
+        # precisely, rather than hiding the blocker behind the same generic cap.
+        section_sizes = {
+            key: len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8"))
+            for key, value in projected.items()
+        }
+        largest = sorted(section_sizes.items(), key=lambda item: item[1], reverse=True)[:5]
+        detail = ", ".join(f"{key}={size} bytes" for key, size in largest)
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "The projected interactive dashboard metadata exceeds the browser safety limit. "
+                "The full verified result ZIP is unchanged. Largest viewer sections: " + detail
+            ),
+        )
+    return blob, bool(candidate_overlay_compacted or aoi_geometry_simplified), screen
 
 
 def _dashboard_archive_cache_path(job_id: UUID, digest: str) -> Path:
@@ -2117,7 +2372,7 @@ def get_displacement_dashboard(
     data_marker = '<script src="./dashboard-data.js"></script>'
     if html.count(data_marker) != 1:
         raise HTTPException(status_code=409, detail="Dashboard viewer does not match the supported external-data contract.")
-    manifest_blob, candidate_overlay_compacted = _serialize_dashboard_manifest_for_browser(manifest)
+    manifest_blob, candidate_overlay_compacted, browser_screen = _serialize_dashboard_manifest_for_browser(manifest)
     manifest_blob = manifest_blob.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     layer_blob = json.dumps(layer_urls, separators=(",", ":"), allow_nan=False)
     embedded_data = (
@@ -2136,20 +2391,19 @@ def get_displacement_dashboard(
     html = html.replace("<head>", "<head>" + meta, 1)
     html = _apply_dashboard_presentation(html)
     html = _apply_google_maps_dashboard(html, google_maps_api_key)
-    if candidate_overlay_compacted:
-        screen = manifest.get("aoi_wide_displacement_screen") or {}
-        displayed = screen.get("candidate_features_displayed", 0)
-        total = screen.get("candidate_features_total", displayed)
-        note = (
-            f'<aside role="note" style="margin:18px auto;max-width:1200px;padding:12px 16px;'
-            f'border:1px solid rgba(255,207,120,.42);border-radius:12px;'
-            f'background:#2a2115;color:#ffe7b2;font:12px/1.6 system-ui">'
-            f'Map display note: {displayed} of {total} AOI-wide candidate region(s) are shown, '
-            f'with simplified outlines and reduced display properties where needed for browser performance. '
-            f'This is a display-only reduction; the original candidate GeoJSON and scientific artifacts '
-            f'remain unchanged in the saved result ZIP.</aside>'
-        )
-        html = html.replace("</body>", note + "</body>", 1) if "</body>" in html else html + note
+    screen = browser_screen
+    displayed = screen.get("candidate_features_displayed", 0)
+    total = screen.get("candidate_features_total", displayed)
+    note = (
+        f'<aside role="note" style="margin:18px auto;max-width:1200px;padding:12px 16px;'
+        f'border:1px solid rgba(255,207,120,.42);border-radius:12px;'
+        f'background:#2a2115;color:#ffe7b2;font:12px/1.6 system-ui">'
+        f'Browser-view note: {displayed} of {total} AOI-wide candidate region(s) are shown. '
+        f'The interactive viewer receives a compact display manifest; full pair-level screening receipts, '
+        f'detailed science diagnostics, source GeoJSON and native scientific artifacts remain in the '
+        f'checksum-verified saved result ZIP. This does not change the saved scientific analysis.</aside>'
+    )
+    html = html.replace("</body>", note + "</body>", 1) if "</body>" in html else html + note
     # Stream the bounded viewer shell and manifest to stay within Vercel's 4.5 MiB buffered-response limit.
     return StreamingResponse(_iter_response_bytes(html.encode("utf-8")), media_type="text/html", headers={
         "Cache-Control": "private, no-store",
