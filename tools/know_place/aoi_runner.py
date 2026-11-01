@@ -1029,7 +1029,9 @@ def run_aoi_analysis(
             if request.reference_wkt:
                 roi = roi_builder(
                     grid.x_coordinates_m, grid.y_coordinates_m, grid.epsg,
-                    measurement_wkt=request.aoi_wkt, reference_wkt=request.reference_wkt,
+                    measurement_wkt=request.aoi_wkt,
+                    reference_wkt=request.reference_wkt,
+                    scope_wkt=request.scope_aoi_wkt,
                 )
             else:
                 roi = roi_builder(
@@ -1232,6 +1234,7 @@ def run_aoi_analysis(
                     "reference_grid_cells": int((roi.reference_mask if roi.reference_mask is not None else (roi.box_mask & ~roi.crown_mask)).sum()),
                     "stability_status": "USER_SELECTED_NOT_INDEPENDENTLY_VERIFIED" if roi.reference_mask is not None else "LOCAL_CONTEXT_STABILITY_ASSUMPTION_NOT_VERIFIED",
                     "overlap_status": "NO_OVERLAP_OR_TOUCH_VERIFIED_ON_PROJECTED_POLYGONS" if roi.reference_mask is not None else "MEASUREMENT_MASK_SUBTRACTED_FROM_LOCAL_CONTEXT",
+                    "outer_aoi_status": "BOTH_POLYGONS_VERIFIED_INSIDE_OUTER_AOI" if request.scope_aoi_wkt else "OUTER_AOI_NOT_SUPPLIED",
                 },
                 "quality_policy": {
                     "minimum_snr": request.min_snr,
