@@ -82,6 +82,10 @@ function resultBundleArtifactIndex(job: DisplacementJob): number | undefined {
   return index >= 0 ? index : undefined;
 }
 
+export function hasScientificResultOutputs(job: DisplacementJob): boolean {
+  return dashboardAvailable(job) || resultBundleArtifactIndex(job) !== undefined;
+}
+
 export function ScientificResults({ job, user }: { job: DisplacementJob; user: Pick<User, 'getIdToken'> }) {
   const bundleArtifactIndex = resultBundleArtifactIndex(job);
   const canDownloadBundle = bundleArtifactIndex !== undefined;
