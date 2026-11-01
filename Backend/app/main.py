@@ -771,6 +771,8 @@ def _read_dashboard_asset_ticket(ticket: str, secret: str) -> dict | None:
     if not secret or not isinstance(ticket, str) or len(ticket) > 2048 or "." not in ticket:
         return None
     encoded, signature = ticket.rsplit(".", 1)
+    if not re.fullmatch(r"[a-f0-9]{64}", signature):
+        return None
     expected = hmac.new(secret.encode("utf-8"), encoded.encode("ascii", errors="ignore"), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected):
         return None
