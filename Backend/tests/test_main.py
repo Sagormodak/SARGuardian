@@ -216,7 +216,11 @@ def test_production_requires_explicit_cors_origins(monkeypatch: pytest.MonkeyPat
         main_module._cors_origins()
 
 
-def _dashboard_zip() -> bytes:
+def _dashboard_zip(
+    *,
+    preview: bytes = b"\x89PNG\r\n\x1a\npreview",
+    manifest_padding: str = "",
+) -> bytes:
     buffer = BytesIO()
     with ZipFile(buffer, "w") as archive:
         archive.writestr(
@@ -228,14 +232,14 @@ def _dashboard_zip() -> bytes:
             '<a href="../index.html" style="color:var(--aqua);padding:9px">Processing report ↗</a></body></html>',
         )
         archive.writestr("web-dashboard/dashboard-data.js", "window.SARGUARDIAN_DASHBOARD={safe:true};")
-        archive.writestr(
-            "web-dashboard/manifest.json",
-            json.dumps({
-                "schema_version": "sarguardian-web-dashboard/1.0",
-                "layers": [{"id": "test-layer", "preview_asset": "layers/test-layer.png"}],
-            }),
-        )
-        archive.writestr("web-dashboard/layers/test-layer.png", b"\x89PNG\r\n\x1a\npreview")
+        manifest = {
+            "schema_version": "sarguardian-web-dashboard/1.0",
+            "layers": [{"id": "test-layer", "preview_asset": "layers/test-layer.png"}],
+        }
+        if manifest_padding:
+            manifest["padding"] = manifest_padding
+        archive.writestr("web-dashboard/manifest.json", json.dumps(manifest))
+        archive.writestr("web-dashboard/layers/test-layer.png", preview)
     return buffer.getvalue()
 
 
@@ -634,6 +638,128 @@ def test_dashboard_preview_asset_uses_cached_verified_bundle_and_short_lived_tic
     assert preview.headers["content-type"].startswith("image/png")
     assert preview.content == b"\x89PNG\r\n\x1a\npreview"
     assert downloads == [True]
+
+
+def test_dashboard_shell_streams_manifest_larger_than_vercel_buffer_limit(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    job_id = uuid4()
+    payload = _dashboard_zip(manifest_padding="x" * (5 * 1024 * 1024))
+    artifact = {
+        "path": "aoi-derived-results.zip",
+        "kind": "aoi_derived_result_bundle",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "bytes": len(payload),
+        "drive_file_id": "private-drive-file-id",
+    }
+
+    class Store:
+        def get_displacement_job(self, owner_uid, requested_job_id):
+            return {
+                "id": str(job_id),
+                "owner_uid": owner_uid,
+                "state": "succeeded",
+                "result_summary": {"web_dashboard": {"status": "PASS"}, "artifacts": [artifact]},
+            }
+
+    def download_bundle(_drive_id, destination, *, max_bytes=None):
+        Path(destination).write_bytes(payload)
+        return {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+
+    monkeypatch.setattr(main_module, "get_job_store", lambda: Store())
+    monkeypatch.setattr(main_module, "get_settings", lambda: SimpleNamespace(displacement_callback_secret="dashboard-assets-test-secret"))
+    monkeypatch.setattr(main_module, "DASHBOARD_ARCHIVE_CACHE_ROOT", tmp_path)
+    monkeypatch.setattr(main_module, "download_private_result_to_path", download_bundle)
+
+    response = authenticated_client().get(
+        f"/api/displacement-jobs/{job_id}/dashboard",
+        headers={"X-SARGuardian-Google-Maps-Key": "AIzaSyFakeRestrictedKey123456789012345"},
+    )
+    assert response.status_code == 200
+    assert len(response.content) > 4.5 * 1024 * 1024
+    assert "window.SARGUARDIAN_DASHBOARD=" in response.text
+
+
+def test_dashboard_preview_streams_png_larger_than_vercel_buffer_limit(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    job_id = uuid4()
+    preview_bytes = b"\x89PNG\r\n\x1a\n" + (b"x" * (5 * 1024 * 1024))
+    payload = _dashboard_zip(preview=preview_bytes)
+    artifact = {
+        "path": "aoi-derived-results.zip",
+        "kind": "aoi_derived_result_bundle",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "bytes": len(payload),
+        "drive_file_id": "private-drive-file-id",
+    }
+    record = {
+        "id": str(job_id),
+        "owner_uid": "test-user",
+        "state": "succeeded",
+        "result_summary": {"web_dashboard": {"status": "PASS"}, "artifacts": [artifact]},
+    }
+
+    class Store:
+        def get_displacement_job(self, owner_uid, requested_job_id):
+            return record if owner_uid == "test-user" and requested_job_id == job_id else None
+
+        def get_displacement_job_unscoped(self, requested_job_id):
+            return record if requested_job_id == job_id else None
+
+    def download_bundle(_drive_id, destination, *, max_bytes=None):
+        Path(destination).write_bytes(payload)
+        return {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+
+    monkeypatch.setattr(main_module, "get_job_store", lambda: Store())
+    monkeypatch.setattr(main_module, "get_settings", lambda: SimpleNamespace(displacement_callback_secret="dashboard-assets-test-secret"))
+    monkeypatch.setattr(main_module, "DASHBOARD_ARCHIVE_CACHE_ROOT", tmp_path)
+    monkeypatch.setattr(main_module, "download_private_result_to_path", download_bundle)
+
+    dashboard = authenticated_client().get(
+        f"/api/displacement-jobs/{job_id}/dashboard",
+        headers={"X-SARGuardian-Google-Maps-Key": "AIzaSyFakeRestrictedKey123456789012345"},
+    )
+    marker = "/dashboard-assets/layers/test-layer.png?ticket="
+    ticket = dashboard.text.split(marker, 1)[1].split('"', 1)[0]
+    response = client.get(f"/api/displacement-jobs/{job_id}{marker}{ticket}")
+    assert response.status_code == 200
+    assert len(response.content) == len(preview_bytes)
+    assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_private_result_artifact_streams_large_verified_download(monkeypatch) -> None:
+    from uuid import uuid4
+
+    job_id = uuid4()
+    artifact_bytes = b"private-result-" + (b"x" * (5 * 1024 * 1024))
+    artifact = {
+        "path": "aoi-derived-results.zip",
+        "kind": "aoi_derived_result_bundle",
+        "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+        "bytes": len(artifact_bytes),
+        "drive_file_id": "private-drive-file-id",
+    }
+
+    class Store:
+        def get_displacement_job(self, owner_uid, requested_job_id):
+            assert owner_uid == "test-user"
+            assert requested_job_id == job_id
+            return {"state": "succeeded", "result_summary": {"artifacts": [artifact]}}
+
+    def download_bundle(_drive_id, destination, *, max_bytes=None):
+        Path(destination).write_bytes(artifact_bytes)
+        return {"bytes": len(artifact_bytes), "sha256": hashlib.sha256(artifact_bytes).hexdigest()}
+
+    monkeypatch.setattr(main_module, "get_job_store", lambda: Store())
+    monkeypatch.setattr(main_module, "download_private_result_to_path", download_bundle)
+
+    response = authenticated_client().get(f"/api/displacement-jobs/{job_id}/artifacts/0")
+    assert response.status_code == 200
+    assert response.content == artifact_bytes
+    assert response.headers["cache-control"] == "private, no-store"
 
 
 def test_interactive_dashboard_requires_maps_key_before_private_download(monkeypatch) -> None:

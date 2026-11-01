@@ -21,7 +21,7 @@ from uuid import UUID, uuid4
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.requests import Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .asf_catalog import ASFAdapterError, ASFAdapterNotConfigured, normalize_product_rows, search_asf_catalog
 from .auth import get_current_user
@@ -750,6 +750,12 @@ def _get_cached_dashboard_archive(job_id: UUID, artifact: dict) -> Path:
                 raise HTTPException(status_code=409, detail="Stored dashboard bundle no longer matches its verified checksum inventory.")
             _write_dashboard_archive_cache(archive_path, destination)
     return destination
+
+
+def _iter_response_bytes(content: bytes, chunk_size: int = 256 * 1024):
+    """Yield bounded chunks so large private viewer responses use HTTP streaming."""
+    for offset in range(0, len(content), chunk_size):
+        yield content[offset : offset + chunk_size]
 
 
 def _create_dashboard_asset_ticket(job_id: UUID, digest: str, owner_uid: str, secret: str) -> str:
@@ -1822,7 +1828,7 @@ def _apply_google_maps_dashboard(html: str, google_maps_api_key: str) -> str:
 
 
 @app.get("/api/displacement-jobs/{job_id}/dashboard")
-async def get_displacement_dashboard(
+def get_displacement_dashboard(
     job_id: UUID,
     google_maps_api_key: str | None = Header(default=None, alias="X-SARGuardian-Google-Maps-Key"),
     user: dict = Depends(get_current_user),
@@ -1943,7 +1949,8 @@ async def get_displacement_dashboard(
     html = html.replace("<head>", "<head>" + meta, 1)
     html = _apply_dashboard_presentation(html)
     html = _apply_google_maps_dashboard(html, google_maps_api_key)
-    return Response(content=html, media_type="text/html", headers={
+    # Stream the viewer shell and manifest to stay within Vercel's 4.5 MiB buffered-response limit.
+    return StreamingResponse(_iter_response_bytes(html.encode("utf-8")), media_type="text/html", headers={
         "Cache-Control": "private, no-store",
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "origin",
@@ -1993,22 +2000,43 @@ def get_displacement_dashboard_asset(job_id: UUID, asset_path: str, ticket: str)
 
     archive_path = _get_cached_dashboard_archive(job_id, artifact)
     archive_name = "web-dashboard/" + safe_asset_path.as_posix()
+    archive: ZipFile | None = None
+    asset_stream = None
     try:
-        with ZipFile(archive_path, "r") as archive:
-            if archive.namelist().count(archive_name) != 1:
-                raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
-            asset_info = archive.getinfo(archive_name)
-            if asset_info.file_size <= 8 or asset_info.file_size > MAX_DASHBOARD_PREVIEW_BYTES:
-                raise HTTPException(status_code=413, detail="Dashboard raster preview exceeds the safe image size.")
-            content = archive.read(asset_info)
+        archive = ZipFile(archive_path, "r")
+        if archive.namelist().count(archive_name) != 1:
+            raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
+        asset_info = archive.getinfo(archive_name)
+        if asset_info.file_size <= 8 or asset_info.file_size > MAX_DASHBOARD_PREVIEW_BYTES:
+            raise HTTPException(status_code=413, detail="Dashboard raster preview exceeds the safe image size.")
+        asset_stream = archive.open(asset_info, "r")
+        signature = asset_stream.read(8)
+        if signature != b"\x89PNG\r\n\x1a\n":
+            raise HTTPException(status_code=409, detail="Dashboard raster asset is not a valid PNG preview.")
     except HTTPException:
+        if asset_stream is not None:
+            asset_stream.close()
+        if archive is not None:
+            archive.close()
         raise
     except (BadZipFile, KeyError, OSError):
+        if asset_stream is not None:
+            asset_stream.close()
+        if archive is not None:
+            archive.close()
         raise HTTPException(status_code=409, detail="Stored dashboard raster asset is unreadable.") from None
 
-    if not content.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise HTTPException(status_code=409, detail="Dashboard raster asset is not a valid PNG preview.")
-    return Response(content=content, media_type="image/png", headers={
+    def stream_preview():
+        try:
+            yield signature
+            while chunk := asset_stream.read(256 * 1024):
+                yield chunk
+        finally:
+            asset_stream.close()
+            archive.close()
+
+    # Stream from the verified ZIP entry instead of buffering large PNGs in RAM.
+    return StreamingResponse(stream_preview(), media_type="image/png", headers={
         "Cache-Control": "private, max-age=300",
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "origin",
@@ -2016,7 +2044,7 @@ def get_displacement_dashboard_asset(job_id: UUID, asset_path: str, ticket: str)
 
 
 @app.get("/api/displacement-jobs/{job_id}/artifacts/{artifact_index}")
-async def download_displacement_artifact(job_id: UUID, artifact_index: int, user: dict = Depends(get_current_user)) -> Response:
+def download_displacement_artifact(job_id: UUID, artifact_index: int, user: dict = Depends(get_current_user)) -> Response:
     """Stream one private, verified Drive artifact to its authenticated owner."""
     if artifact_index < 0 or artifact_index > 10_000:
         raise HTTPException(status_code=404, detail="Result artifact was not found.")
@@ -2029,15 +2057,34 @@ async def download_displacement_artifact(job_id: UUID, artifact_index: int, user
     if not _valid_private_artifacts(artifacts) or artifact_index >= len(artifacts):
         raise HTTPException(status_code=404, detail="Result artifact was not found.")
     artifact = artifacts[artifact_index]
+
+    # Verify the complete private Drive object on ephemeral disk before sending
+    # headers, then stream chunks and remove the temporary file at response end.
+    temporary_directory = TemporaryDirectory(prefix="sarguardian-private-artifact-")
+    artifact_path = Path(temporary_directory.name) / "result-artifact"
     try:
-        received, data = download_private_result(artifact["drive_file_id"])
-    except DriveUploadError:
+        received = download_private_result_to_path(
+            artifact["drive_file_id"], artifact_path, max_bytes=artifact["bytes"],
+        )
+    except (DriveUploadError, OSError):
+        temporary_directory.cleanup()
         raise HTTPException(status_code=503, detail="Private result storage is unavailable. Retry the download.") from None
-    import hashlib
-    if received["bytes"] != artifact["bytes"] or hashlib.sha256(data).hexdigest() != artifact["sha256"]:
+
+    if received.get("bytes") != artifact["bytes"] or received.get("sha256") != artifact["sha256"]:
+        temporary_directory.cleanup()
         raise HTTPException(status_code=409, detail="Stored result artifact no longer matches the validated inventory.")
+
     filename = artifact["path"].rsplit("/", 1)[-1]
-    return Response(content=data, media_type="application/octet-stream", headers={
+
+    def stream_artifact():
+        try:
+            with artifact_path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    yield chunk
+        finally:
+            temporary_directory.cleanup()
+
+    return StreamingResponse(stream_artifact(), media_type="application/octet-stream", headers={
         "Content-Disposition": f'attachment; filename="{filename}"',
         "Cache-Control": "private, no-store",
     })

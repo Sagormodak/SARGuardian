@@ -347,11 +347,21 @@ def test_private_artifact_download_requires_owner_and_rechecks_hash(monkeypatch)
         "artifacts": [{"path": "outputs/example.tif", "kind": "aoi_clipped_geotiff", "bytes": len(data),
                        "sha256": hashlib.sha256(data).hexdigest(), "drive_file_id": "abcdefghijk"}],
     }})
-    monkeypatch.setattr(main_module, "download_private_result", lambda _id: ({"bytes": len(data)}, data))
+    def download_verified_to_path(_id, destination, *, max_bytes=None):
+        destination.write_bytes(data)
+        return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+    monkeypatch.setattr(main_module, "download_private_result_to_path", download_verified_to_path)
     response = api.get(f"/api/displacement-jobs/{created['id']}/artifacts/0")
     assert response.status_code == 200
     assert response.content == data
-    monkeypatch.setattr(main_module, "download_private_result", lambda _id: ({"bytes": 4}, b"bad!"))
+
+    def download_corrupt_to_path(_id, destination, *, max_bytes=None):
+        corrupted = b"bad!"
+        destination.write_bytes(corrupted)
+        return {"bytes": len(corrupted), "sha256": hashlib.sha256(corrupted).hexdigest()}
+
+    monkeypatch.setattr(main_module, "download_private_result_to_path", download_corrupt_to_path)
     assert api.get(f"/api/displacement-jobs/{created['id']}/artifacts/0").status_code == 409
 
 
