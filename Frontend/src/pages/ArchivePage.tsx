@@ -25,9 +25,16 @@ export function ArchivePage({ user, authState, onSignIn, onSignOut, onOpenWorksp
       />
       <main className="home-main archive-main">
         <div className="archive-page-heading">
-          <p className="section-eyebrow">YOUR WORKSPACE</p>
-          <h1>Analysis archive</h1>
-          <p>Review previous AOI analyses, their processing status and verified result bundles.</p>
+          <div className="archive-page-heading-copy">
+            <p className="section-eyebrow">YOUR WORKSPACE</p>
+            <h1>Analysis archive</h1>
+            <p>Review your saved AOI analyses, processing history and verified result bundles.</p>
+          </div>
+          {user && (
+            <button className="text-link-button archive-page-workspace-button" type="button" onClick={onOpenWorkspace}>
+              Open analysis workspace
+            </button>
+          )}
         </div>
         <ArchiveSection user={user} onSignIn={onSignIn} onOpenWorkspace={onOpenWorkspace} />
       </main>
