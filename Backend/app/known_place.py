@@ -52,6 +52,7 @@ class KnownPlaceAnalysisRequest(BaseModel):
     coherence_neighbours: Literal["1", "5", "10", "15", "20", "25"] = "1"
     allowed_release_ids: str = Field(default="", max_length=200)
     reference_wkt: str | None = Field(default=None, max_length=100_000)
+    candidate_context: dict[str, Any] | None = None
     geometry_height_m: float | None = Field(default=None, ge=-500, le=100_000)
     execute_downloads: bool = False
     confirm_raw_downloads: bool = False
@@ -83,6 +84,49 @@ class KnownPlaceAnalysisRequest(BaseModel):
             return validate_wkt(value).wkt
         except ValueError as exc:
             raise ValueError(f"REFERENCE_WKT_INVALID: {exc}") from None
+
+    @field_validator("candidate_context")
+    @classmethod
+    def validate_candidate_context(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if value.get("source") != "FIND_DISPLACEMENTS" or value.get("product_type") != "GOFF":
+            raise ValueError("CANDIDATE_CONTEXT_MUST_BE_A_GOFF_FIND_DISPLACEMENTS_RECORD")
+        candidate_id = value.get("candidate_id")
+        if not isinstance(candidate_id, str) or not candidate_id.strip() or len(candidate_id) > 160:
+            raise ValueError("CANDIDATE_CONTEXT_ID_INVALID")
+        evidence = value.get("evidence_class")
+        if not isinstance(evidence, str) or "GOFF" not in evidence or len(evidence) > 160:
+            raise ValueError("CANDIDATE_CONTEXT_EVIDENCE_CLASS_INVALID")
+        for field_name in ("metric", "status", "interpretation"):
+            field_value = value.get(field_name, "")
+            limit = 500 if field_name == "interpretation" else 120
+            if not isinstance(field_value, str) or len(field_value) > limit:
+                raise ValueError(f"CANDIDATE_CONTEXT_{field_name.upper()}_INVALID")
+        for field_name in ("support_pairs", "pixel_count", "geometry_original_vertices", "geometry_suggested_vertices"):
+            number = value.get(field_name)
+            maximum = 100_000 if field_name == "geometry_original_vertices" else 500 if field_name == "geometry_suggested_vertices" else 10_000_000
+            if isinstance(number, bool) or not isinstance(number, int) or number < 0 or number > maximum:
+                raise ValueError(f"CANDIDATE_CONTEXT_{field_name.upper()}_INVALID")
+        area = value.get("approx_area_m2", 0)
+        if isinstance(area, bool) or not isinstance(area, (int, float)) or not math.isfinite(float(area)) or area < 0:
+            raise ValueError("CANDIDATE_CONTEXT_AREA_INVALID")
+        if not isinstance(value.get("geometry_simplified"), bool):
+            raise ValueError("CANDIDATE_CONTEXT_SIMPLIFICATION_FLAG_INVALID")
+        product_ids = value.get("product_ids", [])
+        if not isinstance(product_ids, list) or len(product_ids) > 30 or any(not isinstance(item, str) or len(item) > 512 for item in product_ids):
+            raise ValueError("CANDIDATE_CONTEXT_PRODUCT_IDS_INVALID")
+        intervals = value.get("pair_intervals", [])
+        if not isinstance(intervals, list) or len(intervals) > 30 or any(not isinstance(item, dict) for item in intervals):
+            raise ValueError("CANDIDATE_CONTEXT_PAIR_INTERVALS_INVALID")
+        try:
+            if len(json.dumps(value, separators=(",", ":"), allow_nan=False)) > 20_000:
+                raise ValueError("CANDIDATE_CONTEXT_TOO_LARGE")
+        except (TypeError, ValueError) as exc:
+            if str(exc) == "CANDIDATE_CONTEXT_TOO_LARGE":
+                raise
+            raise ValueError("CANDIDATE_CONTEXT_NOT_JSON_SAFE") from None
+        return value
 
     @field_validator("track")
     @classmethod
@@ -203,6 +247,7 @@ def dispatch_known_place_analysis(
         "coherence_neighbours": payload.coherence_neighbours,
         "allowed_release_ids": payload.allowed_release_ids,
         "reference_wkt": payload.reference_wkt or "",
+        "candidate_context_json": json.dumps(payload.candidate_context, separators=(",", ":"), allow_nan=False) if payload.candidate_context is not None else "",
         "geometry_height_m": "" if payload.geometry_height_m is None else str(payload.geometry_height_m),
         "execute_downloads": payload.execute_downloads,
         # The UI's explicit checkbox is converted to the exact workflow marker here;
