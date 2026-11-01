@@ -1039,7 +1039,7 @@ def _project_dashboard_candidate_screen(value: object) -> tuple[dict, bool]:
     )
 
 
-def _serialize_dashboard_manifest_for_browser(manifest: dict) -> tuple[str, bool]:
+def _serialize_dashboard_manifest_for_browser(manifest: dict) -> tuple[str, bool, dict]:
     """Project the source manifest onto the exact interactive-viewer contract.
 
     This is intentionally a whitelist, not a blacklist: large duplicated
@@ -1124,7 +1124,7 @@ def _serialize_dashboard_manifest_for_browser(manifest: dict) -> tuple[str, bool
                 "The full verified result ZIP is unchanged. Largest viewer sections: " + detail
             ),
         )
-    return blob, bool(candidate_overlay_compacted or aoi_geometry_simplified)
+    return blob, bool(candidate_overlay_compacted or aoi_geometry_simplified), screen
 
 
 def _dashboard_archive_cache_path(job_id: UUID, digest: str) -> Path:
@@ -2372,7 +2372,7 @@ def get_displacement_dashboard(
     data_marker = '<script src="./dashboard-data.js"></script>'
     if html.count(data_marker) != 1:
         raise HTTPException(status_code=409, detail="Dashboard viewer does not match the supported external-data contract.")
-    manifest_blob, candidate_overlay_compacted = _serialize_dashboard_manifest_for_browser(manifest)
+    manifest_blob, candidate_overlay_compacted, browser_screen = _serialize_dashboard_manifest_for_browser(manifest)
     manifest_blob = manifest_blob.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     layer_blob = json.dumps(layer_urls, separators=(",", ":"), allow_nan=False)
     embedded_data = (
@@ -2391,7 +2391,7 @@ def get_displacement_dashboard(
     html = html.replace("<head>", "<head>" + meta, 1)
     html = _apply_dashboard_presentation(html)
     html = _apply_google_maps_dashboard(html, google_maps_api_key)
-    screen = manifest.get("aoi_wide_displacement_screen") or {}
+    screen = browser_screen
     displayed = screen.get("candidate_features_displayed", 0)
     total = screen.get("candidate_features_total", displayed)
     note = (
