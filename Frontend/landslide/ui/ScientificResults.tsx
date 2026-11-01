@@ -219,6 +219,11 @@ export function ScientificResults({ job, user }: { job: DisplacementJob; user: P
             : ''}
         </p>
       )}
+      {canDownloadBundle && !canOpenDashboard && (
+        <p className="scientific-results-note" role="status">
+          This job's result package is still retained and checksum-verified, but its interactive dashboard did not pass viewer validation. The three audience views are therefore unavailable for this run; the verified result package can still be downloaded.
+        </p>
+      )}
       {canOpenDashboard && <p className="scientific-results-note">A processing PASS confirms structural and provenance checks, not independent geophysical accuracy. Candidate patterns are not hazard confirmations; pairwise LOS is not automatically cumulative or 3-D movement.</p>}
       {dashboardProgress && <p className="scientific-results-note" role="status">{dashboardProgress}</p>}
       {bundleProgress && <p className="scientific-results-note" role="status">{bundleProgress}</p>}
