@@ -268,8 +268,17 @@ def test_candidate_context_rejects_gunw_cross_family_handoff_and_oversized_metad
         "source": "FIND_DISPLACEMENTS",
         "candidate_id": "GOFF-001",
         "product_type": "GOFF",
+        "metric": "GOFF_SLANT_RANGE_OFFSET_MM",
         "evidence_class": "GOFF_OFFSET_ANOMALY_NOT_GROUND_MOTION",
+        "status": "REPEATED_SPATIAL_CANDIDATE",
+        "support_pairs": 1,
+        "pixel_count": 10,
+        "approx_area_m2": 1000.0,
+        "geometry_original_vertices": 10,
+        "geometry_suggested_vertices": 10,
         "geometry_simplified": False,
+        "interpretation": "Offset anomaly candidate; not measured ground motion.",
+        "pair_intervals": [],
         "product_ids": ["P" * 600],
     }
     with pytest.raises(AOIRequestError, match="CANDIDATE_CONTEXT_PRODUCT_IDS_INVALID"):
