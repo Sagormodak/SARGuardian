@@ -193,9 +193,9 @@ describe('displacement preparation route', () => {
     expect(refreshingHtml).not.toContain('Cancelling…');
   });
 
-  it('shows only one Drive-folder download action after successful processing', () => {
+  it('shows a secure authenticated result-package download after successful processing', () => {
     const succeededJob = {
-      id: 'succeeded-job', state: 'succeeded', stage: 'completed',
+      id: 'succeeded-job', state: 'succeeded', stage: 'completed', retention_mode: 'derived-only',
       aoi_wkt: 'POLYGON((85 27, 85.01 27, 85 27.01, 85 27))',
       start_date: '2026-09-27', end_date: '2026-10-24',
       created_at: '2026-10-24T10:00:00Z', updated_at: '2026-10-24T10:10:00Z',
@@ -209,8 +209,11 @@ describe('displacement preparation route', () => {
 
     const html = renderToStaticMarkup(<ScientificResults job={succeededJob as never} />);
 
-    expect(html).toContain('Open verified Drive archive');
-    expect(html).toContain('https://drive.google.com/drive/folders/private-drive-folder-123');
+    expect(html).toContain('Download complete result package');
+    expect(html).toContain('downloaded through your signed-in SARGuardian account');
+    expect(html).toContain('original full-granule HDF5 files are not retained in derived-only mode');
+    expect(html).not.toContain('https://drive.google.com/drive/folders/');
+    expect(html).not.toContain('private-drive-folder-123');
     expect(html).not.toContain('Scientific diagnostics');
     expect(html).not.toContain('Input products');
     expect(html).not.toContain('Retained scientific outputs');
