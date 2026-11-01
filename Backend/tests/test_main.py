@@ -228,6 +228,14 @@ def _dashboard_zip() -> bytes:
             '<a href="../index.html" style="color:var(--aqua);padding:9px">Processing report ↗</a></body></html>',
         )
         archive.writestr("web-dashboard/dashboard-data.js", "window.SARGUARDIAN_DASHBOARD={safe:true};")
+        archive.writestr(
+            "web-dashboard/manifest.json",
+            json.dumps({
+                "schema_version": "sarguardian-web-dashboard/1.0",
+                "layers": [{"id": "test-layer", "preview_asset": "layers/test-layer.png"}],
+            }),
+        )
+        archive.writestr("web-dashboard/layers/test-layer.png", b"\x89PNG\r\n\x1a\npreview")
     return buffer.getvalue()
 
 
@@ -417,7 +425,8 @@ def test_dashboard_refresh_rejects_running_job(monkeypatch) -> None:
     assert store.update_calls == 0
 
 
-def test_interactive_dashboard_is_returned_only_for_verified_owner_and_inlines_bundle(monkeypatch) -> None:
+def test_interactive_dashboard_is_returned_only_for_verified_owner_and_uses_lazy_raster_assets(monkeypatch) -> None:
+    from types import SimpleNamespace
     from uuid import uuid4
 
     job_id = uuid4()
@@ -446,6 +455,7 @@ def test_interactive_dashboard_is_returned_only_for_verified_owner_and_inlines_b
             }
 
     monkeypatch.setattr(main_module, "get_job_store", lambda: Store())
+    monkeypatch.setattr(main_module, "get_settings", lambda: SimpleNamespace(displacement_callback_secret="dashboard-assets-test-secret"))
     def download_bundle_to_disk(_drive_id, destination, *, max_bytes=None):
         assert max_bytes == len(payload)
         Path(destination).write_bytes(payload)
@@ -460,7 +470,11 @@ def test_interactive_dashboard_is_returned_only_for_verified_owner_and_inlines_b
     assert response.headers["cache-control"] == "private, no-store"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["referrer-policy"] == "origin"
-    assert "window.SARGUARDIAN_DASHBOARD={safe:true};" in response.text
+    assert "window.SARGUARDIAN_DASHBOARD=" in response.text
+    assert "window.SARGUARDIAN_LAYER_DATA=" in response.text
+    assert "__SARGUARDIAN_API_BASE__/api/displacement-jobs/" in response.text
+    assert "/dashboard-assets/layers/test-layer.png?ticket=" in response.text
+    assert "data:image/png;base64," not in response.text
     assert 'src="./dashboard-data.js"' not in response.text
     assert "Content-Security-Policy" in response.text
     assert "const maplibregl = await window.SARGUARDIAN_GOOGLE_MAPS_ADAPTER;" in response.text
@@ -492,6 +506,7 @@ def test_interactive_dashboard_is_returned_only_for_verified_owner_and_inlines_b
 
 
 def test_interactive_dashboard_uses_google_maps_key_and_adapter(monkeypatch) -> None:
+    from types import SimpleNamespace
     from uuid import uuid4
 
     job_id = uuid4()
@@ -517,6 +532,7 @@ def test_interactive_dashboard_uses_google_maps_key_and_adapter(monkeypatch) -> 
 
     called = []
     monkeypatch.setattr(main_module, "get_job_store", lambda: Store())
+    monkeypatch.setattr(main_module, "get_settings", lambda: SimpleNamespace(displacement_callback_secret="dashboard-assets-test-secret"))
 
     def download_verified_bundle(_drive_id, destination, *, max_bytes=None):
         called.append(True)
@@ -533,6 +549,66 @@ def test_interactive_dashboard_uses_google_maps_key_and_adapter(monkeypatch) -> 
     assert 'var callbackName = "__sarguardianGoogleMapsLoaded";' in response.text
     assert "window[callbackName] = function()" in response.text
     assert "const maplibregl = await window.SARGUARDIAN_GOOGLE_MAPS_ADAPTER;" in response.text
+
+
+def test_dashboard_preview_asset_uses_cached_verified_bundle_and_short_lived_ticket(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    job_id = uuid4()
+    payload = _dashboard_zip()
+    artifact = {
+        "path": "aoi-derived-results.zip",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "bytes": len(payload),
+        "drive_file_id": "private-drive-file-id",
+    }
+    record = {
+        "id": str(job_id),
+        "owner_uid": "test-user",
+        "state": "succeeded",
+        "result_summary": {
+            "web_dashboard": {"status": "PASS"},
+            "artifacts": [artifact],
+        },
+    }
+
+    class Store:
+        def get_displacement_job(self, owner_uid, requested_job_id):
+            assert owner_uid == "test-user"
+            assert requested_job_id == job_id
+            return record
+
+        def get_displacement_job_unscoped(self, requested_job_id):
+            assert requested_job_id == job_id
+            return record
+
+    downloads = []
+    def download_bundle_to_disk(_drive_id, destination, *, max_bytes=None):
+        downloads.append(True)
+        assert max_bytes == len(payload)
+        Path(destination).write_bytes(payload)
+        return {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+
+    monkeypatch.setattr(main_module, "get_job_store", lambda: Store())
+    monkeypatch.setattr(main_module, "get_settings", lambda: SimpleNamespace(displacement_callback_secret="dashboard-assets-test-secret"))
+    monkeypatch.setattr(main_module, "download_private_result_to_path", download_bundle_to_disk)
+    monkeypatch.setattr(main_module, "DASHBOARD_ARCHIVE_CACHE_ROOT", tmp_path)
+
+    dashboard = authenticated_client().get(
+        f"/api/displacement-jobs/{job_id}/dashboard",
+        headers={"X-SARGuardian-Google-Maps-Key": "AIzaSyFakeRestrictedKey123456789012345"},
+    )
+    assert dashboard.status_code == 200
+    asset_marker = "/dashboard-assets/layers/test-layer.png?ticket="
+    assert asset_marker in dashboard.text
+    ticket = dashboard.text.split(asset_marker, 1)[1].split('"', 1)[0]
+
+    preview = client.get(f"/api/displacement-jobs/{job_id}{asset_marker}{ticket}")
+    assert preview.status_code == 200
+    assert preview.headers["content-type"].startswith("image/png")
+    assert preview.content == b"\x89PNG\r\n\x1a\npreview"
+    assert downloads == [True]
 
 
 def test_interactive_dashboard_requires_maps_key_before_private_download(monkeypatch) -> None:
