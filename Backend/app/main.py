@@ -21,7 +21,7 @@ from uuid import UUID, uuid4
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.requests import Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .asf_catalog import ASFAdapterError, ASFAdapterNotConfigured, normalize_product_rows, search_asf_catalog
 from .auth import get_current_user
@@ -750,6 +750,12 @@ def _get_cached_dashboard_archive(job_id: UUID, artifact: dict) -> Path:
                 raise HTTPException(status_code=409, detail="Stored dashboard bundle no longer matches its verified checksum inventory.")
             _write_dashboard_archive_cache(archive_path, destination)
     return destination
+
+
+def _iter_response_bytes(content: bytes, chunk_size: int = 256 * 1024):
+    """Yield bounded chunks so large private viewer responses use HTTP streaming."""
+    for offset in range(0, len(content), chunk_size):
+        yield content[offset : offset + chunk_size]
 
 
 def _create_dashboard_asset_ticket(job_id: UUID, digest: str, owner_uid: str, secret: str) -> str:
@@ -1943,7 +1949,8 @@ async def get_displacement_dashboard(
     html = html.replace("<head>", "<head>" + meta, 1)
     html = _apply_dashboard_presentation(html)
     html = _apply_google_maps_dashboard(html, google_maps_api_key)
-    return Response(content=html, media_type="text/html", headers={
+    # Stream the viewer shell and manifest to stay within Vercel's 4.5 MiB buffered-response limit.
+    return StreamingResponse(_iter_response_bytes(html.encode("utf-8")), media_type="text/html", headers={
         "Cache-Control": "private, no-store",
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "origin",
