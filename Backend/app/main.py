@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import logging
 import hashlib
+import json
 import re
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
@@ -675,6 +676,151 @@ MAX_DASHBOARD_HTML_BYTES = 2 * 1024 * 1024
 MAX_DASHBOARD_DATA_BYTES = 40 * 1024 * 1024
 DASHBOARD_VIEWER_PATH = "web-dashboard/index.html"
 DASHBOARD_DATA_PATH = "web-dashboard/dashboard-data.js"
+
+@app.post("/api/displacement-jobs/{job_id}/dashboard-refresh")
+async def refresh_succeeded_job_dashboard(job_id: UUID, request: Request) -> dict[str, str]:
+    """Replace only a succeeded job's verified dashboard ZIP pointer.
+
+    This maintenance-only endpoint is HMAC-authenticated by the worker secret.
+    It never changes job state, callback sequence, processing provenance, or
+    any scientific artifact other than the dashboard ZIP reference itself.
+    """
+    body = await request.body()
+    if len(body) > 32 * 1024:
+        raise HTTPException(status_code=413, detail="Dashboard refresh request is too large.")
+    settings = get_settings()
+    if not callback_signature_is_valid(
+        settings.displacement_callback_secret,
+        body,
+        request.headers.get("X-SARGuardian-Signature"),
+    ):
+        raise HTTPException(status_code=401, detail="Invalid dashboard refresh signature.")
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=422, detail="Dashboard refresh payload is not valid JSON.") from None
+    if not isinstance(payload, dict) or payload.get("job_id") != str(job_id):
+        raise HTTPException(status_code=422, detail="Dashboard refresh payload is not bound to this job.")
+
+    try:
+        store = _require_store()
+        record = store.get_displacement_job_unscoped(job_id)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not read dashboard refresh job state.") from None
+    if not record:
+        raise HTTPException(status_code=404, detail="Displacement job was not found.")
+    if record.get("state") != JobState.SUCCEEDED.value or record.get("worker_contract_version") != 2:
+        raise HTTPException(status_code=409, detail="Only a succeeded version-2 job can receive a dashboard refresh.")
+
+    source_run_id = record.get("github_run_id")
+    if (not isinstance(source_run_id, str)
+            or payload.get("source_run_id") != source_run_id
+            or payload.get("github_run_id") != source_run_id):
+        raise HTTPException(status_code=409, detail="Dashboard refresh source run does not match the succeeded job.")
+
+    provenance = payload.get("provenance")
+    replacement = payload.get("replacement")
+    dashboard = payload.get("web_dashboard")
+    if not isinstance(provenance, dict) or not isinstance(replacement, dict) or not isinstance(dashboard, dict):
+        raise HTTPException(status_code=422, detail="Dashboard refresh metadata is incomplete.")
+    builder_commit = provenance.get("builder_commit")
+    refresh_run_id = provenance.get("refresh_workflow_run_id")
+    if (not isinstance(builder_commit, str) or not re.fullmatch(r"[a-f0-9]{40}", builder_commit)
+            or not isinstance(refresh_run_id, str) or not re.fullmatch(r"[0-9]{5,15}", refresh_run_id)
+            or provenance.get("raw_hdf5_replayed") is not False
+            or provenance.get("scientific_outputs_changed") is not False):
+        raise HTTPException(status_code=422, detail="Dashboard refresh provenance failed validation.")
+
+    new_file_id = replacement.get("drive_file_id")
+    new_digest = replacement.get("sha256")
+    new_size = replacement.get("bytes")
+    if (not isinstance(new_file_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", new_file_id)
+            or not isinstance(new_digest, str) or not re.fullmatch(r"[a-f0-9]{64}", new_digest)
+            or not isinstance(new_size, int) or isinstance(new_size, bool)
+            or new_size <= 0 or new_size > MAX_DASHBOARD_ARCHIVE_BYTES):
+        raise HTTPException(status_code=422, detail="Replacement dashboard archive metadata is invalid.")
+
+    result_summary = record.get("result_summary")
+    if not isinstance(result_summary, dict) or result_summary.get("schema_version") != 2:
+        raise HTTPException(status_code=409, detail="The succeeded job has no supported result contract.")
+    expected_observations = len(result_summary.get("products") or [])
+    selected_counts = result_summary.get("selected_granule_counts")
+    if isinstance(selected_counts, dict):
+        expected_observations = sum(
+            value for value in selected_counts.values()
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        )
+    observation_count = dashboard.get("observations")
+    layer_count = dashboard.get("layers")
+    derived_layer_count = dashboard.get("derived_layers", 0)
+    if (dashboard.get("status") != "PASS"
+            or dashboard.get("schema_version") != "sarguardian-web-dashboard/1.0"
+            or dashboard.get("viewer") != DASHBOARD_VIEWER_PATH
+            or not isinstance(observation_count, int) or isinstance(observation_count, bool)
+            or observation_count <= 0 or observation_count != expected_observations
+            or not isinstance(layer_count, int) or isinstance(layer_count, bool) or layer_count <= 0
+            or not isinstance(derived_layer_count, int) or isinstance(derived_layer_count, bool)
+            or derived_layer_count < 0):
+        raise HTTPException(status_code=422, detail="Refreshed dashboard receipt does not match the job's product inventory.")
+
+    artifacts = result_summary.get("artifacts")
+    if not _valid_private_artifacts(artifacts):
+        raise HTTPException(status_code=409, detail="The succeeded job's private artifact inventory is invalid.")
+    bundle_entries = [item for item in artifacts if item.get("path") == "aoi-derived-results.zip"]
+    if len(bundle_entries) != 1:
+        raise HTTPException(status_code=409, detail="A unique existing dashboard ZIP reference was not found.")
+    old_bundle = bundle_entries[0]
+    current_refresh = result_summary.get("dashboard_refresh")
+    if (old_bundle.get("sha256") == new_digest
+            and old_bundle.get("drive_file_id") == new_file_id
+            and isinstance(current_refresh, dict)
+            and current_refresh.get("refresh_workflow_run_id") == refresh_run_id):
+        return {"status": "accepted", "job_id": str(job_id), "job_status": JobState.SUCCEEDED.value}
+
+    expected_old_digest = payload.get("expected_previous_sha256")
+    if (not isinstance(expected_old_digest, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", expected_old_digest)
+            or old_bundle.get("sha256") != expected_old_digest):
+        raise HTTPException(status_code=409, detail="The stored dashboard bundle changed since this refresh was prepared.")
+
+    refreshed_summary = dict(result_summary)
+    refreshed_artifacts = [dict(item) for item in artifacts]
+    refreshed_bundle = next(item for item in refreshed_artifacts if item.get("path") == "aoi-derived-results.zip")
+    refreshed_bundle.update({"sha256": new_digest, "bytes": new_size, "drive_file_id": new_file_id})
+    refreshed_summary["artifacts"] = refreshed_artifacts
+    refreshed_summary["web_dashboard"] = {
+        "status": "PASS",
+        "schema_version": "sarguardian-web-dashboard/1.0",
+        "viewer": DASHBOARD_VIEWER_PATH,
+        "observations": observation_count,
+        "layers": layer_count,
+        "derived_layers": derived_layer_count,
+        "renderable_layers": dashboard.get("renderable_layers"),
+        "derived_layer_errors": dashboard.get("derived_layer_errors"),
+    }
+    refreshed_summary["dashboard_refresh"] = {
+        "status": "PASS",
+        "refreshed_at": datetime.now(UTC).isoformat(),
+        "source_run_id": source_run_id,
+        "refresh_workflow_run_id": refresh_run_id,
+        "builder_commit": builder_commit,
+        "raw_hdf5_replayed": False,
+        "scientific_outputs_changed": False,
+    }
+    try:
+        store.update_displacement_job(
+            job_id,
+            {"result_summary": refreshed_summary},
+            expected_state=JobState.SUCCEEDED.value,
+            expected_sequence=int(record.get("callback_sequence") or 0),
+        )
+    except PersistenceConflictError:
+        raise HTTPException(status_code=409, detail="Job state changed during dashboard refresh; no pointer was replaced.") from None
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not persist the refreshed dashboard reference.") from None
+    return {"status": "accepted", "job_id": str(job_id), "job_status": JobState.SUCCEEDED.value}
+
+
 
 # Presentation is added at read-time so older, checksum-verified result bundles
 # can receive responsive layout and truthful measurement-state messaging without
