@@ -5,7 +5,13 @@ import pytest
 from pyproj import Transformer
 
 from tools.know_place.goff_io import GoffReadError
-from tools.know_place.geometry import build_analysis_roi, parse_polygon_wkt, points_in_ring
+from tools.know_place.geometry import (
+    build_analysis_roi,
+    build_independent_reference_roi,
+    parse_polygon_wkt,
+    points_in_ring,
+    polygon_pair_envelope_wkt,
+)
 
 
 BOX_WKT = (
@@ -77,3 +83,75 @@ def test_build_roi_rejects_crown_outside_reference_box():
     )
     with pytest.raises(GoffReadError):
         build_analysis_roi(xs, ys, 32645, box_wkt=BOX_WKT, crown_wkt=outside)
+
+MEASUREMENT_WKT = CROWN_WKT
+REFERENCE_WKT = (
+    "POLYGON ((85.500000 28.284700, 85.515000 28.284700, "
+    "85.515000 28.297000, 85.500000 28.297000, 85.500000 28.284700))"
+)
+
+
+def _two_polygon_grid(measurement_wkt: str, reference_wkt: str):
+    transformer = Transformer.from_crs("EPSG:4326", "EPSG:32645", always_xy=True)
+    points = parse_polygon_wkt(measurement_wkt) + parse_polygon_wkt(reference_wkt)
+    px, py = transformer.transform(
+        [point[0] for point in points],
+        [point[1] for point in points],
+    )
+    xs = np.arange(
+        np.floor((min(px) - 500.0) / 80) * 80,
+        np.ceil((max(px) + 500.0) / 80) * 80 + 1,
+        80.0,
+    )
+    ys = np.arange(
+        np.floor((min(py) - 500.0) / 80) * 80,
+        np.ceil((max(py) + 500.0) / 80) * 80 + 1,
+        80.0,
+    )
+    return xs, ys
+
+
+def test_independent_measurement_and_reference_polygons_are_rasterized_separately():
+    xs, ys = _two_polygon_grid(MEASUREMENT_WKT, REFERENCE_WKT)
+    roi = build_independent_reference_roi(
+        xs, ys, 32645,
+        measurement_wkt=MEASUREMENT_WKT,
+        reference_wkt=REFERENCE_WKT,
+    )
+
+    assert roi.reference_mask is not None
+    assert roi.crown_mask.any()
+    assert roi.reference_mask.any()
+    assert not np.any(roi.crown_mask & roi.reference_mask)
+    assert np.array_equal(roi.box_mask, roi.crown_mask | roi.reference_mask)
+    assert roi.reference_ring_projected is not None
+    assert len(roi.reference_ring_projected) == 5
+    assert not roi.box_mask[0, :].any()
+    assert not roi.box_mask[-1, :].any()
+    assert not roi.box_mask[:, 0].any()
+    assert not roi.box_mask[:, -1].any()
+
+    envelope = polygon_pair_envelope_wkt(MEASUREMENT_WKT, REFERENCE_WKT, 32645)
+    assert envelope.startswith("POLYGON ((")
+
+
+@pytest.mark.parametrize(
+    "reference_wkt",
+    [
+        # Partial overlap.
+        "POLYGON ((85.535 28.290, 85.550 28.290, 85.550 28.310, 85.535 28.310, 85.535 28.290))",
+        # Contains the measurement polygon.
+        BOX_WKT,
+        # Touches the measurement polygon along its eastern edge.
+        "POLYGON ((85.540000 28.284700, 85.550000 28.284700, 85.550000 28.297000, 85.540000 28.297000, 85.540000 28.284700))",
+    ],
+)
+def test_independent_reference_polygon_rejects_overlap_containment_and_touch(reference_wkt):
+    xs, ys = _two_polygon_grid(MEASUREMENT_WKT, reference_wkt)
+    with pytest.raises(GoffReadError, match="OVERLAP_OR_TOUCH"):
+        build_independent_reference_roi(
+            xs, ys, 32645,
+            measurement_wkt=MEASUREMENT_WKT,
+            reference_wkt=reference_wkt,
+        )
+
