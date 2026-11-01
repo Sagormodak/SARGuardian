@@ -220,6 +220,8 @@ def _dashboard_zip(
     *,
     preview: bytes = b"\x89PNG\r\n\x1a\npreview",
     manifest_padding: str = "",
+    candidate_feature_count: int = 0,
+    candidate_feature_padding: str = "",
 ) -> bytes:
     buffer = BytesIO()
     with ZipFile(buffer, "w") as archive:
@@ -238,6 +240,32 @@ def _dashboard_zip(
         }
         if manifest_padding:
             manifest["padding"] = manifest_padding
+        if candidate_feature_count:
+            manifest["aoi_wide_displacement_screen"] = {
+                "status": "PASS",
+                "candidate_count": candidate_feature_count,
+                "candidate_feature_collection": {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "properties": {
+                                "candidate_id": f"candidate-{index + 1}",
+                                "direction": "ASC",
+                                "track": 170,
+                                "area_km2_approx": 0.5,
+                                "pairs_with_candidate": 2,
+                                "verbose_source_metadata": candidate_feature_padding,
+                            },
+                            "geometry": {
+                                "type": "Polygon",
+                                "coordinates": [[[85.0, 27.0], [85.1, 27.0], [85.1, 27.1], [85.0, 27.1], [85.0, 27.0]]],
+                            },
+                        }
+                        for index in range(candidate_feature_count)
+                    ],
+                },
+            }
         archive.writestr("web-dashboard/manifest.json", json.dumps(manifest))
         archive.writestr("web-dashboard/layers/test-layer.png", preview)
     return buffer.getvalue()
@@ -679,6 +707,83 @@ def test_dashboard_shell_streams_manifest_larger_than_vercel_buffer_limit(monkey
     assert response.status_code == 200
     assert len(response.content) > 4.5 * 1024 * 1024
     assert "window.SARGUARDIAN_DASHBOARD=" in response.text
+
+
+def test_large_candidate_manifest_is_compacted_for_browser_without_changing_saved_result(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    job_id = uuid4()
+    # The source manifest is >16 MiB because the candidate FeatureCollection
+    # carries large per-feature metadata. That metadata remains in the verified
+    # ZIP; the browser only receives the properties needed by its candidate map.
+    payload = _dashboard_zip(
+        candidate_feature_count=150,
+        candidate_feature_padding="x" * 120_000,
+    )
+    with ZipFile(BytesIO(payload), "r") as source_archive:
+        source_manifest = json.loads(source_archive.read("web-dashboard/manifest.json"))
+    source_features = source_manifest["aoi_wide_displacement_screen"]["candidate_feature_collection"]["features"]
+    assert len(json.dumps(source_manifest).encode("utf-8")) > main_module.MAX_DASHBOARD_MANIFEST_BYTES
+
+    artifact = {
+        "path": "aoi-derived-results.zip",
+        "kind": "aoi_derived_result_bundle",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "bytes": len(payload),
+        "drive_file_id": "private-drive-file-id",
+    }
+    record = {
+        "id": str(job_id),
+        "owner_uid": "test-user",
+        "state": "succeeded",
+        "result_summary": {
+            "web_dashboard": {"status": "PASS", "schema_version": "sarguardian-web-dashboard/1.0"},
+            "artifacts": [artifact],
+        },
+    }
+
+    class Store:
+        def get_displacement_job(self, owner_uid, requested_job_id):
+            return record if owner_uid == "test-user" and requested_job_id == job_id else None
+
+    def download_bundle(_drive_id, destination, *, max_bytes=None):
+        Path(destination).write_bytes(payload)
+        return {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+
+    monkeypatch.setattr(main_module, "get_job_store", lambda: Store())
+    monkeypatch.setattr(main_module, "get_settings", lambda: SimpleNamespace(displacement_callback_secret="dashboard-assets-test-secret"))
+    monkeypatch.setattr(main_module, "DASHBOARD_ARCHIVE_CACHE_ROOT", tmp_path)
+    monkeypatch.setattr(main_module, "download_private_result_to_path", download_bundle)
+
+    response = authenticated_client().get(
+        f"/api/displacement-jobs/{job_id}/dashboard",
+        headers={"X-SARGuardian-Google-Maps-Key": "AIzaSyFakeRestrictedKey123456789012345"},
+    )
+
+    assert response.status_code == 200
+    assert len(response.content) < 4.5 * 1024 * 1024
+    assert "candidate_features_total" in response.text
+    assert '"candidate_features_displayed":100' in response.text
+    assert '"candidate_features_omitted_from_map":50' in response.text
+    assert '"candidate_properties_reduced_for_display":true' in response.text
+    assert "Map display note:" in response.text
+    assert "original candidate GeoJSON and scientific artifacts remain unchanged" in response.text
+    assert len(source_features) == 150
+    # The private ZIP itself is still byte-for-byte the original object.
+    assert hashlib.sha256(payload).hexdigest() == artifact["sha256"]
+
+
+def test_candidate_polygon_display_simplification_preserves_a_closed_ring() -> None:
+    ring = [[float(index), float((index * 7) % 19)] for index in range(360)]
+    ring.append(ring[0])
+
+    simplified, changed = main_module._simplify_geojson_ring_for_display(ring)
+
+    assert changed is True
+    assert len(simplified) <= main_module.MAX_DASHBOARD_CANDIDATE_RING_POINTS
+    assert simplified[0] == simplified[-1]
+    assert len(simplified) >= 4
 
 
 def test_dashboard_preview_streams_png_larger_than_vercel_buffer_limit(monkeypatch, tmp_path) -> None:
