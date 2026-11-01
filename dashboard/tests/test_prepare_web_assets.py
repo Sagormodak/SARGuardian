@@ -993,7 +993,7 @@ VERDICT: NOT TESTABLE. No two consecutive pair intervals share the same complete
         self.assertIn("public-candidate-results", viewer)
         self.assertIn("publicCandidateResults", viewer)
         self.assertIn("function renderPublicCandidateCards(family=activeFamily)", viewer)
-        self.assertIn("not have a compatible repeated GUNW network", viewer)
+        self.assertIn("No compatible multi-date GUNW network", viewer)
         self.assertIn("Pair records in screen:", viewer)
         self.assertNotIn("Compatible pair intervals:", viewer)
         self.assertIn("runPlainConclusion", viewer)
