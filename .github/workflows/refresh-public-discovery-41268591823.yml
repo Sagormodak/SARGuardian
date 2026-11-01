@@ -101,7 +101,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          root="$RUNNER_TEMP/sarguardian-dashboard-refresh/dashboard"
+          root="$RUNNER_TEMP/sarguardian-dashboard-refresh/dashboard/dashboard"
           test -s "$root/aoi-run-summary.json"
           test -s "$root/aoi-processing-report.json"
           test -s "$root/aoi-derived-results.zip"
@@ -177,7 +177,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          root="$RUNNER_TEMP/sarguardian-dashboard-refresh/dashboard"
+          root="$RUNNER_TEMP/sarguardian-dashboard-refresh/dashboard/dashboard"
           python - "$root" "$RUNNER_TEMP/sarguardian-dashboard-refresh" <<'PY'
           import copy, hashlib, json, sys, zipfile
           from pathlib import Path
@@ -244,7 +244,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          root="$RUNNER_TEMP/sarguardian-dashboard-refresh/dashboard"
+          root="$RUNNER_TEMP/sarguardian-dashboard-refresh/dashboard/dashboard"
           python - "$root" <<'PY'
           import hashlib, json, sys, zipfile
           from pathlib import Path
@@ -298,7 +298,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          root="$RUNNER_TEMP/sarguardian-dashboard-refresh/dashboard"
+          root="$RUNNER_TEMP/sarguardian-dashboard-refresh/dashboard/dashboard"
           test -s "$root/aoi-derived-results.zip"
           python builder-source/tools/drive_resumable_upload.py             --root "$root"             --run-name "$REFRESH_RUN_NAME"             --files "$root/aoi-derived-results.zip"             --out "$root/drive-dashboard-refresh-upload-receipt.json"
           python - "$root/drive-dashboard-refresh-upload-receipt.json" <<'PY'
@@ -323,7 +323,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          root="$RUNNER_TEMP/sarguardian-dashboard-refresh/dashboard"
+          root="$RUNNER_TEMP/sarguardian-dashboard-refresh/dashboard/dashboard"
           python - "$root" <<'PY'
           import hashlib, hmac, json, os, re, sys
           from pathlib import Path
@@ -389,10 +389,10 @@ jobs:
         with:
           name: sarguardian-public-discovery-refresh-41268591823-${{ github.run_id }}
           path: |
-            ${{ runner.temp }}/sarguardian-dashboard-refresh/dashboard/web-dashboard/
-            ${{ runner.temp }}/sarguardian-dashboard-refresh/dashboard/web-dashboard-build-receipt.json
-            ${{ runner.temp }}/sarguardian-dashboard-refresh/dashboard/drive-dashboard-refresh-upload-receipt.json
-            ${{ runner.temp }}/sarguardian-dashboard-refresh/dashboard/aoi-derived-results.zip
+            ${{ runner.temp }}/sarguardian-dashboard-refresh/dashboard/dashboard/web-dashboard/
+            ${{ runner.temp }}/sarguardian-dashboard-refresh/dashboard/dashboard/web-dashboard-build-receipt.json
+            ${{ runner.temp }}/sarguardian-dashboard-refresh/dashboard/dashboard/drive-dashboard-refresh-upload-receipt.json
+            ${{ runner.temp }}/sarguardian-dashboard-refresh/dashboard/dashboard/aoi-derived-results.zip
           if-no-files-found: warn
           retention-days: 30
           compression-level: 0
