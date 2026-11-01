@@ -88,6 +88,40 @@ describe('Authenticated interactive dashboard API contract', () => {
     expect(statuses[statuses.length - 1]).toContain('Retrieving the saved result');
   });
 
+  it('retries transient Drive-backed dashboard failures without dispatching another workflow', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('VITE_GOOGLE_MAPS_API_KEY', 'AIzaSyFakeRestrictedKey123456789012345');
+    const html = '<!doctype html><html><body>dashboard</body></html>';
+    const statuses: string[] = [];
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(healthyResponse())
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        json: async () => ({ detail: 'Private dashboard storage is unavailable. Retry in a moment.' }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: { get: vi.fn().mockReturnValue('text/html; charset=utf-8') },
+        text: async () => html,
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const pending = getInteractiveDashboardHtml(
+      '736bd4e6-8963-43be-a916-bc62336c8557',
+      user,
+      (message) => statuses.push(message),
+    );
+    await vi.runAllTimersAsync();
+
+    await expect(pending).resolves.toBe(html);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/health');
+    expect(fetchMock.mock.calls[1][0]).toContain('/dashboard');
+    expect(fetchMock.mock.calls[2][0]).toContain('/dashboard');
+    expect(statuses.some((message) => message.includes('Retrying saved dashboard retrieval'))).toBe(true);
+  });
+
   it('does not request dashboard HTML when the frontend Maps key is missing', async () => {
     vi.stubEnv('VITE_GOOGLE_MAPS_API_KEY', '');
     const fetchMock = vi.fn();
@@ -125,6 +159,36 @@ describe('Owner-authenticated archived artifact download API contract', () => {
     expect(fetchMock.mock.calls[1][1].headers).toEqual({
       Authorization: 'Bearer firebase-id-token',
     });
+  });
+
+  it('retries a transient private-Drive artifact response without repeating scientific processing', async () => {
+    vi.useFakeTimers();
+    const bundle = new Blob(['verified result bundle'], { type: 'application/zip' });
+    const statuses: string[] = [];
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: vi.fn().mockReturnValue('application/json') },
+        json: async () => ({ status: 'ok' }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        json: async () => ({ detail: 'Private result storage is unavailable. Retry the download.' }),
+      })
+      .mockResolvedValueOnce({ ok: true, blob: async () => bundle });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const pending = downloadDisplacementArtifact(jobId, 2, user, (message) => statuses.push(message));
+    await vi.runAllTimersAsync();
+
+    await expect(pending).resolves.toBe(bundle);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/health');
+    expect(fetchMock.mock.calls[1][0]).toContain('/artifacts/2');
+    expect(fetchMock.mock.calls[2][0]).toContain('/artifacts/2');
+    expect(statuses.some((message) => message.includes('Retrying saved result package retrieval'))).toBe(true);
   });
 
   it('surfaces private-storage authorization failures to the Archive UI', async () => {

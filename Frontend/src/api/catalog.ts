@@ -113,6 +113,42 @@ const API_BASE = (configuredApiUrl || 'http://localhost:8000').replace(/\/+$/, '
 
 type ProcessingServiceStatusHandler = (message: string) => void;
 
+const ARCHIVED_RESULT_RETRY_DELAYS_MS = [1_500, 4_000] as const;
+const ARCHIVED_RESULT_TRANSIENT_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+async function fetchArchivedResult(
+  url: string,
+  init: RequestInit,
+  onStatus: ProcessingServiceStatusHandler | undefined,
+  label: string,
+): Promise<Response> {
+  let lastNetworkFailure = false;
+
+  for (let attempt = 0; attempt <= ARCHIVED_RESULT_RETRY_DELAYS_MS.length; attempt += 1) {
+    if (attempt > 0) {
+      onStatus?.(`Retrying saved ${label} retrieval (${attempt}/${ARCHIVED_RESULT_RETRY_DELAYS_MS.length})…`);
+      await new Promise<void>((resolve) => globalThis.setTimeout(resolve, ARCHIVED_RESULT_RETRY_DELAYS_MS[attempt - 1]));
+    }
+
+    try {
+      const response = await fetch(url, init);
+      if (!ARCHIVED_RESULT_TRANSIENT_STATUSES.has(response.status) || attempt === ARCHIVED_RESULT_RETRY_DELAYS_MS.length) {
+        return response;
+      }
+      lastNetworkFailure = false;
+    } catch {
+      lastNetworkFailure = true;
+      if (attempt === ARCHIVED_RESULT_RETRY_DELAYS_MS.length) {
+        throw new Error(`Could not reach the saved ${label} service after several attempts. Your archived result remains unchanged; retry later.`);
+      }
+    }
+  }
+
+  throw new Error(lastNetworkFailure
+    ? `Could not reach the saved ${label} service. Your archived result remains unchanged; retry later.`
+    : `The saved ${label} service did not respond. Your archived result remains unchanged; retry later.`);
+}
+
 // Render Free web services sleep after 15 minutes without inbound traffic.
 // A small health check wakes the API before we ask it to retrieve a saved Drive
 // bundle. Retry only the wake-up request; never redispatch the science workflow.
@@ -211,9 +247,9 @@ export async function getInteractiveDashboardHtml(
   }
   const token = await getFirebaseIdToken(user);
   await ensureProcessingServiceAwake(onStatus);
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE}/api/displacement-jobs/${encodeURIComponent(safeId)}/dashboard`, {
+  const response = await fetchArchivedResult(
+    `${API_BASE}/api/displacement-jobs/${encodeURIComponent(safeId)}/dashboard`,
+    {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -221,10 +257,10 @@ export async function getInteractiveDashboardHtml(
         'X-SARGuardian-Google-Maps-Key': mapsApiKey,
       },
       cache: 'no-store',
-    });
-  } catch {
-    throw new Error('Could not reach the processing service. Check your connection and retry.');
-  }
+    },
+    onStatus,
+    'dashboard',
+  );
   if (!response.ok) {
     const payload = await response.json().catch(() => ({})) as { detail?: string; message?: string };
     throw new Error(payload.detail || payload.message || `Could not open the interactive dashboard (${response.status}).`);
@@ -340,14 +376,12 @@ export async function downloadDisplacementArtifact(
   }
   const token = await getFirebaseIdToken(user);
   await ensureProcessingServiceAwake(onStatus);
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE}/api/displacement-jobs/${encodeURIComponent(jobId.trim())}/artifacts/${artifactIndex}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-  } catch {
-    throw new Error('Could not reach the result storage service. Retry the download.');
-  }
+  const response = await fetchArchivedResult(
+    `${API_BASE}/api/displacement-jobs/${encodeURIComponent(jobId.trim())}/artifacts/${artifactIndex}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+    onStatus,
+    'result package',
+  );
   if (!response.ok) {
     await readApiPayload(response, 'Could not download this artifact.');
   }
