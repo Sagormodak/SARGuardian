@@ -105,6 +105,7 @@ def test_budhi_gandaki_gunw_control_is_not_scored_as_goff(registry: dict) -> Non
 
 def test_protocol_requires_frozen_thresholds_and_separate_holdout(registry: dict) -> None:
     protocol = registry["evaluation_protocol"]
+    claim_boundary = registry["current_engine_claim_boundary"]
     assert "before opening the final holdout" in protocol["pass_policy"]
     assert "Bhote Koshi is the author-method reproduction target" in protocol["split_policy"]
-    assert any("hazard probabilities" in note for note in protocol["prohibited_claims"])
+    assert any("hazard detection" in note.lower() for note in claim_boundary["prohibited_claims"])
