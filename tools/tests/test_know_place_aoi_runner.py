@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools.know_place.aoi_request import REQUEST_SCHEMA, validate_aoi_request
+from tools.know_place.geometry import polygon_pair_envelope_wkt
 from tools.know_place.aoi_runner import (
     AOIRunError,
     _download_exact_product,
@@ -35,8 +36,8 @@ PAIR_NAMES = [
     "NISAR_L2_PR_GOFF_024_098_A_016_025_4000_SH_20260702T233920_20260702T233955_20260714T233920_20260714T233954_P05023_F_F_J_001.h5",
 ]
 
-def request(allowed_release_ids=()):
-    return validate_aoi_request({
+def request(allowed_release_ids=(), reference_wkt=None):
+    payload = {
         "schema_version": REQUEST_SCHEMA,
         "aoi": {"type": "Polygon", "wkt": "POLYGON ((85.52 28.28, 85.54 28.28, 85.54 28.30, 85.52 28.30, 85.52 28.28))", "crs": "EPSG:4326"},
         "date_range": {"start": "2026-06-20", "end": "2026-07-14", "inclusive": True},
@@ -44,7 +45,13 @@ def request(allowed_release_ids=()):
         "analysis_mode": "retrospective_validation",
         "source_adapters": ["NISAR_GOFF"],
         "product_selection": {"allowed_maturities": ["PROVISIONAL"], "allowed_release_ids": list(allowed_release_ids)},
-    })
+    }
+    if reference_wkt:
+        payload["reference"] = {
+            "policy": "external_reference_polygon_component_median",
+            "polygon_wkt": reference_wkt,
+        }
+    return validate_aoi_request(payload)
 
 def product(name, *, maturity="PROVISIONAL", polarization="HH", bytes_size=101):
     url = f"https://nisar.asf.earthdatacloud.nasa.gov/NISAR/NISAR_L2_GOFF_{maturity}_V1/{name}"
@@ -327,3 +334,31 @@ def test_oversized_reference_context_fails_before_roi_allocation():
 
     permitted_cells = _estimate_roi_window_cells(x, y, wkt, 32645, max_window_cells=10000)
     assert 0 < permitted_cells <= 10000
+
+def test_asf_catalog_search_envelope_covers_separate_measurement_and_reference_polygons(monkeypatch):
+    reference_wkt = (
+        "POLYGON ((85.500 28.284, 85.515 28.284, 85.515 28.297, "
+        "85.500 28.297, 85.500 28.284))"
+    )
+    calls = {}
+    fake = SimpleNamespace(
+        ASFSearchOptions=lambda **kwargs: SimpleNamespace(**kwargs),
+        search=lambda **kwargs: (calls.update(vars(kwargs["opts"])) or [product(n) for n in PAIR_NAMES]),
+    )
+    monkeypatch.setitem(sys.modules, "asf_search", fake)
+    known_place_request = request(reference_wkt=reference_wkt)
+
+    products, manifest = discover_nisar_goff(known_place_request)
+
+    expected = polygon_pair_envelope_wkt(
+        known_place_request.aoi_wkt,
+        known_place_request.reference_wkt,
+        4326,
+    )
+    assert len(products) == 2
+    assert calls["intersectsWith"] == expected
+    assert manifest["query"]["catalog_search_geometry"] == "measurement_reference_combined_envelope"
+    assert manifest["query"]["intersects_wkt_sha256"]
+    assert manifest["query"]["measurement_wkt_sha256"]
+    assert manifest["query"]["reference_wkt_sha256"]
+
