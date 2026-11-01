@@ -33,6 +33,7 @@ on:
   pull_request:
     branches:
       - feat/final-aoi-science-integration
+      - feat/know-place-analysis
     paths:
       - "tools/know_place/**"
       - "tools/tests/test_know_place_*.py"
