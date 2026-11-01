@@ -2000,22 +2000,43 @@ def get_displacement_dashboard_asset(job_id: UUID, asset_path: str, ticket: str)
 
     archive_path = _get_cached_dashboard_archive(job_id, artifact)
     archive_name = "web-dashboard/" + safe_asset_path.as_posix()
+    archive: ZipFile | None = None
+    asset_stream = None
     try:
-        with ZipFile(archive_path, "r") as archive:
-            if archive.namelist().count(archive_name) != 1:
-                raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
-            asset_info = archive.getinfo(archive_name)
-            if asset_info.file_size <= 8 or asset_info.file_size > MAX_DASHBOARD_PREVIEW_BYTES:
-                raise HTTPException(status_code=413, detail="Dashboard raster preview exceeds the safe image size.")
-            content = archive.read(asset_info)
+        archive = ZipFile(archive_path, "r")
+        if archive.namelist().count(archive_name) != 1:
+            raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
+        asset_info = archive.getinfo(archive_name)
+        if asset_info.file_size <= 8 or asset_info.file_size > MAX_DASHBOARD_PREVIEW_BYTES:
+            raise HTTPException(status_code=413, detail="Dashboard raster preview exceeds the safe image size.")
+        asset_stream = archive.open(asset_info, "r")
+        signature = asset_stream.read(8)
+        if signature != b"\x89PNG\r\n\x1a\n":
+            raise HTTPException(status_code=409, detail="Dashboard raster asset is not a valid PNG preview.")
     except HTTPException:
+        if asset_stream is not None:
+            asset_stream.close()
+        if archive is not None:
+            archive.close()
         raise
     except (BadZipFile, KeyError, OSError):
+        if asset_stream is not None:
+            asset_stream.close()
+        if archive is not None:
+            archive.close()
         raise HTTPException(status_code=409, detail="Stored dashboard raster asset is unreadable.") from None
 
-    if not content.startswith(b"\x89PNG\r\n\x1a\n"):
-        raise HTTPException(status_code=409, detail="Dashboard raster asset is not a valid PNG preview.")
-    return Response(content=content, media_type="image/png", headers={
+    def stream_preview():
+        try:
+            yield signature
+            while chunk := asset_stream.read(256 * 1024):
+                yield chunk
+        finally:
+            asset_stream.close()
+            archive.close()
+
+    # Stream from the verified ZIP entry instead of buffering large PNGs in RAM.
+    return StreamingResponse(stream_preview(), media_type="image/png", headers={
         "Cache-Control": "private, max-age=300",
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "origin",
