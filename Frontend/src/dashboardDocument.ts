@@ -33,7 +33,7 @@ export function withDashboardPreferredView(html: string, view: DashboardView, or
     '(function () {',
     '  var preferredView = ' + JSON.stringify(view) + ';',
     '  function selectPreferredView() {',
-    '    var button = document.querySelector(\\'[data-sg-mode="\\' + preferredView + \\'"]\\');',
+    '    var button = document.querySelector("[data-sg-mode=\'" + preferredView + "\']");',
     '    if (!button) return false;',
     '    if (button.getAttribute("aria-selected") !== "true") button.click();',
     '    return true;',
@@ -53,9 +53,9 @@ export function withDashboardPreferredView(html: string, view: DashboardView, or
     '  }',
     '})();',
     '</script>',
-  ].join('\\n');
-  return /<\\/body>/i.test(withBrowserContext)
-    ? withBrowserContext.replace(/<\\/body>/i, script + '</body>')
+  ].join('\n');
+  return /<\/body>/i.test(withBrowserContext)
+    ? withBrowserContext.replace(/<\/body>/i, script + '</body>')
     : withBrowserContext + script;
 }
 
