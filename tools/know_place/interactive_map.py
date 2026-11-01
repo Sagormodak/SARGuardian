@@ -149,6 +149,7 @@ def _map_payload(report: dict[str, Any]) -> dict[str, Any]:
                 safe_preview = {
                     "values": [[_finite_number(value) for value in row] for row in values],
                     "bounds": _preview_bounds_wgs84(preview, pair.get("epsg")),
+                    "stride_cells": int(preview.get("stride_cells", 1)) if isinstance(preview.get("stride_cells"), (int, float)) else 1,
                     "support_mask_label": str(preview.get("support_mask_label", ""))[:200],
                 }
         geotiff = pair.get("geotiff_file")
@@ -163,6 +164,7 @@ def _map_payload(report: dict[str, Any]) -> dict[str, Any]:
             "label": f"{pair.get('reference_date', '?')} → {pair.get('secondary_date', '?')} | {pair.get('release_id', 'release unknown')} | {pair.get('status', 'UNKNOWN')}",
             "reference_date": str(pair.get("reference_date", "")),
             "secondary_date": str(pair.get("secondary_date", "")),
+            "interval_days": _finite_number(pair.get("interval_days")),
             "release_id": str(pair.get("release_id", "")),
             "status": str(pair.get("status", "UNKNOWN")),
             "epsg": pair.get("epsg"),
@@ -245,7 +247,7 @@ button{background:#17344c;color:var(--text);border:1px solid #315b79;border-radi
 <div class="field"><label for="pair-select">Acquisition pair</label><select id="pair-select"></select></div>
 <div class="field"><label for="opacity">Displacement overlay opacity</label><input id="opacity" type="range" min="0" max="1" step="0.05" value="0.72"><span id="opacity-value" class="muted">72%</span></div>
 <label class="check"><input id="show-scope-aoi" type="checkbox" checked> Show outer AOI boundary</label><label class="check"><input id="show-aoi" type="checkbox" checked> Show measurement polygon</label><label class="check"><input id="show-reference" type="checkbox" checked> Show reference/background polygon</label><button id="fit-aoi" type="button">Zoom to all polygons</button>
-<div><h2>Magnitude preview</h2><div class="legendbar"></div><div id="raster-range" class="muted">No raster selected</div><p id="transparency-note">Transparent pixels mean no preview value, not zero motion.</p></div>
+<div><h2>Magnitude preview</h2><div class="legendbar"></div><div id="raster-range" class="muted">No raster selected</div><p id="transparency-note">Transparent pixels mean no preview value, not zero motion.</p><p id="preview-pixel-readout" class="muted" role="status" aria-live="polite">Click a coloured raster preview block to inspect its block-median value. This is not a native-grid pixel measurement.</p></div>
 <div><h2>Selected interval</h2><p id="pair-label">No pair selected</p><p id="pair-status" class="muted"></p><div class="status-grid">
 <div class="status"><small id="valid-pixels-label">Valid AOI pixels</small><strong id="valid-pixels">—</strong></div>
 <div class="status"><small>Median magnitude</small><strong id="median-magnitude">Unavailable</strong></div>
@@ -350,11 +352,33 @@ if (typeof L === "undefined") {
     transparencyNote.textContent=(pair.preview&&pair.preview.support_mask_label)||"Transparent pixels mean no preview value, not zero motion.";
     const image=imageData(pair.preview);
     if(image){
-      rasterLayer=L.imageOverlay(image.url,pair.preview.bounds,{opacity:Number(el("opacity").value),interactive:false}).addTo(map);
+      rasterLayer=L.imageOverlay(image.url,pair.preview.bounds,{opacity:Number(el("opacity").value),interactive:true}).addTo(map);
+      rasterLayer.on("click",(event)=>{
+        const values=pair.preview.values||[];
+        const bounds=pair.preview.bounds||[];
+        if(!values.length||!values[0]||bounds.length!==2||!bounds[0]||!bounds[1])return;
+        const south=Number(bounds[0][0]),west=Number(bounds[0][1]),north=Number(bounds[1][0]),east=Number(bounds[1][1]);
+        const width=values[0].length,height=values.length;
+        if(!(east>west&&north>south&&width>0&&height>0))return;
+        const col=Math.max(0,Math.min(width-1,Math.floor(((event.latlng.lng-west)/(east-west))*width)));
+        const row=Math.max(0,Math.min(height-1,Math.floor(((north-event.latlng.lat)/(north-south))*height)));
+        const magnitude=values[row][col];
+        const stride=Number(pair.preview.stride_cells)||1;
+        const readout=el("preview-pixel-readout");
+        if(typeof magnitude!=="number"||!Number.isFinite(magnitude)){
+          readout.textContent="No valid preview value at this location. Transparent/missing preview cells are not zero movement.";
+          return;
+        }
+        const rate=typeof pair.interval_days==="number"&&pair.interval_days>0?magnitude/pair.interval_days*100:null;
+        const rateText=rate===null?"interval-average rate unavailable":rate.toFixed(2)+" cm/day interval-average rate";
+        readout.textContent="Preview block median: "+magnitude.toFixed(3)+" m displacement; "+rateText+". Date interval: "+pair.reference_date+" → "+pair.secondary_date+" ("+(pair.interval_days===null?"unknown":pair.interval_days.toFixed(3))+" days). Aggregation stride: "+stride+" × "+stride+" native-grid cells. Approximate map position; not a native-pixel value or instantaneous velocity. Use the linked native-grid GeoTIFF for authoritative pixel inspection.";
+      });
+      el("preview-pixel-readout").textContent="Click a coloured raster preview block to inspect its median displacement and interval-average rate. Preview only; the native-grid GeoTIFF is authoritative.";
       el("raster-range").textContent="Preview magnitude range: "+image.lo.toFixed(3)+"–"+image.hi.toFixed(3)+" m";
       el("map-message").textContent="Showing downsampled displacement magnitude for "+pair.reference_date+" → "+pair.secondary_date+".";
     }else{
       el("raster-range").textContent="No valid raster preview";
+      el("preview-pixel-readout").textContent="No preview cells are available for this interval. Missing preview values are not zero movement.";
       el("map-message").textContent="AOI shown, but no preview raster is available for this interval. Check pair status and valid-pixel support.";
     }
   }
