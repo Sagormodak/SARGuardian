@@ -33,6 +33,7 @@ class AOIRequest:
     schema_version: str
     aoi_wkt: str
     scope_aoi_wkt: str | None
+    candidate_context: dict[str, Any] | None
     aoi_crs: str
     start_date: date
     end_date: date
@@ -65,6 +66,7 @@ class AOIRequest:
                 {"type": "Polygon", "wkt": self.scope_aoi_wkt, "crs": self.aoi_crs, "role": "outer_selection_boundary"}
                 if self.scope_aoi_wkt else None
             ),
+            "candidate_context": self.candidate_context,
             "date_range": {
                 "start": self.start_date.isoformat(),
                 "end": self.end_date.isoformat(),
@@ -111,6 +113,53 @@ class AOIRequest:
             },
             "request_sha256": self.request_sha256,
         }
+
+
+def _validate_candidate_context(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise AOIRequestError("CANDIDATE_CONTEXT_MUST_BE_OBJECT")
+    if value.get("source") != "FIND_DISPLACEMENTS" or value.get("product_type") != "GOFF":
+        raise AOIRequestError("CANDIDATE_CONTEXT_MUST_BE_GOFF_FIND_DISPLACEMENTS")
+    candidate_id = value.get("candidate_id")
+    evidence_class = value.get("evidence_class")
+    if not isinstance(candidate_id, str) or not candidate_id.strip() or len(candidate_id) > 160:
+        raise AOIRequestError("CANDIDATE_CONTEXT_ID_INVALID")
+    if not isinstance(evidence_class, str) or "GOFF" not in evidence_class or len(evidence_class) > 160:
+        raise AOIRequestError("CANDIDATE_CONTEXT_EVIDENCE_CLASS_INVALID")
+    for key, limit in (("metric", 120), ("status", 100), ("interpretation", 500)):
+        text = value.get(key, "")
+        if not isinstance(text, str) or len(text) > limit:
+            raise AOIRequestError(f"CANDIDATE_CONTEXT_{key.upper()}_INVALID")
+    for key, maximum in (
+        ("support_pairs", 10_000_000),
+        ("pixel_count", 10_000_000),
+        ("geometry_original_vertices", 100_000),
+        ("geometry_suggested_vertices", 500),
+    ):
+        number = value.get(key)
+        if isinstance(number, bool) or not isinstance(number, int) or number < 0 or number > maximum:
+            raise AOIRequestError(f"CANDIDATE_CONTEXT_{key.upper()}_INVALID")
+    area = value.get("approx_area_m2", 0)
+    if isinstance(area, bool) or not isinstance(area, (int, float)) or not math.isfinite(float(area)) or area < 0:
+        raise AOIRequestError("CANDIDATE_CONTEXT_AREA_INVALID")
+    if not isinstance(value.get("geometry_simplified"), bool):
+        raise AOIRequestError("CANDIDATE_CONTEXT_SIMPLIFICATION_FLAG_INVALID")
+    product_ids = value.get("product_ids", [])
+    intervals = value.get("pair_intervals", [])
+    if not isinstance(product_ids, list) or len(product_ids) > 30 or any(not isinstance(item, str) or len(item) > 512 for item in product_ids):
+        raise AOIRequestError("CANDIDATE_CONTEXT_PRODUCT_IDS_INVALID")
+    if not isinstance(intervals, list) or len(intervals) > 30 or any(not isinstance(item, dict) for item in intervals):
+        raise AOIRequestError("CANDIDATE_CONTEXT_PAIR_INTERVALS_INVALID")
+    try:
+        if len(json.dumps(value, separators=(",", ":"), allow_nan=False)) > 20_000:
+            raise AOIRequestError("CANDIDATE_CONTEXT_TOO_LARGE")
+    except (TypeError, ValueError) as exc:
+        if isinstance(exc, AOIRequestError):
+            raise
+        raise AOIRequestError("CANDIDATE_CONTEXT_NOT_JSON_SAFE") from exc
+    return value
 
 
 def _strict_date(value: Any, field: str) -> date:
@@ -297,10 +346,13 @@ def validate_aoi_request(payload: dict[str, Any]) -> AOIRequest:
     if isinstance(neighbours, bool) or not isinstance(neighbours, int) or not (1 <= neighbours <= window * window):
         raise AOIRequestError("COHERENCE_NEIGHBOURS_OUT_OF_RANGE")
 
+    candidate_context = _validate_candidate_context(payload.get("candidate_context"))
+
     normalized = {
         "schema_version": REQUEST_SCHEMA,
         "aoi": {"wkt": aoi_wkt, "crs": "EPSG:4326", "role": "measurement"},
         "scope_aoi": {"wkt": scope_aoi_wkt, "crs": "EPSG:4326", "role": "outer_selection_boundary"} if scope_aoi_wkt else None,
+        "candidate_context": candidate_context,
         "date_range": {"start": start_date.isoformat(), "end": end_date.isoformat(), "inclusive": True},
         "hazard_mode": hazard_mode,
         "analysis_mode": analysis_mode,
@@ -323,6 +375,7 @@ def validate_aoi_request(payload: dict[str, Any]) -> AOIRequest:
         schema_version=REQUEST_SCHEMA,
         aoi_wkt=aoi_wkt,
         scope_aoi_wkt=scope_aoi_wkt,
+        candidate_context=candidate_context,
         aoi_crs="EPSG:4326",
         start_date=start_date,
         end_date=end_date,
