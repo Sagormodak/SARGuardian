@@ -104,6 +104,18 @@ def _map_payload(report: dict[str, Any]) -> dict[str, Any]:
     except Exception as exc:
         ring, aoi_error = [], f"AOI polygon could not be rendered ({type(exc).__name__})"
 
+    reference = request.get("reference", {}) if isinstance(request, dict) else {}
+    reference_wkt = reference.get("polygon_wkt", "") if isinstance(reference, dict) else ""
+    reference_warning = str(reference.get("warning", ""))[:500] if isinstance(reference, dict) else ""
+    try:
+        reference_ring = (
+            [[float(lon), float(lat)] for lon, lat in parse_polygon_wkt(reference_wkt)]
+            if reference_wkt else []
+        )
+        reference_error = None
+    except Exception as exc:
+        reference_ring, reference_error = [], f"Reference polygon could not be rendered ({type(exc).__name__})"
+
     dates = request.get("date_range", {}) if isinstance(request, dict) else {}
     safe_pairs: list[dict[str, Any]] = []
     source_pairs = report.get("pairs", []) if isinstance(report, dict) else []
@@ -159,6 +171,9 @@ def _map_payload(report: dict[str, Any]) -> dict[str, Any]:
         "aoi_ring_lon_lat": ring,
         "aoi_error": aoi_error,
         "aoi_geometry_note": geometry_note_raw,
+        "reference_ring_lon_lat": reference_ring,
+        "reference_error": reference_error,
+        "reference_warning": reference_warning,
         "start_date": str(dates.get("start", "?")) if isinstance(dates, dict) else "?",
         "end_date": str(dates.get("end", "?")) if isinstance(dates, dict) else "?",
         "structural_status": str(report.get("structural_status", "UNKNOWN")),
@@ -196,7 +211,7 @@ header{display:flex;align-items:end;justify-content:space-between;gap:16px;flex-
 button{background:#17344c;color:var(--text);border:1px solid #315b79;border-radius:7px;padding:9px;cursor:pointer}button:hover{background:#214a68}.check{display:flex;gap:8px;align-items:center}.status-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}.status{border:1px solid var(--line);border-radius:8px;padding:8px;overflow-wrap:anywhere}.status small{display:block;color:var(--muted);font-size:11px}.status strong{font-size:12px}.warn{border-left:3px solid var(--warn);padding:8px 10px;margin-top:12px}.legendbar{height:10px;border-radius:99px;background:linear-gradient(90deg,#274c77,#38b2ac,#f6d365,#d73027);margin:6px 0}.hidden{display:none!important}
 @media(max-width:920px){main{padding:12px}.layout{grid-template-columns:minmax(0,1fr);width:100%;max-width:100%}#map{height:55vh;min-height:340px}}
 </style></head><body><main>
-<header><div><div class="eyebrow">SARGuardian / Know Place Analysis</div><h1>Interactive AOI map</h1><p>AOI: <strong>__AOI__</strong></p><p class="muted __GEOMETRY_NOTE_CLASS__" id="geometry-note">__GEOMETRY_NOTE__</p><p>Inclusive UTC window: __START__ → __END__</p></div><div class="muted">Map preview is for presentation and quality review, not scientific remeasurement.</div></header>
+<header><div><div class="eyebrow">SARGuardian / Know Place Analysis</div><h1>Interactive measurement map</h1><p>Measurement polygon: <strong>__AOI__</strong></p><p class="muted __GEOMETRY_NOTE_CLASS__" id="geometry-note">__GEOMETRY_NOTE__</p><p id="reference-note" class="muted">Reference polygon: __REFERENCE_NOTE__</p><p>Inclusive UTC window: __START__ → __END__</p></div><div class="muted">Map preview is for presentation and quality review, not scientific remeasurement.</div></header>
 <div class="status-grid">
 <div class="status"><small>Structural status</small><strong id="structural-status"></strong></div>
 <div class="status"><small>Measurement status</small><strong id="measurement-status"></strong></div>
@@ -209,7 +224,7 @@ button{background:#17344c;color:var(--text);border:1px solid #315b79;border-radi
 <aside class="panel controls">
 <div class="field"><label for="pair-select">Acquisition pair</label><select id="pair-select"></select></div>
 <div class="field"><label for="opacity">Displacement overlay opacity</label><input id="opacity" type="range" min="0" max="1" step="0.05" value="0.72"><span id="opacity-value" class="muted">72%</span></div>
-<label class="check"><input id="show-aoi" type="checkbox" checked> Show AOI boundary</label><button id="fit-aoi" type="button">Zoom to AOI</button>
+<label class="check"><input id="show-aoi" type="checkbox" checked> Show measurement polygon</label><label class="check"><input id="show-reference" type="checkbox" checked> Show reference/background polygon</label><button id="fit-aoi" type="button">Zoom to both polygons</button>
 <div><h2>Magnitude preview</h2><div class="legendbar"></div><div id="raster-range" class="muted">No raster selected</div><p id="transparency-note">Transparent pixels mean no preview value, not zero motion.</p></div>
 <div><h2>Selected interval</h2><p id="pair-label">No pair selected</p><p id="pair-status" class="muted"></p><div class="status-grid">
 <div class="status"><small id="valid-pixels-label">Valid AOI pixels</small><strong id="valid-pixels">—</strong></div>
@@ -227,6 +242,7 @@ const mapData = __MAP_DATA__;
 const el = (id) => document.getElementById(id);
 el("structural-status").textContent = mapData.structural_status;
 el("measurement-status").textContent = mapData.measurement_status;
+el("reference-note").textContent = mapData.reference_error || (mapData.reference_warning || (mapData.reference_ring_lon_lat.length ? "Reference polygon selected; its stability is not independently verified." : "No separate reference polygon supplied; local-context assumptions apply."));
 const paperStatusDisplay = {
   "PARTIAL_AUTHOR_SITE_AND_FOOTPRINT_NUMERICS_MATCH_DISPLACEMENT_NULL_STILL_UNVERIFIED": "PARTIAL — numeric checks match; original null-generator identity unverified"
 };
@@ -243,12 +259,20 @@ if (typeof L === "undefined") {
     attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
   }).addTo(map);
   let aoiLayer = null;
+  let referenceLayer = null;
   if (Array.isArray(mapData.aoi_ring_lon_lat) && mapData.aoi_ring_lon_lat.length >= 4) {
     aoiLayer = L.polygon(mapData.aoi_ring_lon_lat.map((point)=>[point[1],point[0]]), {
       color:"#ffcc66", weight:3, fillColor:"#ffcc66", fillOpacity:0.08
     }).addTo(map);
-    map.fitBounds(aoiLayer.getBounds().pad(0.14));
-  } else map.setView([20,0],2);
+  }
+  if (Array.isArray(mapData.reference_ring_lon_lat) && mapData.reference_ring_lon_lat.length >= 4) {
+    referenceLayer = L.polygon(mapData.reference_ring_lon_lat.map((point)=>[point[1],point[0]]), {
+      color:"#38bdf8", weight:3, dashArray:"7 5", fillColor:"#38bdf8", fillOpacity:0.05
+    }).addTo(map);
+  }
+  const geometryLayers = [aoiLayer, referenceLayer].filter(Boolean);
+  if (geometryLayers.length) map.fitBounds(L.featureGroup(geometryLayers).getBounds().pad(0.14));
+  else map.setView([20,0],2);
 
   let rasterLayer = null;
   const pairSelect = el("pair-select");
@@ -318,7 +342,16 @@ if (typeof L === "undefined") {
     if(el("show-aoi").checked&&!map.hasLayer(aoiLayer))aoiLayer.addTo(map);
     else if(!el("show-aoi").checked&&map.hasLayer(aoiLayer))map.removeLayer(aoiLayer);
   });
-  el("fit-aoi").addEventListener("click",()=>aoiLayer?map.fitBounds(aoiLayer.getBounds().pad(0.14)):map.setView([20,0],2));
+  el("show-reference").addEventListener("change",()=>{
+    if(!referenceLayer)return;
+    if(el("show-reference").checked&&!map.hasLayer(referenceLayer))referenceLayer.addTo(map);
+    else if(!el("show-reference").checked&&map.hasLayer(referenceLayer))map.removeLayer(referenceLayer);
+  });
+  el("fit-aoi").addEventListener("click",()=>{
+    const visibleLayers=[aoiLayer,referenceLayer].filter((layer)=>layer&&map.hasLayer(layer));
+    if(visibleLayers.length)map.fitBounds(L.featureGroup(visibleLayers).getBounds().pad(0.14));
+    else map.setView([20,0],2);
+  });
   if(mapData.pairs.length){pairSelect.value="0";renderPair(0);}
 }
 </script></body></html>"""
@@ -327,10 +360,11 @@ if (typeof L === "undefined") {
         "__AOI__": aoi_label,
         "__GEOMETRY_NOTE__": geometry_note,
         "__GEOMETRY_NOTE_CLASS__": geometry_note_class,
+        "__REFERENCE_NOTE__": html.escape(reference_warning or ("Separate reference polygon; stability not independently verified." if reference_wkt else "No separate reference polygon supplied.")),
         "__START__": start,
         "__END__": end,
     }
-    return re.sub(r"__(?:MAP_DATA|AOI|GEOMETRY_NOTE|GEOMETRY_NOTE_CLASS|START|END)__", lambda match: replacements[match.group(0)], template)
+    return re.sub(r"__(?:MAP_DATA|AOI|GEOMETRY_NOTE|GEOMETRY_NOTE_CLASS|REFERENCE_NOTE|START|END)__", lambda match: replacements[match.group(0)], template)
 
 
 def write_interactive_map(report: dict[str, Any], output_path: str | Path) -> Path:
