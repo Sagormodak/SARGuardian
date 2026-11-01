@@ -905,6 +905,72 @@ function renderPublicCandidateCards(family=activeFamily){
   new maplibregl.Popup({offset:14}).setLngLat([lon,lat]).setHTML('<strong>'+esc(button.dataset.candidateName)+'</strong><br>'+(candidateFamily==='GUNW'?'GUNW pairwise LOS anomaly':'GOFF Radar-image offset pattern')+'<br>Review evidence only; not confirmed ground movement or a hazard.').addTo(M);
  }));
 }
+function simplifyCandidateOpenPath(points,tolerance){
+ const keep=new Uint8Array(points.length);if(points.length<2)return points;keep[0]=1;keep[points.length-1]=1;
+ const stack=[[0,points.length-1]],tol2=tolerance*tolerance;
+ while(stack.length){const [start,end]=stack.pop();if(end<=start+1)continue;const a=points[start],b=points[end],dx=b[0]-a[0],dy=b[1]-a[1],length2=dx*dx+dy*dy;let best=-1,bestDistance=tol2;
+  for(let i=start+1;i<end;i++){const p=points[i];let t=length2?((p[0]-a[0])*dx+(p[1]-a[1])*dy)/length2:0;t=Math.max(0,Math.min(1,t));const px=a[0]+t*dx,py=a[1]+t*dy,dist=(p[0]-px)**2+(p[1]-py)**2;if(dist>bestDistance){bestDistance=dist;best=i;}}
+  if(best>=0){keep[best]=1;stack.push([start,best],[best,end]);}
+ }
+ return points.filter((_,index)=>keep[index]);
+}
+function simplifyCandidateClosedRing(closedRing,maxClosedVertices=500){
+ const points=closedRing.slice(0,-1);if(points.length+1<=maxClosedVertices)return closedRing;
+  const extendedCandidates=[...repeated.slice(0,20),...single.slice(0,10)];
+  if(extendedRoot)extendedRoot.innerHTML=extendedCandidates.map((f,index)=>{const p=f.properties||{};const metricLabel=p.metric==='GUNW_LOS_DISPLACEMENT_MM'?'GUNW pairwise LOS anomaly':p.metric==='GOFF_SLANT_RANGE_OFFSET_MM'?'GOFF slant-range offset anomaly':'GOFF along-track offset anomaly';const floors=Array.isArray(p.candidate_local_floor_by_pair)?p.candidate_local_floor_by_pair.filter(x=>x.status==='MEASURED_CANDIDATE_REGION_LOCAL_FLOOR'):[];const floorText=floors.length?floors.map(x=>x.reference_date+'→'+x.secondary_date+': '+Number(x.local_detection_floor_3sigma_mm_day).toFixed(2)+' mm/day').join(' · '):'Local floor withheld: insufficient nearby valid background pixels';const season=p.candidate_seasonality_inventory||{};const seasonText='Season coverage: '+Number(season.dry_season_pairs||0)+' dry · '+Number(season.monsoon_pairs||0)+' monsoon pair(s) — '+String(season.status||'NOT_REPORTED')+' (descriptive only)';const phase=p.candidate_phase_ceiling_review||{};const phaseText='GUNW λ/4 review: '+String(phase.status||'NOT_REPORTED')+' · '+(phase.threshold_mm==null?'—':Number(phase.threshold_mm).toFixed(1)+' mm');const measureButton=p.product_type==='GOFF'&&f.geometry&&f.geometry.type==='Polygon'?'<button type="button" class="candidate-focus candidate-measure" data-measure-candidate-index="'+index+'">Use as suggested measurement area</button>':'<small>GUNW LOS candidates require a separate LOS measurement workflow; not passed to GOFF analysis.</small>';return '<div class="metricitem"><div class="label">'+esc(metricLabel)+'</div><strong>'+esc(p.status||'UNCONFIRMED')+'</strong><small>Pair support '+esc(p.support_pairs||0)+' · pixel count '+esc(p.pixel_count||0)+' · approximate area '+esc(p.approx_area_m2||0)+' m² · exploratory score '+esc(p.max_robust_score||0)+' (not probability)</small><small>Candidate-local 3σ floor: '+esc(floorText)+'</small><small>'+esc(seasonText)+'</small><small>'+esc(phaseText)+'</small><small>Cross-geometry: '+esc(p.candidate_cross_geometry_status||'NOT_REPORTED')+'</small><small>'+esc(p.interpretation||'Candidate only; not validated movement.')+'</small>'+measureButton+'</div>';}).join('')||'<p class="muted">No extended feature records were produced.</p>';
+  if(extendedRoot)extendedRoot.querySelectorAll('[data-measure-candidate-index]').forEach(button=>button.addEventListener('click',()=>{const feature=extendedCandidates[Number(button.dataset.measureCandidateIndex)];if(feature)transferGoffCandidate(feature);}));
+ const origin=points[0];let pivot=1,pivotDistance=-1;
+ for(let i=1;i<points.length;i++){const d=(points[i][0]-origin[0])**2+(points[i][1]-origin[1])**2;if(d>pivotDistance){pivotDistance=d;pivot=i;}}
+ if(pivotDistance<=0)return null;
+ const firstPath=points.slice(0,pivot+1),secondPath=[...points.slice(pivot),origin];
+ const xs=points.map(p=>p[0]),ys=points.map(p=>p[1]);
+ const maxTolerance=Math.hypot(Math.max(...xs)-Math.min(...xs),Math.max(...ys)-Math.min(...ys));
+ let lo=0,hi=Math.max(maxTolerance,1e-12),best=null;
+ for(let iteration=0;iteration<28;iteration++){
+  const tolerance=(lo+hi)/2;
+  const a=simplifyCandidateOpenPath(firstPath,tolerance),b=simplifyCandidateOpenPath(secondPath,tolerance);
+  const open=[...a.slice(0,-1),...b.slice(0,-1)];
+  if(open.length+1<=maxClosedVertices&&open.length>=3){best=[...open,open[0]];hi=tolerance;}else lo=tolerance;
+ }
+ return best;
+}
+function candidateFeatureMeasurementGeometry(feature){
+ const geometry=feature&&feature.geometry;
+ if(!geometry||geometry.type!=='Polygon'||!Array.isArray(geometry.coordinates)||geometry.coordinates.length!==1)return null;
+ const source=geometry.coordinates[0];if(!Array.isArray(source)||source.length<4)return null;
+ let ring=source.map(point=>Array.isArray(point)&&point.length>=2?[Number(point[0]),Number(point[1])]:[NaN,NaN]);
+ if(ring.some(point=>!Number.isFinite(point[0])||!Number.isFinite(point[1])))return null;
+ const first=ring[0],last=ring[ring.length-1];
+ if(Math.abs(first[0]-last[0])>1e-10||Math.abs(first[1]-last[1])>1e-10)ring.push([...first]);
+ const originalVertices=ring.length;let simplified=false;
+ if(ring.length>500){ring=simplifyCandidateClosedRing(ring,500);if(!ring)return null;simplified=true;}
+ if(ring.length<4||ring.length>500)return null;
+ return {wkt:'POLYGON (('+ring.map(point=>point[0].toFixed(8)+' '+point[1].toFixed(8)).join(', ')+'))',simplified,originalVertices,vertices:ring.length};
+}
+function transferGoffCandidate(feature){
+ const p=feature&&feature.properties||{};
+ if(p.product_type!=='GOFF'||!feature.geometry||feature.geometry.type!=='Polygon')return false;
+ const geometry=candidateFeatureMeasurementGeometry(feature);
+ if(!geometry){window.alert('This GOFF candidate boundary cannot be safely simplified into an editable polygon. Draw the measurement area manually in Known Place Analysis.');return false;}
+ const transfer={
+  schemaVersion:'sarguardian-known-place-candidate/1.0',
+  measurementWkt:geometry.wkt,
+  candidate:{
+   candidateId:String(p.candidate_id||'GOFF candidate').slice(0,160),
+   productType:'GOFF',metric:String(p.metric||'GOFF_OFFSET_ANOMALY').slice(0,120),
+   evidenceClass:String(p.evidence_class||'GOFF_OFFSET_ANOMALY_NOT_GROUND_MOTION').slice(0,160),
+   status:String(p.status||'UNCONFIRMED').slice(0,100),supportPairs:Number(p.support_pairs||0),
+   pixelCount:Number(p.pixel_count||0),approximateAreaM2:Number(p.approx_area_m2||0),
+   productIds:Array.isArray(p.product_ids)?p.product_ids.slice(0,30).map(String):[],
+   pairIntervals:Array.isArray(p.pair_intervals)?p.pair_intervals.slice(0,30):[],
+   geometryOriginalVertices:geometry.originalVertices,geometrySuggestedVertices:geometry.vertices,
+   geometrySimplified:geometry.simplified,
+   interpretation:String(p.interpretation||'Offset anomaly candidate; not measured ground motion.').slice(0,500)
+  }
+ };
+ try{window.sessionStorage.setItem('sarguardian.knownPlaceCandidate.v1',JSON.stringify(transfer));window.location.assign('/landslide/known-place-analysis?candidate=1');return true;}
+ catch(error){window.alert('The candidate could not be handed to Known Place Analysis in this browser session. Please draw the measurement polygon manually.');return false;}
+}
 function renderAoiCandidateScreen(){
  const root=$('aoiCandidateList'),status=$('aoiCandidateStatus'),r=manifest.aoi_displacement_candidates||{},legacy=manifest.aoi_wide_displacement_screen||{};if(!root||!status)return;
  const features=Array.isArray(r.features)?r.features:[],legacyFeatures=((legacy.candidate_feature_collection||{}).features||[]),repeated=features.filter(f=>(f.properties||{}).status==='REPEATED_SPATIAL_CANDIDATE'),single=features.filter(f=>(f.properties||{}).status==='SINGLE_PAIR_CANDIDATE_UNCONFIRMED'),goffFeatures=features.filter(f=>(f.properties||{}).product_type==='GOFF'),gunwFeatures=features.filter(f=>(f.properties||{}).product_type==='GUNW'),countStatus=(rows,status)=>rows.filter(f=>(f.properties||{}).status===status).length,legacyCount=Number(legacy.candidate_count||legacyFeatures.length||0);
