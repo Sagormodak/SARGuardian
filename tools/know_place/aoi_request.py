@@ -80,7 +80,7 @@ class AOIRequest:
                     if self.background_correction_policy == "local_context_component_median"
                     else "Background correction is not applied."
                     if self.background_correction_policy == "none"
-                    else "Explicit external reference polygon; validity and spatial support are checked during analysis."
+                    else "Independent user-drawn background polygon; geometry and grid support are checked, but stability is not independently verified."
                 ),
             },
             "geometry_policy": {
@@ -223,8 +223,8 @@ def validate_aoi_request(payload: dict[str, Any]) -> AOIRequest:
         reference_wkt = _canonical_wkt(reference_config.get("polygon_wkt"), "reference")
     elif reference_config.get("polygon_wkt") is not None:
         raise AOIRequestError("REFERENCE_POLYGON_NOT_ALLOWED_FOR_SELECTED_POLICY")
-    # Full geometric containment/intersection is revalidated when the ROI is
-    # rasterized on the actual source grid; this parser checks syntax only.
+    # Independent measurement/reference disjointness and native-grid support
+    # are revalidated after the exact GOFF grid has been inspected.
     try:
         reference_buffer_m = float(reference_config.get("fallback_buffer_m", 2000.0))
     except (TypeError, ValueError, OverflowError) as exc:
