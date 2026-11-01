@@ -11,6 +11,7 @@ on:
     branches:
       - main
       - feat/streaming-science-pipeline
+      - feat/known-place-independent-reference-20261102
     paths:
       - "tools/**"
       - "tests/**"
