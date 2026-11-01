@@ -356,6 +356,13 @@ def discover_nisar_goff(request: AOIRequest) -> tuple[list[dict[str, Any]], dict
 
     try:
         requested_maturities = tuple(request.allowed_maturities)
+        # When a separate background polygon is supplied, search the envelope
+        # spanning both geometries so ASF discovery cannot omit a granule that
+        # covers the measurement area but not the selected reference (or vice versa).
+        search_wkt = (
+            polygon_pair_envelope_wkt(request.aoi_wkt, request.reference_wkt, 32645)
+            if request.reference_wkt else request.aoi_wkt
+        )
         # Query exact maturity-specific GOFF collections. Combining processingLevel
         # with dataMaturity can map both aliases to conflicting collection names.
         short_name_filter: list[str]
@@ -366,7 +373,7 @@ def discover_nisar_goff(request: AOIRequest) -> tuple[list[dict[str, Any]], dict
             dataset="NISAR",
             shortName=short_name_filter,
             collectionAlias=False,
-            intersectsWith=request.aoi_wkt,
+            intersectsWith=search_wkt,
             start=f"{request.start_date.isoformat()}T00:00:00Z",
             end=f"{request.end_date.isoformat()}T23:59:59Z",
             mainBandPolarization=request.polarization,
@@ -470,7 +477,10 @@ def discover_nisar_goff(request: AOIRequest) -> tuple[list[dict[str, Any]], dict
         "query": {
             "dataset": "NISAR",
             "processing_level": "GOFF",
-            "intersects_wkt_sha256": _sha256_text(request.aoi_wkt),
+            "intersects_wkt_sha256": _sha256_text(search_wkt),
+            "catalog_search_geometry": "measurement_reference_combined_envelope" if request.reference_wkt else "measurement_polygon",
+            "measurement_wkt_sha256": _sha256_text(request.aoi_wkt),
+            "reference_wkt_sha256": _sha256_text(request.reference_wkt) if request.reference_wkt else None,
             "start_utc": f"{request.start_date.isoformat()}T00:00:00Z",
             "end_utc": f"{request.end_date.isoformat()}T23:59:59Z",
             "main_band_polarization": request.polarization,
