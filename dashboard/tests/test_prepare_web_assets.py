@@ -1010,6 +1010,7 @@ VERDICT: NOT TESTABLE. No two consecutive pair intervals share the same complete
         self.assertIn("function hasRenderableFamily(family)", viewer)
         self.assertIn("function firstRenderableIndex(family)", viewer)
         self.assertIn("@media(max-width:760px){.public-explainer-grid{grid-template-columns:1fr}", viewer)
+        self.assertIn(".layout,body[data-dashboard-mode=public] .layout,body[data-dashboard-mode=evidence] .layout", viewer)
         self.assertIn("@media(max-width:430px){.public-family-switch", viewer)
         self.assertIn("Locate on map", viewer)
         self.assertIn('data-public-family="GUNW"', viewer)
