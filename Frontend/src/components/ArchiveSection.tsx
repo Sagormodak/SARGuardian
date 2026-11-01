@@ -2,12 +2,60 @@ import { useEffect, useState } from 'react';
 import type { User } from 'firebase/auth';
 import { listDisplacementJobs, type DisplacementJob } from '../api/catalog';
 import { ScientificResults } from '../../landslide/ui/ScientificResults';
+import { hasScientificResultOutputs } from '../../landslide/ui/resultAvailability';
 
 function formatDate(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? 'Date not available'
     : date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+
+export function ArchiveJobCard({ job, user, onOpenWorkspace }: {
+  job: DisplacementJob;
+  user: User;
+  onOpenWorkspace: () => void;
+}) {
+  const isActive = ['queued', 'dispatching', 'running'].includes(job.state);
+  const hasResults = job.state === 'succeeded' && hasScientificResultOutputs(job);
+
+  return (
+    <article className="archive-item">
+      <div className="archive-item-main">
+        <div className="archive-item-topline">
+          <span className={`archive-state archive-state-${job.state}`}>{job.state.replace(/_/g, ' ')}</span>
+          <span className="archive-job-id">Job {job.id.slice(0, 8)}</span>
+        </div>
+        <h3>{job.place_name || 'AOI-wide displacement analysis'}</h3>
+        <p>{formatDate(job.start_date)} – {formatDate(job.end_date)}</p>
+        <small>Updated {formatDate(job.updated_at)} · {job.stage}</small>
+      </div>
+      <div className="archive-item-actions">
+        {isActive && (
+          <button className="section-action secondary" type="button" onClick={onOpenWorkspace}>Open processing</button>
+        )}
+        {hasResults && <span className="archive-result-ready">Verified outputs ready</span>}
+        {job.state === 'succeeded' && !hasResults && (
+          <span className="archive-result-unavailable">No verified result bundle</span>
+        )}
+      </div>
+      {hasResults && (
+        <details className="archive-item-results">
+          <summary className="archive-results-summary">
+            <span className="archive-results-summary-copy">
+              <strong>Explore saved results</strong>
+              <small>Choose a presentation view or download the complete result package.</small>
+            </span>
+            <span className="archive-results-chevron" aria-hidden="true">⌄</span>
+          </summary>
+          <div className="archive-item-results-content">
+            <ScientificResults job={job} user={user} />
+          </div>
+        </details>
+      )}
+    </article>
+  );
 }
 
 export function ArchiveSection({ user, onSignIn, onOpenWorkspace }: {
@@ -48,15 +96,7 @@ export function ArchiveSection({ user, onSignIn, onOpenWorkspace }: {
   }, [user]);
 
   return (
-    <section className="home-section archive-section" aria-labelledby="archive-title">
-      <div className="home-section-heading">
-        <div>
-          <p className="section-eyebrow">YOUR WORKSPACE</p>
-          <h2 id="archive-title">Analysis archive</h2>
-          <p>Previous tasks are loaded from your signed-in account. No sample jobs are inserted into this list.</p>
-        </div>
-        {user && <button className="text-link-button" type="button" onClick={onOpenWorkspace}>Open analysis workspace</button>}
-      </div>
+    <section className="home-section archive-section" aria-label="Saved analysis jobs">
 
       {state === 'signed-out' && (
         <div className="archive-empty">
@@ -82,23 +122,7 @@ export function ArchiveSection({ user, onSignIn, onOpenWorkspace }: {
       {state === 'ready' && jobs.length > 0 && (
         <div className="archive-list">
           {jobs.slice(0, 5).map((job) => (
-            <article className="archive-item" key={job.id}>
-              <div className="archive-item-main">
-                <div className="archive-item-topline">
-                  <span className={`archive-state archive-state-${job.state}`}>{job.state.replace(/_/g, ' ')}</span>
-                  <span className="archive-job-id">Job {job.id.slice(0, 8)}</span>
-                </div>
-                <h3>{job.place_name || 'AOI-wide displacement analysis'}</h3>
-                <p>{formatDate(job.start_date)} – {formatDate(job.end_date)}</p>
-                <small>Updated {formatDate(job.updated_at)} · {job.stage}</small>
-              </div>
-              <div className="archive-item-actions">
-                {['queued', 'dispatching', 'running'].includes(job.state) && (
-                  <button className="section-action secondary" type="button" onClick={onOpenWorkspace}>Open processing</button>
-                )}
-                <ScientificResults job={job} user={user!} />
-              </div>
-            </article>
+            <ArchiveJobCard key={job.id} job={job} user={user!} onOpenWorkspace={onOpenWorkspace} />
           ))}
         </div>
       )}

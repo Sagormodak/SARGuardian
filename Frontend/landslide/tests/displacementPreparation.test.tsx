@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { DisplacementJobStatus, DisplacementPreparation, JOB_STATUS_POLL_MS } from '../ui/DisplacementPreparation';
 import { chooseAccountJob } from '../engine/displacementJobSelection';
 import { ScientificResults } from '../ui/ScientificResults';
+import { ArchiveJobCard } from '../../src/components/ArchiveSection';
 import { countCatalogGranules, ELAPSED_TICK_MS, formatElapsed } from '../ui/processingStatus';
 import { prepareInvestigation } from '../engine/investigation';
 import { isLandslideDisplacementRoute, LANDSLIDE_DISPLACEMENT_PATH, LANDSLIDE_PATH, LANDSLIDE_RESULTS_PATH, navigatePath } from '../../src/routing';
@@ -26,6 +27,39 @@ describe('dashboard opens in a new same-origin tab', () => {
     expect(html).toContain('Scientific Evidence');
     expect(html).not.toContain('Load dashboard in Processing');
     expect(html).not.toContain('<iframe');
+  });
+});
+
+
+describe('archive result disclosure layout', () => {
+  it('keeps each archived result selector collapsed until the user opens that job', () => {
+    const job = {
+      id: 'archive-job-1234',
+      state: 'succeeded',
+      stage: 'completed',
+      place_name: 'Bhote Koshi AOI',
+      start_date: '2026-07-07',
+      end_date: '2026-09-12',
+      updated_at: '2026-09-13T10:00:00Z',
+      result_summary: {
+        web_dashboard: { status: 'PASS' },
+        storage_verification: { status: 'PASS', remote_folder_id: 'private-drive-folder-123' },
+        artifacts: [{ path: 'aoi-derived-results.zip' }],
+      },
+    } as never;
+
+    const html = renderToStaticMarkup(
+      <ArchiveJobCard job={job} user={{ getIdToken: vi.fn() } as never} onOpenWorkspace={() => {}} />,
+    );
+
+    expect(html).toContain('<details class="archive-item-results">');
+    expect(html).not.toContain('<details class="archive-item-results" open');
+    expect(html).toContain('Explore saved results');
+    expect(html).toContain('How would you like to explore this result?');
+    expect(html).toContain('Download complete result package');
+    expect(html).not.toContain('Open verified Drive archive');
+    expect(html).not.toContain('https://drive.google.com/drive/folders/');
+    expect(html).not.toContain('private-drive-folder-123');
   });
 });
 
