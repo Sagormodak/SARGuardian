@@ -11,6 +11,7 @@ import {
 } from './catalog';
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
 });
@@ -18,26 +19,75 @@ afterEach(() => {
 describe('Authenticated interactive dashboard API contract', () => {
   const user = { getIdToken: vi.fn().mockResolvedValue('firebase-id-token') };
 
+  const healthyResponse = () => ({
+    ok: true,
+    status: 200,
+    headers: { get: vi.fn().mockReturnValue('application/json; charset=utf-8') },
+    json: async () => ({ status: 'ok', service: 'sarguardian-catalogue-api' }),
+  });
+
   it('sends the Firebase token and the same restricted Google Maps browser key as AOI selection', async () => {
     vi.stubEnv('VITE_GOOGLE_MAPS_API_KEY', 'AIzaSyFakeRestrictedKey123456789012345');
     const html = '<!doctype html><html><body>dashboard</body></html>';
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      headers: { get: vi.fn().mockReturnValue('text/html; charset=utf-8') },
-      text: async () => html,
-    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(healthyResponse())
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: { get: vi.fn().mockReturnValue('text/html; charset=utf-8') },
+        text: async () => html,
+      });
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(getInteractiveDashboardHtml('736bd4e6-8963-43be-a916-bc62336c8557', user)).resolves.toBe(html);
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(fetchMock.mock.calls[0][1].headers).toEqual({
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/health');
+    expect(fetchMock.mock.calls[0][1].cache).toBe('no-store');
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      'http://localhost:8000/api/displacement-jobs/736bd4e6-8963-43be-a916-bc62336c8557/dashboard',
+    );
+    expect(fetchMock.mock.calls[1][1].headers).toEqual({
       Authorization: 'Bearer firebase-id-token',
       Accept: 'text/html',
       'X-SARGuardian-Google-Maps-Key': 'AIzaSyFakeRestrictedKey123456789012345',
     });
-    expect(fetchMock.mock.calls[0][1].cache).toBe('no-store');
+    expect(fetchMock.mock.calls[1][1].cache).toBe('no-store');
   });
+  it('retries the API wake-up after a Render cold-start response before fetching the saved dashboard', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('VITE_GOOGLE_MAPS_API_KEY', 'AIzaSyFakeRestrictedKey123456789012345');
+    const html = '<!doctype html><html><body>dashboard</body></html>';
+    const statuses: string[] = [];
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        headers: { get: vi.fn().mockReturnValue('text/html') },
+      })
+      .mockResolvedValueOnce(healthyResponse())
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: { get: vi.fn().mockReturnValue('text/html; charset=utf-8') },
+        text: async () => html,
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const pending = getInteractiveDashboardHtml(
+      '736bd4e6-8963-43be-a916-bc62336c8557',
+      user,
+      (message) => statuses.push(message),
+    );
+    await vi.runAllTimersAsync();
+
+    await expect(pending).resolves.toBe(html);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/health');
+    expect(fetchMock.mock.calls[1][0]).toBe('http://localhost:8000/health');
+    expect(fetchMock.mock.calls[2][0]).toContain('/api/displacement-jobs/');
+    expect(statuses.some((message) => message.includes('Waking the result service'))).toBe(true);
+    expect(statuses.at(-1)).toContain('Retrieving the saved result');
+  });
+
   it('does not request dashboard HTML when the frontend Maps key is missing', async () => {
     vi.stubEnv('VITE_GOOGLE_MAPS_API_KEY', '');
     const fetchMock = vi.fn();
@@ -56,26 +106,41 @@ describe('Owner-authenticated archived artifact download API contract', () => {
 
   it('streams a retained result bundle through the account API, not a private Drive URL', async () => {
     const bundle = new Blob(['verified result bundle'], { type: 'application/zip' });
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, blob: async () => bundle });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true, status: 200,
+        headers: { get: vi.fn().mockReturnValue('application/json') },
+        json: async () => ({ status: 'ok' }),
+      })
+      .mockResolvedValueOnce({ ok: true, blob: async () => bundle });
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(downloadDisplacementArtifact(jobId, 2, user)).resolves.toBe(bundle);
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(fetchMock.mock.calls[0][0]).toBe(
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/health');
+    expect(fetchMock.mock.calls[1][0]).toBe(
       `http://localhost:8000/api/displacement-jobs/${jobId}/artifacts/2`,
     );
-    expect(fetchMock.mock.calls[0][1].headers).toEqual({
+    expect(fetchMock.mock.calls[1][1].headers).toEqual({
       Authorization: 'Bearer firebase-id-token',
     });
   });
 
   it('surfaces private-storage authorization failures to the Archive UI', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: false,
-      status: 403,
-      json: async () => ({ detail: 'This result belongs to another account.' }),
-    }));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: vi.fn().mockReturnValue('application/json') },
+        json: async () => ({ status: 'ok' }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        json: async () => ({ detail: 'This result belongs to another account.' }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
 
     await expect(downloadDisplacementArtifact(jobId, 0, user))
       .rejects.toThrow('This result belongs to another account.');
