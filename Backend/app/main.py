@@ -4,8 +4,8 @@ import math
 import logging
 import hashlib
 import re
-from io import BytesIO
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
+from tempfile import TemporaryDirectory
 from zipfile import BadZipFile, ZipFile
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime
@@ -51,7 +51,7 @@ from .persistence import (
     PersistenceError,
     get_job_store,
 )
-from science_adapter.upload_to_drive import DriveUploadError, download_private_result
+from science_adapter.upload_to_drive import DriveUploadError, download_private_result, download_private_result_to_path
 
 logger = logging.getLogger(__name__)
 
@@ -1606,39 +1606,46 @@ async def get_displacement_dashboard(
             status_code=503,
             detail="Google Maps is not configured. Check VITE_GOOGLE_MAPS_API_KEY in the frontend deployment.",
         )
-    try:
-        received, data = download_private_result(artifact["drive_file_id"])
-    except DriveUploadError as exc:
-        # The Drive helper intentionally sanitizes provider failures. Log that
-        # safe reason on the server so an operator can distinguish missing
-        # runtime credentials from OAuth, permissions, and file retrieval errors.
-        # Never log the Drive file ID, access token, refresh token, or client secret.
-        logger.warning("Private dashboard Drive retrieval failed for job %s: %s", job_id, exc)
-        raise HTTPException(status_code=503, detail="Private dashboard storage is unavailable. Retry in a moment.") from None
-    if received.get("bytes") != artifact["bytes"] or len(data) != artifact["bytes"] or hashlib.sha256(data).hexdigest() != artifact["sha256"]:
-        raise HTTPException(status_code=409, detail="Stored dashboard bundle no longer matches its verified checksum inventory.")
+    # Stream the ZIP to ephemeral disk and hash it as it arrives. Keeping a
+    # 100 MiB archive in memory while ZipFile and decompressed assets are built
+    # can exceed the Render 512 MiB service limit, especially during retries.
+    with TemporaryDirectory(prefix="sarguardian-dashboard-") as temporary_directory:
+        archive_path = Path(temporary_directory) / "aoi-derived-results.zip"
+        try:
+            received = download_private_result_to_path(
+                artifact["drive_file_id"],
+                archive_path,
+                max_bytes=artifact["bytes"],
+            )
+        except DriveUploadError as exc:
+            # Log only the helper's sanitized reason; never log IDs or tokens.
+            logger.warning("Private dashboard Drive retrieval failed for job %s: %s", job_id, exc)
+            raise HTTPException(status_code=503, detail="Private dashboard storage is unavailable. Retry in a moment.") from None
 
-    try:
-        with ZipFile(BytesIO(data), "r") as archive:
-            names = archive.namelist()
-            if len(names) > 20_000:
-                raise HTTPException(status_code=413, detail="Dashboard bundle contains too many files.")
-            for name in names:
-                item_path = PurePosixPath(name)
-                if name.startswith("/") or "\\" in name or ".." in item_path.parts or "\x00" in name:
-                    raise HTTPException(status_code=409, detail="Dashboard bundle contains an unsafe archive path.")
-            if names.count(DASHBOARD_VIEWER_PATH) != 1 or names.count(DASHBOARD_DATA_PATH) != 1:
-                raise HTTPException(status_code=404, detail="The result package does not contain the interactive dashboard assets.")
-            html_info = archive.getinfo(DASHBOARD_VIEWER_PATH)
-            data_info = archive.getinfo(DASHBOARD_DATA_PATH)
-            if html_info.file_size > MAX_DASHBOARD_HTML_BYTES or data_info.file_size > MAX_DASHBOARD_DATA_BYTES:
-                raise HTTPException(status_code=413, detail="Interactive dashboard assets exceed the safe browser-viewing size.")
-            html = archive.read(html_info).decode("utf-8")
-            dashboard_data = archive.read(data_info).decode("utf-8")
-    except HTTPException:
-        raise
-    except (BadZipFile, KeyError, UnicodeDecodeError, OSError):
-        raise HTTPException(status_code=409, detail="Stored result bundle does not contain a readable dashboard.") from None
+        if received.get("bytes") != artifact["bytes"] or received.get("sha256") != artifact["sha256"]:
+            raise HTTPException(status_code=409, detail="Stored dashboard bundle no longer matches its verified checksum inventory.")
+
+        try:
+            with ZipFile(archive_path, "r") as archive:
+                names = archive.namelist()
+                if len(names) > 20_000:
+                    raise HTTPException(status_code=413, detail="Dashboard bundle contains too many files.")
+                for name in names:
+                    item_path = PurePosixPath(name)
+                    if name.startswith("/") or "\\" in name or ".." in item_path.parts or "\x00" in name:
+                        raise HTTPException(status_code=409, detail="Dashboard bundle contains an unsafe archive path.")
+                if names.count(DASHBOARD_VIEWER_PATH) != 1 or names.count(DASHBOARD_DATA_PATH) != 1:
+                    raise HTTPException(status_code=404, detail="The result package does not contain the interactive dashboard assets.")
+                html_info = archive.getinfo(DASHBOARD_VIEWER_PATH)
+                data_info = archive.getinfo(DASHBOARD_DATA_PATH)
+                if html_info.file_size > MAX_DASHBOARD_HTML_BYTES or data_info.file_size > MAX_DASHBOARD_DATA_BYTES:
+                    raise HTTPException(status_code=413, detail="Interactive dashboard assets exceed the safe browser-viewing size.")
+                html = archive.read(html_info).decode("utf-8")
+                dashboard_data = archive.read(data_info).decode("utf-8")
+        except HTTPException:
+            raise
+        except (BadZipFile, KeyError, UnicodeDecodeError, OSError):
+            raise HTTPException(status_code=409, detail="Stored result bundle does not contain a readable dashboard.") from None
 
     data_marker = '<script src="./dashboard-data.js"></script>'
     if html.count(data_marker) != 1 or "</script" in dashboard_data.lower():

@@ -150,3 +150,68 @@ def test_rejects_incomplete_or_untrusted_google_oauth_configuration() -> None:
             "GOOGLE_DRIVE_REFRESH_TOKEN": "refresh",
             "GOOGLE_DRIVE_FOLDER_ID": "13BIAepPGLlYYmscUlNPeMCdtepYshjT4",
         })
+
+
+class StreamingResponse:
+    def __init__(self, payload: bytes):
+        self.payload = payload
+        self.was_closed = False
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def iter_content(self, chunk_size: int):
+        step = min(chunk_size, 7)
+        for start in range(0, len(self.payload), step):
+            yield self.payload[start:start + step]
+
+    def close(self) -> None:
+        self.was_closed = True
+
+
+class StreamingDriveSession(DriveSession):
+    def __init__(self, payload: bytes):
+        super().__init__()
+        self.response = StreamingResponse(payload)
+        self.download_kwargs = None
+
+    def get(self, _url, **kwargs):
+        self.download_kwargs = kwargs
+        return self.response
+
+
+def test_streams_private_drive_file_to_disk_and_verifies_hash(tmp_path: Path) -> None:
+    payload = b"large-private-result-bundle" * 1000
+    session = StreamingDriveSession(payload)
+    destination = tmp_path / "dashboard.zip"
+    config = drive.DriveConfig("client", "secret", "https://oauth2.googleapis.com/token", "refresh", "13BIAepPGLlYYmscUlNPeMCdtepYshjT4")
+
+    receipt = drive.DriveClient(config=config, session=session).download_file_to_path(
+        "private-file-123456",
+        destination,
+        max_bytes=len(payload),
+    )
+
+    assert destination.read_bytes() == payload
+    assert receipt == {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+    assert session.download_kwargs["stream"] is True
+    assert session.download_kwargs["timeout"] == 300
+    assert session.response.was_closed is True
+
+
+def test_streaming_private_drive_download_enforces_inventory_size_and_removes_partial_file(tmp_path: Path) -> None:
+    payload = b"larger-than-inventory"
+    session = StreamingDriveSession(payload)
+    destination = tmp_path / "dashboard.zip"
+    config = drive.DriveConfig("client", "secret", "https://oauth2.googleapis.com/token", "refresh", "13BIAepPGLlYYmscUlNPeMCdtepYshjT4")
+
+    with pytest.raises(drive.DriveUploadError, match="verified size limit"):
+        drive.DriveClient(config=config, session=session).download_file_to_path(
+            "private-file-123456",
+            destination,
+            max_bytes=4,
+        )
+
+    assert not destination.exists()
+    assert session.response.was_closed is True
+

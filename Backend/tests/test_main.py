@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 from io import BytesIO
 from zipfile import ZipFile
 
@@ -257,10 +258,12 @@ def test_interactive_dashboard_is_returned_only_for_verified_owner_and_inlines_b
             }
 
     monkeypatch.setattr(main_module, "get_job_store", lambda: Store())
-    monkeypatch.setattr(
-        main_module, "download_private_result",
-        lambda drive_id: ({"bytes": len(payload), "id": drive_id}, payload),
-    )
+    def download_bundle_to_disk(_drive_id, destination, *, max_bytes=None):
+        assert max_bytes == len(payload)
+        Path(destination).write_bytes(payload)
+        return {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+
+    monkeypatch.setattr(main_module, "download_private_result_to_path", download_bundle_to_disk)
 
     # Google Maps is supplied by the same restricted browser key used by AOI selection.
     response = authenticated_client().get(f"/api/displacement-jobs/{job_id}/dashboard", headers={"X-SARGuardian-Google-Maps-Key": "AIzaSyFakeRestrictedKey123456789012345"})
@@ -327,11 +330,12 @@ def test_interactive_dashboard_uses_google_maps_key_and_adapter(monkeypatch) -> 
     called = []
     monkeypatch.setattr(main_module, "get_job_store", lambda: Store())
 
-    def download_verified_bundle(*_args):
+    def download_verified_bundle(_drive_id, destination, *, max_bytes=None):
         called.append(True)
-        return {"bytes": len(payload)}, payload
+        Path(destination).write_bytes(payload)
+        return {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
 
-    monkeypatch.setattr(main_module, "download_private_result", download_verified_bundle)
+    monkeypatch.setattr(main_module, "download_private_result_to_path", download_verified_bundle)
     response = authenticated_client().get(f"/api/displacement-jobs/{job_id}/dashboard", headers={"X-SARGuardian-Google-Maps-Key": "AIzaSyFakeRestrictedKey123456789012345"})
 
     assert response.status_code == 200
@@ -365,7 +369,7 @@ def test_interactive_dashboard_requires_maps_key_before_private_download(monkeyp
             }
     called = []
     monkeypatch.setattr(main_module, "get_job_store", lambda: Store())
-    monkeypatch.setattr(main_module, "download_private_result", lambda *_args: called.append(True))
+    monkeypatch.setattr(main_module, "download_private_result_to_path", lambda *_args, **_kwargs: called.append(True))
     response = authenticated_client().get(f"/api/displacement-jobs/{job_id}/dashboard")
     assert response.status_code == 503
     assert "Google Maps is not configured" in response.json()["detail"]
@@ -390,7 +394,7 @@ def test_interactive_dashboard_rejects_unavailable_old_bundle_without_drive_down
 
     called = []
     monkeypatch.setattr(main_module, "get_job_store", lambda: Store())
-    monkeypatch.setattr(main_module, "download_private_result", lambda *_args: called.append(True))
+    monkeypatch.setattr(main_module, "download_private_result_to_path", lambda *_args, **_kwargs: called.append(True))
 
     response = authenticated_client().get(f"/api/displacement-jobs/{job_id}/dashboard")
 
@@ -423,10 +427,11 @@ def test_interactive_dashboard_rejects_drive_checksum_mismatch(monkeypatch) -> N
             }
 
     monkeypatch.setattr(main_module, "get_job_store", lambda: Store())
-    monkeypatch.setattr(
-        main_module, "download_private_result",
-        lambda _drive_id: ({"bytes": len(wrong_payload)}, wrong_payload),
-    )
+    def download_wrong_bundle_to_disk(_drive_id, destination, *, max_bytes=None):
+        Path(destination).write_bytes(wrong_payload)
+        return {"bytes": len(wrong_payload), "sha256": hashlib.sha256(wrong_payload).hexdigest()}
+
+    monkeypatch.setattr(main_module, "download_private_result_to_path", download_wrong_bundle_to_disk)
 
     response = authenticated_client().get(f"/api/displacement-jobs/{job_id}/dashboard", headers={"X-SARGuardian-Google-Maps-Key": "AIzaSyFakeRestrictedKey123456789012345"})
 

@@ -249,6 +249,43 @@ class DriveClient:
             raise DriveUploadError("Google Drive did not return a valid resumable upload response.")
         return payload
 
+    def download_file_to_path(self, file_id: str, destination: Path, *, max_bytes: int | None = None) -> dict[str, Any]:
+        """Stream a private Drive object to disk while calculating its SHA-256."""
+        if not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", file_id):
+            raise DriveUploadError("Result storage file identifier is invalid.")
+        destination = Path(destination)
+        response = None
+        digest = hashlib.sha256()
+        byte_count = 0
+        try:
+            response = self.session.get(
+                f"{DRIVE_API}/files/{quote(file_id, safe='')}",
+                headers=self._headers(),
+                params={"alt": "media"},
+                stream=True,
+                timeout=300,
+            )
+            response.raise_for_status()
+            with destination.open("wb") as stream:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    byte_count += len(chunk)
+                    if max_bytes is not None and byte_count > max_bytes:
+                        raise DriveUploadError("Private result artifact exceeded its verified size limit.")
+                    digest.update(chunk)
+                    stream.write(chunk)
+        except DriveUploadError:
+            destination.unlink(missing_ok=True)
+            raise
+        except (OSError, requests.RequestException) as exc:
+            destination.unlink(missing_ok=True)
+            raise DriveUploadError("Could not retrieve the private result artifact.") from exc
+        finally:
+            if response is not None:
+                response.close()
+        return {"bytes": byte_count, "sha256": digest.hexdigest()}
+
     def download_file(self, file_id: str) -> tuple[dict[str, Any], bytes]:
         if not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", file_id):
             raise DriveUploadError("Result storage file identifier is invalid.")
@@ -332,6 +369,19 @@ def upload_validated_results(work_dir: Path, *, config: DriveConfig | None = Non
 def download_private_result(file_id: str, *, config: DriveConfig | None = None, session: Any | None = None) -> tuple[dict[str, Any], bytes]:
     """Used only after API job-owner authorization; never exposed to browsers."""
     return DriveClient(config or load_drive_config(), session=session).download_file(file_id)
+
+def download_private_result_to_path(
+    file_id: str,
+    destination: Path,
+    *,
+    config: DriveConfig | None = None,
+    session: Any | None = None,
+    max_bytes: int | None = None,
+) -> dict[str, Any]:
+    """Download an owner-authorized private result without holding the ZIP in memory."""
+    return DriveClient(config or load_drive_config(), session=session).download_file_to_path(
+        file_id, destination, max_bytes=max_bytes,
+    )
 
 
 def main() -> int:
