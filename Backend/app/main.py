@@ -697,10 +697,12 @@ def _dashboard_archive_cache_path(job_id: UUID, digest: str) -> Path:
 
 
 def _write_dashboard_archive_cache(source: Path, destination: Path) -> None:
-    DASHBOARD_ARCHIVE_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+    DASHBOARD_ARCHIVE_CACHE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+    DASHBOARD_ARCHIVE_CACHE_ROOT.chmod(0o700)
     temporary = destination.with_name(destination.name + f".{uuid4().hex}.tmp")
     try:
         shutil.copyfile(source, temporary)
+        temporary.chmod(0o600)
         temporary.replace(destination)
         now = time.time()
         for cached in DASHBOARD_ARCHIVE_CACHE_ROOT.glob("*.zip"):
@@ -725,6 +727,7 @@ def _get_cached_dashboard_archive(job_id: UUID, artifact: dict) -> Path:
     now = time.time()
     try:
         if destination.is_file() and destination.stat().st_size == artifact.get("bytes") and now - destination.stat().st_mtime <= DASHBOARD_ARCHIVE_CACHE_TTL_SECONDS:
+            destination.chmod(0o600)
             destination.touch()
             return destination
     except OSError:
