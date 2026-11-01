@@ -4,8 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       aoi_wkt:
-        description: "Closed WGS84 POLYGON WKT (longitude latitude; one exterior ring)"
+        description: "Measurement polygon: closed WGS84 POLYGON WKT (longitude latitude; one exterior ring)"
         required: true
+        type: string
+      scope_aoi_wkt:
+        description: "Optional outer AOI boundary WKT; measurement and reference polygons must lie strictly inside it"
+        required: false
+        default: ""
         type: string
       start_date:
         description: "Inclusive UTC start date, YYYY-MM-DD"
@@ -97,6 +102,11 @@ on:
     inputs:
       aoi_wkt:
         required: true
+        type: string
+      scope_aoi_wkt:
+        description: "Optional outer AOI boundary WKT; not used as the measurement polygon"
+        required: false
+        default: ""
         type: string
       start_date:
         required: true
@@ -201,6 +211,7 @@ jobs:
         shell: bash
         env:
           AOI_WKT: ${{ inputs.aoi_wkt }}
+          SCOPE_AOI_WKT: ${{ inputs.scope_aoi_wkt }}
           START_DATE: ${{ inputs.start_date }}
           END_DATE: ${{ inputs.end_date }}
           HAZARD_MODE: ${{ inputs.hazard_mode }}
@@ -235,6 +246,7 @@ jobs:
               "aoi": {
                   "type": "Polygon",
                   "crs": "EPSG:4326",
+                  "role": "measurement",
                   "wkt": os.environ["AOI_WKT"].strip(),
               },
               "date_range": {
@@ -257,6 +269,14 @@ jobs:
                   "minimum_valid_neighbours": int(os.environ["COHERENCE_NEIGHBOURS"]),
               },
           }
+          scope_aoi = os.environ.get("SCOPE_AOI_WKT", "").strip()
+          if scope_aoi:
+              request["scope_aoi"] = {
+                  "type": "Polygon",
+                  "crs": "EPSG:4326",
+                  "role": "outer_selection_boundary",
+                  "wkt": scope_aoi,
+              }
           raw_height = os.environ.get("GEOMETRY_HEIGHT_M", "").strip()
           if raw_height:
               try:
