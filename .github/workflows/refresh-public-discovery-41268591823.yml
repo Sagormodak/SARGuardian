@@ -47,13 +47,14 @@ jobs:
       GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
       DISPLACEMENT_CALLBACK_SECRET: ${{ secrets.DISPLACEMENT_CALLBACK_SECRET }}
       REFRESH_RUN_NAME: SARGuardian-AOI-41268591823-dashboard-refresh-${{ github.run_id }}
-      BUILDER_COMMIT: 01bc8eb543b51e557edcb9ada0fc808da2b87fc7
+      BUILDER_COMMIT: a4778b7e5ec5e740cb27db2a5840f13a9ec583af
+      EXPECTED_POINTER_SHA256: 0c181eb6f09a3a91ddffcbb1a82b8fea1f1602cd44b3018f3eea185c3dd3a256
     steps:
       - name: Check out the pinned current dashboard builder and Drive uploader
         uses: actions/checkout@v4
         with:
           repository: moshiour0/SARGuardian-backend
-          ref: 01bc8eb543b51e557edcb9ada0fc808da2b87fc7
+          ref: a4778b7e5ec5e740cb27db2a5840f13a9ec583af
           path: builder-source
 
       - name: Check out the pinned science dependency set
@@ -108,7 +109,7 @@ jobs:
           test -s "$root/drive-dashboard-upload-receipt.json"
           mkdir -p "$RUNNER_TEMP/sarguardian-dashboard-refresh/receipts"
           python - "$root" "$RUNNER_TEMP/sarguardian-dashboard-refresh" <<'PY'
-          import copy, hashlib, json, sys
+          import copy, hashlib, json, os, re, sys
           from pathlib import Path
           root = Path(sys.argv[1])
           work = Path(sys.argv[2])
@@ -141,10 +142,13 @@ jobs:
           tiffs = {}
           for path in sorted(root.rglob("*.tif")) + sorted(root.rglob("*.tiff")):
               tiffs[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+          expected_pointer = os.environ["EXPECTED_POINTER_SHA256"]
+          assert re.fullmatch(r"[a-f0-9]{64}", expected_pointer), "CURRENT_POINTER_SHA256_INVALID"
           record = {
               "source_run_id": "41268591823",
               "job_id": "792b14c6-6614-4d14-8c37-2df0182d810c",
-              "expected_previous_sha256": digest,
+              "expected_previous_sha256": expected_pointer,
+              "source_zip_sha256": digest,
               "old_zip_bytes": old_bundles[0]["bytes"],
               "aoi_wkt_sha256": summary["aoi_wkt_sha256"],
               "product_count": len(products),
@@ -221,7 +225,7 @@ jobs:
           summary["dashboard_refresh_build"] = {
               "status": "PASS",
               "source_run_id": "41268591823",
-              "builder_commit": "01bc8eb543b51e557edcb9ada0fc808da2b87fc7",
+              "builder_commit": "a4778b7e5ec5e740cb27db2a5840f13a9ec583af",
               "raw_hdf5_replayed": False,
               "scientific_outputs_changed": False,
           }
