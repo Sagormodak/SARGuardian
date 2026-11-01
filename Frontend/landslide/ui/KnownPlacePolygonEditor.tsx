@@ -228,6 +228,8 @@ export function KnownPlacePolygonEditor({
 
   useEffect(() => {
     let mounted = true;
+    const pathListeners = pathListenersRef.current;
+    const overlays = overlaysRef.current;
     if (!outerCoordinates || !mapElementRef.current) {
       setMapError('Return to the AOI map and create a valid closed outer polygon.');
       return undefined;
@@ -274,8 +276,8 @@ export function KnownPlacePolygonEditor({
       });
     return () => {
       mounted = false;
-      Object.values(pathListenersRef.current).flat().forEach((listener) => listener.remove());
-      Object.values(overlaysRef.current).forEach((overlay) => overlay?.setMap(null));
+      Object.values(pathListeners).flat().forEach((listener) => listener.remove());
+      Object.values(overlays).forEach((overlay) => overlay?.setMap(null));
       outerOverlayRef.current?.setMap(null);
       mapRef.current = null;
       setMapReady(false);
