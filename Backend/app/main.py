@@ -807,6 +807,11 @@ def _serialize_dashboard_manifest_for_browser(manifest: dict) -> tuple[str, bool
     features = feature_collection.get("features") if isinstance(feature_collection, dict) else None
     if not isinstance(features, list):
         blob = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        if len(blob.encode("utf-8")) > MAX_DASHBOARD_MANIFEST_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="The dashboard manifest exceeds the bounded browser metadata size. The saved analysis is unchanged; download the original result package.",
+            )
         return blob, False
 
     source_feature_count = len(features)
@@ -817,6 +822,7 @@ def _serialize_dashboard_manifest_for_browser(manifest: dict) -> tuple[str, bool
     )
     display_feature_count = min(source_feature_count, MAX_DASHBOARD_CANDIDATE_FEATURES)
     simplified_any = False
+    properties_compacted = False
 
     for feature_limit in (MAX_DASHBOARD_CANDIDATE_FEATURES, 50, 20, 0):
         selected = features[:feature_limit]
@@ -830,27 +836,33 @@ def _serialize_dashboard_manifest_for_browser(manifest: dict) -> tuple[str, bool
             if isinstance(properties, dict):
                 # These are the properties consumed by the interactive candidate
                 # map. The complete properties remain in the original ZIP export.
-                feature["properties"] = {
+                display_properties = {
                     key: properties[key]
                     for key in ("candidate_id", "direction", "track", "area_km2_approx", "pairs_with_candidate")
                     if key in properties
                 }
+                if display_properties != properties:
+                    properties_compacted = True
+                feature["properties"] = display_properties
         feature_collection["features"] = selected
         screen["candidate_features_total"] = total_count
         screen["candidate_features_displayed"] = len(selected)
         screen["candidate_features_omitted_from_map"] = max(0, total_count - len(selected))
         screen["candidate_geometry_simplified_for_display"] = simplified_any
+        screen["candidate_properties_reduced_for_display"] = properties_compacted
         screen["candidate_overlay_is_complete"] = (
-            len(selected) == total_count and not simplified_any
+            len(selected) == total_count and not simplified_any and not properties_compacted
         )
-        if screen["candidate_features_omitted_from_map"] or simplified_any:
+        if screen["candidate_features_omitted_from_map"] or simplified_any or properties_compacted:
             screen["candidate_overlay_display_note"] = (
-                "Browser map shows a capped and/or simplified candidate overlay for performance. "
+                "Browser map uses a bounded display representation of AOI-wide candidate regions. "
                 "The original candidate GeoJSON and scientific artifacts remain unchanged in the saved result ZIP."
             )
         blob = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
         if len(blob.encode("utf-8")) <= MAX_DASHBOARD_MANIFEST_BYTES:
-            return blob, bool(screen["candidate_features_omitted_from_map"] or simplified_any)
+            return blob, bool(
+                screen["candidate_features_omitted_from_map"] or simplified_any or properties_compacted
+            )
     raise HTTPException(
         status_code=413,
         detail=(
@@ -2133,8 +2145,9 @@ def get_displacement_dashboard(
             f'border:1px solid rgba(255,207,120,.42);border-radius:12px;'
             f'background:#2a2115;color:#ffe7b2;font:12px/1.6 system-ui">'
             f'Map display note: {displayed} of {total} AOI-wide candidate region(s) are shown, '
-            f'with simplified outlines where needed for browser performance. This is a display-only reduction; '
-            f'the original candidate GeoJSON and scientific artifacts remain unchanged in the saved result ZIP.</aside>'
+            f'with simplified outlines and reduced display properties where needed for browser performance. '
+            f'This is a display-only reduction; the original candidate GeoJSON and scientific artifacts '
+            f'remain unchanged in the saved result ZIP.</aside>'
         )
         html = html.replace("</body>", note + "</body>", 1) if "</body>" in html else html + note
     # Stream the bounded viewer shell and manifest to stay within Vercel's 4.5 MiB buffered-response limit.
