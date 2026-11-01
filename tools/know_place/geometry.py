@@ -307,6 +307,7 @@ def build_independent_reference_roi(
     *,
     measurement_wkt: str,
     reference_wkt: str,
+    scope_wkt: str | None = None,
     coherence_halo_cells: int = 2,
 ) -> AnalysisROI:
     """Rasterize disjoint measurement and reference polygons on one native GOFF grid.
@@ -336,6 +337,19 @@ def build_independent_reference_roi(
     reference = project_wkt_ring(reference_wkt, epsg)
     if _rings_overlap_or_touch(measurement, reference):
         raise GoffReadError("MEASUREMENT_REFERENCE_POLYGONS_OVERLAP_OR_TOUCH")
+    if scope_wkt:
+        scope = project_wkt_ring(scope_wkt, epsg)
+        for label, ring in (("MEASUREMENT", measurement), ("REFERENCE", reference)):
+            vertex_x = np.asarray([point[0] for point in ring[:-1]], dtype=float)
+            vertex_y = np.asarray([point[1] for point in ring[:-1]], dtype=float)
+            if not points_in_ring(vertex_x, vertex_y, scope).all():
+                raise GoffReadError(f"{label}_POLYGON_OUTSIDE_OUTER_AOI")
+            if any(
+                _segments_intersect(a, b, c, d)
+                for a, b in zip(ring[:-1], ring[1:])
+                for c, d in zip(scope[:-1], scope[1:])
+            ):
+                raise GoffReadError(f"{label}_POLYGON_CROSSES_OR_TOUCHES_OUTER_AOI")
 
     vertices = (*measurement, *reference)
     xmin, xmax = min(p[0] for p in vertices), max(p[0] for p in vertices)
