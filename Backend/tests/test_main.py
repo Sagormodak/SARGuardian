@@ -613,6 +613,18 @@ def test_dashboard_preview_asset_uses_cached_verified_bundle_and_short_lived_tic
         headers={"X-SARGuardian-Google-Maps-Key": "AIzaSyFakeRestrictedKey123456789012345"},
     )
     assert dashboard.status_code == 200
+    cache_file = next(tmp_path.glob("*.zip"))
+    assert (tmp_path.stat().st_mode & 0o777) == 0o700
+    assert (cache_file.stat().st_mode & 0o777) == 0o600
+
+    # A viewer retry reuses the checksum-verified cache rather than fetching Drive again.
+    retry = authenticated_client().get(
+        f"/api/displacement-jobs/{job_id}/dashboard",
+        headers={"X-SARGuardian-Google-Maps-Key": "AIzaSyFakeRestrictedKey123456789012345"},
+    )
+    assert retry.status_code == 200
+    assert downloads == [True]
+
     asset_marker = "/dashboard-assets/layers/test-layer.png?ticket="
     assert asset_marker in dashboard.text
     ticket = dashboard.text.split(asset_marker, 1)[1].split('"', 1)[0]
