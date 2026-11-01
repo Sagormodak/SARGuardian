@@ -3,9 +3,11 @@ import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebas
 import { listDisplacementJobs } from './api/catalog';
 import { Home } from './pages/Home';
 import { ArchivePage } from './pages/ArchivePage';
+import { DashboardPage } from './pages/DashboardPage';
+import { parseDashboardView } from './dashboardDocument';
 import { LandslidePage } from '../landslide/ui/LandslidePage';
 import { auth, firebaseConfigured, googleProvider, missingFirebaseConfig } from './firebase';
-import { isArchiveRoute, isLandslideDisplacementRoute, isLandslideKnownPlaceAnalysisRoute, isLandslideResultsRoute, isLandslideRoute, LANDSLIDE_DISPLACEMENT_PATH, LANDSLIDE_KNOWN_PLACE_PATH, LANDSLIDE_PATH, LANDSLIDE_RESULTS_PATH, navigatePath, normalizePathname } from './routing';
+import { isArchiveRoute, isDashboardRoute, isLandslideDisplacementRoute, isLandslideKnownPlaceAnalysisRoute, isLandslideResultsRoute, isLandslideRoute, LANDSLIDE_DISPLACEMENT_PATH, LANDSLIDE_KNOWN_PLACE_PATH, LANDSLIDE_PATH, LANDSLIDE_RESULTS_PATH, navigatePath, normalizePathname } from './routing';
 
 function App() {
   const [pathname, setPathname] = useState(() => normalizePathname(window.location.pathname));
@@ -144,6 +146,20 @@ function App() {
     setAuthModalOpen(false);
     navigateTo(LANDSLIDE_PATH);
   }, [navigateTo, user]);
+
+  if (isDashboardRoute(pathname)) {
+    const searchParams = new URLSearchParams(window.location.search);
+    return (
+      <DashboardPage
+        jobId={searchParams.get('jobId') || ''}
+        view={parseDashboardView(searchParams.get('view'))}
+        user={user}
+        authState={authState}
+        authError={authError}
+        onSignIn={handleSignIn}
+      />
+    );
+  }
 
   if (isArchiveRoute(pathname)) {
     return (

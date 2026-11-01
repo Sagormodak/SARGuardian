@@ -6,9 +6,9 @@ import { ScientificResults } from '../ui/ScientificResults';
 import { ArchiveJobCard } from '../../src/components/ArchiveSection';
 import { countCatalogGranules, ELAPSED_TICK_MS, formatElapsed } from '../ui/processingStatus';
 import { prepareInvestigation } from '../engine/investigation';
-import { isLandslideDisplacementRoute, LANDSLIDE_DISPLACEMENT_PATH, LANDSLIDE_PATH, LANDSLIDE_RESULTS_PATH, navigatePath } from '../../src/routing';
+import { isDashboardRoute, isLandslideDisplacementRoute, LANDSLIDE_DISPLACEMENT_PATH, LANDSLIDE_PATH, LANDSLIDE_RESULTS_PATH, navigatePath } from '../../src/routing';
 import { DEFAULT_DISPLACEMENT_OPTIONS } from '../../src/api/catalog';
-import { waitForDashboardPopupLoad, writeDashboardHtml } from '../ui/dashboardPopup';
+import { buildDashboardRouteUrl, withDashboardPreferredView } from '../../src/dashboardDocument';
 
 describe('dashboard opens in a new same-origin tab', () => {
   it('offers the new-tab dashboard action only for a verified successful result', () => {
@@ -87,37 +87,27 @@ describe('archive result disclosure layout', () => {
   });
 });
 
-describe('same-origin dashboard popup helper', () => {
-  it('waits until the popup has loaded an actual site-origin document', async () => {
-    let readyState = 'loading';
-    let loadHandler: (() => void) | undefined;
-    const origin = 'https://sar-guardian-dynamic-lilac.vercel.app';
-    const document = {
-      get URL() { return `${origin}/`; },
-      get readyState() { return readyState; },
-    };
-    const addEventListener = vi.fn((_type: string, handler: EventListenerOrEventListenerObject) => {
-      loadHandler = typeof handler === 'function' ? () => handler(new Event('load')) : undefined;
-    });
-    const removeEventListener = vi.fn();
-    const popup = { document, addEventListener, removeEventListener } as unknown as Window;
-
-    const ready = waitForDashboardPopupLoad(popup, origin);
-    expect(removeEventListener).not.toHaveBeenCalled();
-    readyState = 'complete';
-    loadHandler?.();
-    await ready;
-
-    expect(removeEventListener).toHaveBeenCalledOnce();
-    expect(removeEventListener).toHaveBeenCalledWith('load', expect.any(Function));
+describe('refresh-safe saved dashboard route', () => {
+  it('opens a durable dashboard URL containing the saved job and selected audience view', () => {
+    const url = new URL(buildDashboardRouteUrl(
+      'https://sar-guardian-dynamic-lilac.vercel.app/archive',
+      '736bd4e6-8963-43be-a916-bc62336c8557',
+      'evidence',
+    ));
+    expect(url.origin).toBe('https://sar-guardian-dynamic-lilac.vercel.app');
+    expect(url.pathname).toBe('/dashboard');
+    expect(url.searchParams.get('jobId')).toBe('736bd4e6-8963-43be-a916-bc62336c8557');
+    expect(url.searchParams.get('view')).toBe('evidence');
+    expect(isDashboardRoute(url.pathname)).toBe(true);
   });
 
-  it('writes only the verified dashboard HTML into the popup document', () => {
-    const document = { open: vi.fn(), write: vi.fn(), close: vi.fn() };
-    writeDashboardHtml({ document } as unknown as Window, '<!doctype html><html><body>verified</body></html>');
-    expect(document.open).toHaveBeenCalledOnce();
-    expect(document.write).toHaveBeenCalledWith('<!doctype html><html><body>verified</body></html>');
-    expect(document.close).toHaveBeenCalledOnce();
+  it('pins relative dashboard assets and the Maps referrer to the first-party origin', () => {
+    const html = '<!doctype html><html><head><title>Dashboard</title></head><body><main>Evidence</main></body></html>';
+    const prepared = withDashboardPreferredView(html, 'science', 'https://sar-guardian-dynamic-lilac.vercel.app/archive');
+    expect(prepared).toContain('<base href="https://sar-guardian-dynamic-lilac.vercel.app/">');
+    expect(prepared).toContain('<meta name="referrer" content="origin">');
+    expect(prepared).toContain("var preferredView = \"science\";");
+    expect(prepared).toContain("data-sg-mode");
   });
 });
 
