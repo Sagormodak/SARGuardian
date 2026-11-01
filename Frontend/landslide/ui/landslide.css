@@ -1021,3 +1021,50 @@
     min-height: 460px;
   }
 }
+
+
+/* Separate measurement and reference geometry editor for Known Place Analysis. */
+.known-place-polygon-editor {
+  display: grid;
+  gap: 12px;
+  margin: 18px 0;
+  padding: 16px;
+  border: 1px solid rgba(158, 216, 255, .28);
+  border-radius: 9px;
+  background: rgba(5, 35, 51, .62);
+}
+.known-place-geometry-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.known-place-geometry-heading h2 { margin: 5px 0; color: #f5fbff; font: 700 18px 'Manrope', sans-serif; }
+.known-place-geometry-heading p { margin: 0; color: rgba(231, 247, 255, .75); font-size: 11px; line-height: 1.5; }
+.known-place-outer-aoi-status { flex: 0 0 auto; padding: 5px 8px; border: 1px solid rgba(220, 248, 255, .28); border-radius: 5px; color: #d9f3ff; font-size: 9px; }
+.known-place-map-editor-wrap { position: relative; min-width: 0; overflow: hidden; border: 1px solid rgba(174, 216, 255, .35); border-radius: 7px; background: #d6e4ea; }
+.known-place-polygon-map { width: 100%; height: min(58vh, 560px); min-height: 340px; }
+.known-place-map-error, .known-place-map-instruction { position: absolute; z-index: 5; top: 12px; left: 12px; max-width: min(520px, calc(100% - 24px)); padding: 9px 12px; border: 1px solid rgba(220, 248, 255, .4); border-radius: 6px; background: rgba(5, 42, 58, .92); color: #f6fbff; font-size: 11px; line-height: 1.45; box-shadow: 0 8px 25px rgba(5, 30, 40, .2); }
+.known-place-map-instruction { top: auto; bottom: 12px; border-color: rgba(247, 198, 107, .6); }
+.known-place-geometry-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.known-place-geometry-tools button { min-height: 36px; padding: 7px 11px; border: 1px solid rgba(220, 248, 255, .35); border-radius: 6px; background: rgba(7, 55, 79, .8); color: #effaff; cursor: pointer; font-size: 10px; font-weight: 700; }
+.known-place-geometry-tools button.active { border-color: #f7c66b; color: #ffe6b4; background: rgba(247, 198, 107, .13); }
+.known-place-geometry-tools button.confirm-button { border-color: #a4efd0; background: #a4efd0; color: #0b3c54; }
+.known-place-geometry-tools button:disabled { opacity: .42; cursor: not-allowed; }
+.known-place-polygon-summaries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.known-place-polygon-summaries article { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 10px; border: 1px solid rgba(220, 248, 255, .2); border-radius: 6px; background: rgba(7, 55, 79, .55); cursor: pointer; }
+.known-place-polygon-summaries article.selected { border-color: rgba(158, 216, 255, .85); background: rgba(73, 184, 242, .13); }
+.known-place-polygon-summaries article > div { display: grid; gap: 3px; min-width: 0; flex: 1; }
+.known-place-polygon-summaries article strong { color: #f7fbff; font-size: 10px; }
+.known-place-polygon-summaries article small { color: rgba(231, 247, 255, .68); font-size: 9px; }
+.known-place-polygon-summaries article > span:last-child { color: #cfeaff; font-size: 9px; white-space: nowrap; }
+.polygon-role-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; }
+.measurement-dot { background: #f7c66b; }.reference-dot { background: #38bdf8; }
+.known-place-geometry-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.known-place-geometry-fields .aoi-job-label { min-width: 0; margin: 0; }
+.known-place-geometry-fields textarea { width: 100%; min-width: 0; box-sizing: border-box; resize: vertical; border: 1px solid rgba(220, 248, 255, .3); border-radius: 5px; padding: 8px; background: rgba(4, 48, 72, .75); color: #eaf7ff; font: 10px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.known-place-geometry-valid, .known-place-geometry-warning { margin: 0; padding: 9px 11px; border-radius: 5px; font-size: 10px; line-height: 1.45; }
+.known-place-geometry-valid { border-left: 3px solid #83deb5; background: rgba(131, 222, 181, .08); color: #c7f7de; }
+.known-place-geometry-warning { border-left: 3px solid #ffcc78; background: rgba(255, 204, 120, .08); color: #ffe5b7; }
+@media (max-width: 640px) {
+  .known-place-polygon-editor { padding: 11px; }
+  .known-place-geometry-heading { display: grid; }
+  .known-place-polygon-map { height: 48vh; min-height: 300px; }
+  .known-place-polygon-summaries, .known-place-geometry-fields { grid-template-columns: 1fr; }
+  .known-place-geometry-tools button { flex: 1 1 calc(50% - 7px); }
+}
