@@ -182,3 +182,35 @@ def test_dispatcher_consent_failure_explains_exact_marker_and_remains_strict():
     assert "run-know-place by itself does not authorize source downloads." in workflow
     assert "No raw source, analysis or Drive operation was performed." in workflow
     assert '"$CONSENT_MARKER" == "run-know-place"' not in workflow
+
+def test_outer_scope_aoi_is_canonicalized_and_kept_separate_from_measurement_polygon():
+    payload = request()
+    outer = "POLYGON ((85.49 28.27, 85.57 28.27, 85.57 28.33, 85.49 28.33, 85.49 28.27))"
+    payload["scope_aoi"] = {
+        "type": "Polygon",
+        "crs": "EPSG:4326",
+        "role": "outer_selection_boundary",
+        "wkt": outer,
+    }
+    parsed = validate_aoi_request(payload)
+    normalized = parsed.to_dict()
+    assert parsed.aoi_wkt != parsed.scope_aoi_wkt
+    assert normalized["aoi"]["role"] == "measurement"
+    assert normalized["scope_aoi"]["role"] == "outer_selection_boundary"
+    assert normalized["scope_aoi"]["wkt"].startswith("POLYGON ((85.490000000")
+
+
+def test_outer_scope_aoi_rejects_invalid_geometry_and_crs():
+    payload = request()
+    payload["scope_aoi"] = {"wkt": "POLYGON ((0 0, 1 0, 1 1))", "crs": "EPSG:4326"}
+    with pytest.raises(AOIRequestError, match="SCOPE_AOI_GEOMETRY_INVALID"):
+        validate_aoi_request(payload)
+
+    payload = request()
+    payload["scope_aoi"] = {
+        "wkt": "POLYGON ((85.49 28.27, 85.57 28.27, 85.57 28.33, 85.49 28.33, 85.49 28.27))",
+        "crs": "EPSG:3857",
+    }
+    with pytest.raises(AOIRequestError, match="SCOPE_AOI_CRS_MUST_BE_EPSG4326_OR_CRS84"):
+        validate_aoi_request(payload)
+
