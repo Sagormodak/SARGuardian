@@ -4,7 +4,26 @@ export type KnownPlaceHazardMode = 'landslide' | 'glacier_collapse' | 'ice_rock_
 export type KnownPlaceAnalysisMode = 'exploratory' | 'retrospective_validation';
 export type KnownPlaceRunState = 'dispatching' | 'queued' | 'in_progress' | 'completed';
 
+export type KnownPlaceCandidateContext = {
+  source: 'FIND_DISPLACEMENTS';
+  candidate_id: string;
+  product_type: 'GOFF';
+  metric: string;
+  evidence_class: string;
+  status: string;
+  support_pairs: number;
+  pixel_count: number;
+  approx_area_m2: number;
+  product_ids: string[];
+  pair_intervals: Array<Record<string, unknown>>;
+  geometry_original_vertices: number;
+  geometry_suggested_vertices: number;
+  geometry_simplified: boolean;
+  interpretation: string;
+};
+
 export type KnownPlaceAnalysisInput = {
+  candidate_context?: KnownPlaceCandidateContext | null;
   /** Inner Measurement Polygon; the original map AOI is carried separately. */
   aoi_wkt: string;
   scope_aoi_wkt: string;
