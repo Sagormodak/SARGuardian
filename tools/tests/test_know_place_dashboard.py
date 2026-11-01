@@ -68,6 +68,7 @@ def test_dashboard_contains_displacement_chart_spatial_preview_and_scientific_ga
                 "min_x_m": 100.0, "max_y_m": 200.0,
                 "pixel_size_x_m": 80.0, "pixel_size_y_m": 80.0,
                 "aoi_ring_xy": [[100.0,200.0],[180.0,200.0],[180.0,120.0],[100.0,120.0],[100.0,200.0]],
+                "reference_ring_xy": [[20.0,200.0],[80.0,200.0],[80.0,160.0],[20.0,160.0],[20.0,200.0]],
             },
             "spatial_block_bootstrap_uncertainty": {
                 "status": "COMPUTED_EXPLORATORY",
@@ -99,6 +100,8 @@ def test_dashboard_contains_displacement_chart_spatial_preview_and_scientific_ga
     assert "Block-size CI sensitivity" in rendered
     assert "3-cell: 0.700–1.200 m" in rendered
     assert "Direction arrows are orientation-only" in rendered
+    assert "referenceRing" in rendered and "setLineDash([5,3])" in rendered
+    assert "White outline: measurement polygon. Dashed blue outline: reference/background polygon." in rendered
     assert "Interval-average magnitude rate" in rendered
     assert "0.0400 m/day" in rendered
     assert "Midpoint separation: 24.000 d" in rendered
