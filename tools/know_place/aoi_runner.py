@@ -360,7 +360,7 @@ def discover_nisar_goff(request: AOIRequest) -> tuple[list[dict[str, Any]], dict
         # spanning both geometries so ASF discovery cannot omit a granule that
         # covers the measurement area but not the selected reference (or vice versa).
         search_wkt = (
-            polygon_pair_envelope_wkt(request.aoi_wkt, request.reference_wkt, 32645)
+            polygon_pair_envelope_wkt(request.aoi_wkt, request.reference_wkt, 4326)
             if request.reference_wkt else request.aoi_wkt
         )
         # Query exact maturity-specific GOFF collections. Combining processingLevel
