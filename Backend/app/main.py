@@ -1870,11 +1870,6 @@ async def get_displacement_dashboard(
             detail="Google Maps is not configured. Check VITE_GOOGLE_MAPS_API_KEY in the frontend deployment.",
         )
 
-    settings = get_settings()
-    asset_ticket = _create_dashboard_asset_ticket(
-        job_id, artifact["sha256"], owner_uid, settings.displacement_callback_secret,
-    )
-
     # Stream the original ZIP to ephemeral disk, verify its signed inventory,
     # and retain a bounded local cache so parallel PNG requests do not each
     # download the full private archive from Drive.
@@ -1917,6 +1912,11 @@ async def get_displacement_dashboard(
             raise
         except (BadZipFile, KeyError, UnicodeDecodeError, json.JSONDecodeError, OSError):
             raise HTTPException(status_code=409, detail="Stored result bundle does not contain a readable dashboard manifest.") from None
+
+    settings = get_settings()
+    asset_ticket = _create_dashboard_asset_ticket(
+        job_id, artifact["sha256"], owner_uid, settings.displacement_callback_secret,
+    )
 
     layer_urls: dict[str, str] = {}
     for layer in manifest["layers"]:
