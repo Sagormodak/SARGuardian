@@ -1828,7 +1828,7 @@ def _apply_google_maps_dashboard(html: str, google_maps_api_key: str) -> str:
 
 
 @app.get("/api/displacement-jobs/{job_id}/dashboard")
-async def get_displacement_dashboard(
+def get_displacement_dashboard(
     job_id: UUID,
     google_maps_api_key: str | None = Header(default=None, alias="X-SARGuardian-Google-Maps-Key"),
     user: dict = Depends(get_current_user),
