@@ -1008,6 +1008,11 @@ VERDICT: NOT TESTABLE. No two consecutive pair intervals share the same complete
         self.assertIn("body[data-dashboard-mode=public] .advanced-controls", viewer)
         self.assertNotIn(".advanced-controls{display:flex}", viewer)
         self.assertIn("function renderPublicLegend(l)", viewer)
+        self.assertIn("Colour is not a hazard score:", viewer)
+        self.assertIn("red does not mean danger and blue does not mean safe", viewer)
+        self.assertIn("product’s LOS sign convention", viewer)
+        self.assertIn("GOFF · Slant-range radar-image pixel offset", viewer)
+        self.assertNotIn("Radar-Radar-image", viewer)
         self.assertNotIn("timer=setInterval(()=>select((selected+1)%n)", viewer)
 
         if shutil.which("node"):
