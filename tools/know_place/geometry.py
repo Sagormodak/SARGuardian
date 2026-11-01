@@ -228,6 +228,14 @@ def _segments_intersect(
     """Return true for crossing, collinear overlap, or touching polygon edges."""
     o1, o2 = _orientation(a, b, c), _orientation(a, b, d)
     o3, o4 = _orientation(c, d, a), _orientation(c, d, b)
+    # Orientations have squared-metre units; scale the tolerance by the longest
+    # edge so the geometric tolerance remains expressed in metres.
+    edge_scale = max(
+        math.hypot(b[0] - a[0], b[1] - a[1]),
+        math.hypot(d[0] - c[0], d[1] - c[1]),
+        1.0,
+    )
+    orientation_tolerance = tolerance_m * edge_scale
 
     def on_segment(p, q, r) -> bool:
         return (
@@ -235,15 +243,15 @@ def _segments_intersect(
             and min(p[1], r[1]) - tolerance_m <= q[1] <= max(p[1], r[1]) + tolerance_m
         )
 
-    if ((o1 > tolerance_m and o2 < -tolerance_m) or (o1 < -tolerance_m and o2 > tolerance_m)) and (
-        (o3 > tolerance_m and o4 < -tolerance_m) or (o3 < -tolerance_m and o4 > tolerance_m)
+    if ((o1 > orientation_tolerance and o2 < -orientation_tolerance) or (o1 < -orientation_tolerance and o2 > orientation_tolerance)) and (
+        (o3 > orientation_tolerance and o4 < -orientation_tolerance) or (o3 < -orientation_tolerance and o4 > orientation_tolerance)
     ):
         return True
     return (
-        (abs(o1) <= tolerance_m and on_segment(a, c, b))
-        or (abs(o2) <= tolerance_m and on_segment(a, d, b))
-        or (abs(o3) <= tolerance_m and on_segment(c, a, d))
-        or (abs(o4) <= tolerance_m and on_segment(c, b, d))
+        (abs(o1) <= orientation_tolerance and on_segment(a, c, b))
+        or (abs(o2) <= orientation_tolerance and on_segment(a, d, b))
+        or (abs(o3) <= orientation_tolerance and on_segment(c, a, d))
+        or (abs(o4) <= orientation_tolerance and on_segment(c, b, d))
     )
 
 
