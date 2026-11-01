@@ -1,7 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isLandslideKnownPlaceAnalysisRoute, isLandslideResultsRoute, isLandslideRoute, navigatePath, normalizePathname } from './routing';
+import { ARCHIVE_PATH, isArchiveRoute, isLandslideKnownPlaceAnalysisRoute, isLandslideResultsRoute, isLandslideRoute, navigatePath, normalizePathname } from './routing';
 
 describe('client-side route recognition', () => {
+  it('recognizes Archive as its own page route, not a Home anchor', () => {
+    expect(ARCHIVE_PATH).toBe('/archive');
+    expect(isArchiveRoute('/archive')).toBe(true);
+    expect(isArchiveRoute('/archive?state=ready')).toBe(true);
+    expect(isArchiveRoute('/')).toBe(false);
+    expect(isLandslideRoute('/archive')).toBe(false);
+  });
+
   it('normalizes query strings and hashes without changing the route', () => {
     expect(normalizePathname('/landslide/results?from=map#summary')).toBe('/landslide/results');
     expect(normalizePathname('')).toBe('/');

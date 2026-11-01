@@ -1,5 +1,5 @@
+import { useState } from 'react';
 import type { Engine } from '../data/engineData';
-import type { CSSProperties } from 'react';
 
 type EngineCardProps = {
   engine: Engine;
@@ -51,14 +51,27 @@ function EngineIcon({ type }: { type: Engine['icon'] }) {
 }
 
 export function EngineCard({ engine, onSelect }: EngineCardProps) {
+  const [imageFailed, setImageFailed] = useState(false);
+
   return (
     <button
-      className={`engine-card ${engine.status === 'AVAILABLE' ? 'is-available' : 'is-preview'}`}
+      className={`engine-card ${engine.status === 'AVAILABLE' ? 'is-available' : 'is-preview'} ${imageFailed ? 'image-unavailable' : ''}`}
       type="button"
       onClick={() => onSelect(engine)}
-      style={{ '--engine-image': `url("${engine.image}")` } as CSSProperties}
+      data-engine={engine.id}
       aria-label={`${engine.name}: ${engine.actionLabel}`}
     >
+      {!imageFailed && (
+        <img
+          className="engine-image"
+          src={engine.image}
+          alt=""
+          aria-hidden="true"
+          loading="eager"
+          decoding="async"
+          onError={() => setImageFailed(true)}
+        />
+      )}
       <span className="engine-wash" aria-hidden="true" />
       <span className="engine-content">
         <span className="engine-icon"><EngineIcon type={engine.icon} /></span>

@@ -6,20 +6,22 @@ type HeaderProps = {
   authState: 'idle' | 'loading' | 'ready' | 'error';
   onSignIn: () => void;
   onSignOut: () => void;
+  isArchivePage?: boolean;
 };
 
-const navItems = [
-  { label: 'Home', href: '#home' },
-  { label: 'Cases', href: '#cases' },
-  { label: 'Method', href: '#method' },
-  { label: 'Data', href: '#data' },
-  { label: 'Archive', href: '#archive' },
-];
+export function Header({ user, authState, onSignIn, onSignOut, isArchivePage = false }: HeaderProps) {
+  const sectionPrefix = isArchivePage ? '/#' : '#';
+  const navItems = [
+    { label: 'Home', href: isArchivePage ? '/' : '#home', current: !isArchivePage },
+    { label: 'Cases', href: `${sectionPrefix}cases`, current: false },
+    { label: 'Method', href: `${sectionPrefix}method`, current: false },
+    { label: 'Data', href: `${sectionPrefix}data`, current: false },
+    { label: 'Archive', href: '/archive', current: isArchivePage },
+  ];
 
-export function Header({ user, authState, onSignIn, onSignOut }: HeaderProps) {
   return (
     <header className="site-header">
-      <a className="brand-lockup" href="#home" aria-label="SARGuardian home">
+      <a className="brand-lockup" href={isArchivePage ? '/' : '#home'} aria-label="SARGuardian home">
         <span className="brand-mark" aria-hidden="true"><span className="brand-mountain" /><span className="brand-water" /></span>
         <span className="brand-copy">
           <strong><b>SAR</b>Guardian</strong>
@@ -28,8 +30,13 @@ export function Header({ user, authState, onSignIn, onSignOut }: HeaderProps) {
       </a>
 
       <nav className="main-nav" aria-label="Main navigation">
-        {navItems.map((item, index) => (
-          <a className={index === 0 ? 'nav-link is-current' : 'nav-link'} href={item.href} key={item.href}>
+        {navItems.map((item) => (
+          <a
+            className={item.current ? 'nav-link is-current' : 'nav-link'}
+            href={item.href}
+            key={item.href}
+            aria-current={item.current ? 'page' : undefined}
+          >
             {item.label}
           </a>
         ))}

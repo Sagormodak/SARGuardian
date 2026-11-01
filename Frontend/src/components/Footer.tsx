@@ -1,11 +1,16 @@
-const footerLinks = [
-  { label: 'Cases', href: '#cases' },
-  { label: 'Method', href: '#method' },
-  { label: 'Data sources', href: '#data' },
-  { label: 'Archive', href: '#archive' },
-];
+type FooterProps = {
+  isArchivePage?: boolean;
+};
 
-export function Footer() {
+export function Footer({ isArchivePage = false }: FooterProps) {
+  const sectionPrefix = isArchivePage ? '/#' : '#';
+  const footerLinks = [
+    { label: 'Cases', href: `${sectionPrefix}cases` },
+    { label: 'Method', href: `${sectionPrefix}method` },
+    { label: 'Data sources', href: `${sectionPrefix}data` },
+    { label: 'Archive', href: '/archive' },
+  ];
+
   return (
     <footer className="site-footer site-footer-v2">
       <div className="footer-brand">

@@ -59,7 +59,7 @@ export function Home({ user, authState, authError, firebaseConfigured, missingFi
           </div>
         </section>
         {authState === 'error' && <section className="error-banner" role="alert">{authError}</section>}
-        <HomeSections user={user} onSignIn={onSignIn} onOpenWorkspace={onOpenWorkspace} />
+        <HomeSections onOpenWorkspace={onOpenWorkspace} />
       </main>
       {previewEngine && (
         <div className="auth-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="river-preview-title">

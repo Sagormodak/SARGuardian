@@ -21,4 +21,13 @@ describe('SARGuardian analysis entry points', () => {
     expect(glacier?.description).toContain('same AOI-wide displacement workflow');
     expect(glacier?.description.toLowerCase()).not.toContain('collapse prediction');
   });
+  
+  it('provides secure image sources for every homepage workflow card', () => {
+    expect(engines).toHaveLength(4);
+    for (const engine of engines) {
+      const imageUrl = new URL(engine.image);
+      expect(imageUrl.protocol).toBe('https:');
+      expect(imageUrl.hostname).toBe('images.unsplash.com');
+    }
+  });
 });
