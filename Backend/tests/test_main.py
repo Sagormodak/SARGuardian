@@ -5,7 +5,7 @@ import hmac
 import json
 from pathlib import Path
 from io import BytesIO
-from zipfile import ZipFile
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -239,6 +239,19 @@ def _dashboard_zip() -> bytes:
     return buffer.getvalue()
 
 
+def _dashboard_zip_with_oversized_legacy_data() -> bytes:
+    buffer = BytesIO()
+    with ZipFile(BytesIO(_dashboard_zip()), "r") as original, ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
+        for name in original.namelist():
+            content = original.read(name)
+            if name == "web-dashboard/dashboard-data.js":
+                # The retired inline bundle can exceed the old 40 MiB viewer
+                # ceiling. The manifest and individual PNGs are still valid.
+                content = b"/*" + (b"x" * (40 * 1024 * 1024 + 1)) + b"*/"
+            archive.writestr(name, content)
+    return buffer.getvalue()
+
+
 def _dashboard_refresh_request(job_id, expected_previous_sha256: str, *, secret: str = "refresh-secret") -> tuple[bytes, dict[str, str]]:
     payload = {
         "job_id": str(job_id),
@@ -430,7 +443,7 @@ def test_interactive_dashboard_is_returned_only_for_verified_owner_and_uses_lazy
     from uuid import uuid4
 
     job_id = uuid4()
-    payload = _dashboard_zip()
+    payload = _dashboard_zip_with_oversized_legacy_data()
     artifact = {
         "path": "aoi-derived-results.zip",
         "kind": "aoi_derived_result_bundle",
