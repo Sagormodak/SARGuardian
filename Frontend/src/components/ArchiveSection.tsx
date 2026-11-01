@@ -95,15 +95,7 @@ export function ArchiveSection({ user, onSignIn, onOpenWorkspace }: {
   }, [user]);
 
   return (
-    <section className="home-section archive-section" aria-labelledby="archive-title">
-      <div className="home-section-heading">
-        <div>
-          <p className="section-eyebrow">YOUR WORKSPACE</p>
-          <h2 id="archive-title">Analysis archive</h2>
-          <p>Previous tasks are loaded from your signed-in account. No sample jobs are inserted into this list.</p>
-        </div>
-        {user && <button className="text-link-button" type="button" onClick={onOpenWorkspace}>Open analysis workspace</button>}
-      </div>
+    <section className="home-section archive-section" aria-label="Saved analysis jobs">
 
       {state === 'signed-out' && (
         <div className="archive-empty">
