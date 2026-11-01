@@ -1,10 +1,8 @@
 import { useState } from 'react';
 import type { User } from 'firebase/auth';
 import type { DisplacementJob } from '../../src/api/catalog';
-import { downloadDisplacementArtifact, getInteractiveDashboardHtml } from '../../src/api/catalog';
-import { waitForDashboardPopupLoad, writeDashboardHtml } from './dashboardPopup';
-
-type DashboardView = 'public' | 'evidence' | 'science';
+import { downloadDisplacementArtifact } from '../../src/api/catalog';
+import { buildDashboardRouteUrl, type DashboardView } from '../../src/dashboardDocument';
 
 const dashboardViews: Array<{ id: DashboardView; title: string; audience: string; description: string }> = [
   {
@@ -26,34 +24,6 @@ const dashboardViews: Array<{ id: DashboardView; title: string; audience: string
     description: 'Measurement diagnostics, quality gates, acquisition networks and provenance.',
   },
 ];
-
-function dashboardHtmlWithPreferredView(html: string, view: DashboardView): string {
-  const script = `<script id="sarguardian-preferred-dashboard-view">
-(function () {
-  var preferredView = ${JSON.stringify(view)};
-  function selectPreferredView() {
-    var button = document.querySelector('[data-sg-mode="' + preferredView + '"]');
-    if (!button) return false;
-    if (button.getAttribute('aria-selected') !== 'true') button.click();
-    return true;
-  }
-  function start() {
-    if (selectPreferredView()) return;
-    var observer = new MutationObserver(function () {
-      if (selectPreferredView()) observer.disconnect();
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-    window.setTimeout(function () { observer.disconnect(); }, 5000);
-  }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start, { once: true });
-  } else {
-    start();
-  }
-})();
-</script>`;
-  return /<\/body>/i.test(html) ? html.replace(/<\/body>/i, `${script}</body>`) : `${html}${script}`;
-}
 
 function dashboardAvailable(job: DisplacementJob): boolean {
   if (job.state !== 'succeeded' || !job.result_summary) return false;
@@ -86,58 +56,27 @@ export function ScientificResults({ job, user }: { job: DisplacementJob; user: P
   const bundleArtifactIndex = resultBundleArtifactIndex(job);
   const canDownloadBundle = bundleArtifactIndex !== undefined;
   const canOpenDashboard = dashboardAvailable(job);
-  const [opening, setOpening] = useState(false);
   const [selectedView, setSelectedView] = useState<DashboardView>('public');
   const [dashboardError, setDashboardError] = useState('');
-  const [dashboardProgress, setDashboardProgress] = useState('');
   const [downloadingBundle, setDownloadingBundle] = useState(false);
   const [bundleError, setBundleError] = useState('');
   const [bundleProgress, setBundleProgress] = useState('');
 
-  async function openDashboard(view: DashboardView) {
+  function openDashboard(view: DashboardView) {
     setSelectedView(view);
     setDashboardError('');
-    // Open a real HTTPS URL on the AOI workspace origin, not about:blank.
-    // This gives Google's browser-key referrer restrictions a stable site URL.
-    const popupUrl = new URL('/', window.location.origin).toString();
-    const popup = window.open(popupUrl, '_blank');
-    if (!popup) {
+    // Open a durable first-party route. The new tab restores Firebase auth,
+    // retrieves the saved private bundle, and can recover after a refresh.
+    const dashboardUrl = buildDashboardRouteUrl(window.location.origin, job.id, view);
+    const dashboardTab = window.open(dashboardUrl, '_blank');
+    if (!dashboardTab) {
       setDashboardError('The browser blocked the new tab. Allow pop-ups for SARGuardian and try again.');
       return;
     }
-
     try {
-      popup.opener = null;
+      dashboardTab.opener = null;
     } catch {
-      // Continue safely if browser policy prevents updating opener.
-    }
-
-    setOpening(true);
-    let popupReady = false;
-    try {
-      await waitForDashboardPopupLoad(popup, window.location.origin);
-      popupReady = true;
-      popup.document.title = 'SARGuardian · Interactive dashboard';
-      popup.document.body.textContent = 'Verifying the private result bundle and preparing the selected dashboard view…';
-      const html = await getInteractiveDashboardHtml(job.id, user, setDashboardProgress);
-      writeDashboardHtml(popup, dashboardHtmlWithPreferredView(html, view));
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Could not open the interactive dashboard.';
-      setDashboardError(message);
-      if (popupReady) {
-        try {
-          popup.document.open();
-          popup.document.write('<!doctype html><html lang="en"><meta charset="utf-8"><title>SARGuardian dashboard unavailable</title><body style="font:16px system-ui;padding:24px"><h1>Dashboard unavailable</h1><p id="message"></p></body></html>');
-          const messageNode = popup.document.getElementById('message');
-          if (messageNode) messageNode.textContent = message;
-          popup.document.close();
-        } catch {
-          // The in-app status below still reports the failure when the popup is not writable.
-        }
-      }
-    } finally {
-      setOpening(false);
-      setDashboardProgress('');
+      // The route does not depend on its opener.
     }
   }
 
@@ -187,7 +126,6 @@ export function ScientificResults({ job, user }: { job: DisplacementJob; user: P
                 aria-label={`Open ${view.title}`}
                 aria-pressed={selectedView === view.id}
                 onClick={() => void openDashboard(view.id)}
-                disabled={opening}
               >
                 <span className="dashboard-option-number">0{index + 1}</span>
                 <strong>{view.title}</strong>
@@ -225,7 +163,6 @@ export function ScientificResults({ job, user }: { job: DisplacementJob; user: P
         </p>
       )}
       {canOpenDashboard && <p className="scientific-results-note">A processing PASS confirms structural and provenance checks, not independent geophysical accuracy. Candidate patterns are not hazard confirmations; pairwise LOS is not automatically cumulative or 3-D movement.</p>}
-      {dashboardProgress && <p className="scientific-results-note" role="status">{dashboardProgress}</p>}
       {bundleProgress && <p className="scientific-results-note" role="status">{bundleProgress}</p>}
       {bundleError && <p className="scientific-results-error" role="alert">{bundleError}</p>}
       {dashboardError && <p className="scientific-results-error" role="alert">{dashboardError}</p>}

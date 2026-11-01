@@ -1,8 +1,13 @@
 export const ARCHIVE_PATH = '/archive';
+export const DASHBOARD_PATH = '/dashboard';
 export const LANDSLIDE_PATH = '/landslide';
 export const LANDSLIDE_RESULTS_PATH = '/landslide/results';
 export const LANDSLIDE_DISPLACEMENT_PATH = '/landslide/displacements';
 export const LANDSLIDE_KNOWN_PLACE_PATH = '/landslide/known-place-analysis';
+
+export function isDashboardRoute(pathname: string): boolean {
+  return normalizePathname(pathname) === DASHBOARD_PATH;
+}
 
 export function isArchiveRoute(pathname: string): boolean {
   return normalizePathname(pathname) === ARCHIVE_PATH;
