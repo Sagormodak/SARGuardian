@@ -10,9 +10,14 @@ on:
         required: true
         type: string
       aoi_wkt:
-        description: "Closed single-ring WGS84 polygon WKT (longitude latitude)"
+        description: "Measurement polygon: closed single-ring WGS84 polygon WKT (longitude latitude)"
         required: true
         type: string
+      scope_aoi_wkt:
+        description: "Outer AOI boundary from the map; kept separate from the measurement and reference polygons"
+        required: false
+        type: string
+        default: ""
       start_date:
         description: "Inclusive UTC start date (YYYY-MM-DD)"
         required: true
@@ -95,6 +100,7 @@ jobs:
     uses: moshiour0/SARGuardian-backend/.github/workflows/know-place-aoi-analysis.yml@bd7a59c54ddae7c19fd88896e877c3a530b43d9e
     with:
       aoi_wkt: ${{ inputs.aoi_wkt }}
+      scope_aoi_wkt: ${{ inputs.scope_aoi_wkt }}
       start_date: ${{ inputs.start_date }}
       end_date: ${{ inputs.end_date }}
       hazard_mode: ${{ inputs.hazard_mode }}
