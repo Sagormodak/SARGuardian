@@ -1945,8 +1945,8 @@ async def get_displacement_dashboard(
     manifest_blob = manifest_blob.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     layer_blob = json.dumps(layer_urls, separators=(",", ":"), allow_nan=False)
     embedded_data = (
-        "<script>\\nwindow.SARGUARDIAN_DASHBOARD=" + manifest_blob
-        + ";\\nwindow.SARGUARDIAN_LAYER_DATA=" + layer_blob + ";\\n</script>"
+        "<script>\nwindow.SARGUARDIAN_DASHBOARD=" + manifest_blob
+        + ";\nwindow.SARGUARDIAN_LAYER_DATA=" + layer_blob + ";\n</script>"
     )
     html = html.replace(data_marker, embedded_data, 1)
     html = html.replace(
@@ -2020,7 +2020,7 @@ def get_displacement_dashboard_asset(job_id: UUID, asset_path: str, ticket: str)
     except (BadZipFile, KeyError, OSError):
         raise HTTPException(status_code=409, detail="Stored dashboard raster asset is unreadable.") from None
 
-    if not content.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+    if not content.startswith(b"\x89PNG\r\n\x1a\n"):
         raise HTTPException(status_code=409, detail="Dashboard raster asset is not a valid PNG preview.")
     return Response(content=content, media_type="image/png", headers={
         "Cache-Control": "private, max-age=300",
