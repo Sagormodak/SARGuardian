@@ -373,10 +373,10 @@ def test_dashboard_drive_failure_logs_safe_reason_without_exposing_private_ids(m
         },
     })
 
-    def fail_private_download(_file_id):
+    def fail_private_download(_file_id, _destination, *, max_bytes=None):
         raise main_module.DriveUploadError("Google Drive result storage is not fully configured.")
 
-    monkeypatch.setattr(main_module, "download_private_result", fail_private_download)
+    monkeypatch.setattr(main_module, "download_private_result_to_path", fail_private_download)
     with caplog.at_level("WARNING", logger="app.main"):
         response = api.get(
             f"/api/displacement-jobs/{created['id']}/dashboard",
