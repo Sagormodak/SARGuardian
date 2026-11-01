@@ -94,7 +94,8 @@ export function ScientificResults({ job, user }: { job: DisplacementJob; user: P
   const [bundleError, setBundleError] = useState('');
   const [bundleProgress, setBundleProgress] = useState('');
 
-  async function openDashboard() {
+  async function openDashboard(view: DashboardView) {
+    setSelectedView(view);
     setDashboardError('');
     // Open a real HTTPS URL on the AOI workspace origin, not about:blank.
     // This gives Google's browser-key referrer restrictions a stable site URL.
@@ -119,7 +120,7 @@ export function ScientificResults({ job, user }: { job: DisplacementJob; user: P
       popup.document.title = 'SARGuardian · Interactive dashboard';
       popup.document.body.textContent = 'Verifying the private result bundle and preparing the selected dashboard view…';
       const html = await getInteractiveDashboardHtml(job.id, user, setDashboardProgress);
-      writeDashboardHtml(popup, dashboardHtmlWithPreferredView(html, selectedView));
+      writeDashboardHtml(popup, dashboardHtmlWithPreferredView(html, view));
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Could not open the interactive dashboard.';
       setDashboardError(message);
@@ -174,7 +175,7 @@ export function ScientificResults({ job, user }: { job: DisplacementJob; user: P
             <div>
               <span className="result-kicker">CHOOSE YOUR VIEW</span>
               <h3>How would you like to explore this result?</h3>
-              <p>All three views use the same verified result bundle. Only the presentation and level of detail change.</p>
+              <p>Open any view directly. All three use the same verified saved result bundle; only the presentation and level of detail change.</p>
             </div>
           </div>
           <div className="dashboard-view-options" role="group" aria-label="Dashboard audience view">
@@ -183,8 +184,10 @@ export function ScientificResults({ job, user }: { job: DisplacementJob; user: P
                 className={`dashboard-view-option ${selectedView === view.id ? 'is-selected' : ''}`}
                 type="button"
                 key={view.id}
+                aria-label={`Open ${view.title}`}
                 aria-pressed={selectedView === view.id}
-                onClick={() => setSelectedView(view.id)}
+                onClick={() => void openDashboard(view.id)}
+                disabled={opening}
               >
                 <span className="dashboard-option-number">0{index + 1}</span>
                 <strong>{view.title}</strong>
@@ -193,11 +196,7 @@ export function ScientificResults({ job, user }: { job: DisplacementJob; user: P
               </button>
             ))}
           </div>
-          <div className="dashboard-selection-actions">
-            <button className="investigate-button validated-output-link" type="button" onClick={() => void openDashboard()} disabled={opening}>
-              {opening ? 'Opening selected view…' : `Open ${dashboardViews.find((view) => view.id === selectedView)?.title ?? 'dashboard'}`}
-            </button>
-          </div>
+
         </div>
       )}
       {canDownloadBundle && (
