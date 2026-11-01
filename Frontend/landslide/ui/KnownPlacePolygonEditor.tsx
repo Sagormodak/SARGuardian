@@ -212,6 +212,10 @@ export function KnownPlacePolygonEditor({
       setMapError('Return to the AOI map and create a valid closed outer polygon.');
       return undefined;
     }
+    if (!(import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined)?.trim()) {
+      setMapError('Google Maps is not configured. Use the WKT fields below or configure VITE_GOOGLE_MAPS_API_KEY.');
+      return undefined;
+    }
     void importLibrary('maps')
       .then(({ Map }) => {
         if (!mounted || !mapElementRef.current) return;
