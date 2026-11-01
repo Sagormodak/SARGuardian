@@ -102,7 +102,7 @@ concurrency:
 jobs:
   analyze-known-place:
     name: Run isolated Known Place scientific analysis
-    uses: moshiour0/SARGuardian-backend/.github/workflows/know-place-aoi-analysis.yml@bcb1ee656a7559b5757f83ca5f8fde095de91ad0
+    uses: moshiour0/SARGuardian-backend/.github/workflows/know-place-aoi-analysis.yml@c89060370115e1ef9afeb9d33b8c7069cdb7daeb
     with:
       aoi_wkt: ${{ inputs.aoi_wkt }}
       scope_aoi_wkt: ${{ inputs.scope_aoi_wkt }}
