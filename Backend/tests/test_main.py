@@ -222,6 +222,7 @@ def _dashboard_zip(
     manifest_padding: str = "",
     candidate_feature_count: int = 0,
     candidate_feature_padding: str = "",
+    extra_manifest_fields: dict | None = None,
 ) -> bytes:
     buffer = BytesIO()
     with ZipFile(buffer, "w") as archive:
@@ -266,6 +267,8 @@ def _dashboard_zip(
                     ],
                 },
             }
+        if extra_manifest_fields:
+            manifest.update(extra_manifest_fields)
         archive.writestr("web-dashboard/manifest.json", json.dumps(manifest))
         archive.writestr("web-dashboard/layers/test-layer.png", preview)
     return buffer.getvalue()
@@ -668,12 +671,15 @@ def test_dashboard_preview_asset_uses_cached_verified_bundle_and_short_lived_tic
     assert downloads == [True]
 
 
-def test_dashboard_shell_streams_manifest_larger_than_vercel_buffer_limit(monkeypatch, tmp_path) -> None:
+def test_dashboard_projects_source_manifest_over_16_mib_onto_small_browser_contract(monkeypatch, tmp_path) -> None:
     from types import SimpleNamespace
     from uuid import uuid4
 
     job_id = uuid4()
-    payload = _dashboard_zip(manifest_padding="x" * (5 * 1024 * 1024))
+    payload = _dashboard_zip(manifest_padding="x" * (17 * 1024 * 1024))
+    with ZipFile(BytesIO(payload), "r") as source_archive:
+        source_manifest = json.loads(source_archive.read("web-dashboard/manifest.json"))
+    assert len(json.dumps(source_manifest).encode("utf-8")) > main_module.MAX_DASHBOARD_MANIFEST_BYTES
     artifact = {
         "path": "aoi-derived-results.zip",
         "kind": "aoi_derived_result_bundle",
@@ -705,8 +711,112 @@ def test_dashboard_shell_streams_manifest_larger_than_vercel_buffer_limit(monkey
         headers={"X-SARGuardian-Google-Maps-Key": "AIzaSyFakeRestrictedKey123456789012345"},
     )
     assert response.status_code == 200
-    assert len(response.content) > 4.5 * 1024 * 1024
+    assert len(response.content) < 4.5 * 1024 * 1024
     assert "window.SARGUARDIAN_DASHBOARD=" in response.text
+    assert "padding" not in response.text
+    assert "Browser-view note:" in response.text
+    # Full source manifest remains intact in the original verified archive.
+    assert len(source_manifest["padding"]) == 17 * 1024 * 1024
+    assert hashlib.sha256(payload).hexdigest() == artifact["sha256"]
+
+
+def test_dashboard_projects_large_duplicate_science_and_pair_reports(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    job_id = uuid4()
+    duplicate_diagnostic = "d" * (7 * 1024 * 1024)
+    pair_metadata = "p" * (7 * 1024 * 1024)
+    extra = {
+        "run": {
+            "github_run_id": "123456",
+            "aoi_wkt_sha256": "a" * 64,
+            "science_commit": "b" * 40,
+            "orchestration_commit": "c" * 40,
+        },
+        "science_pipeline": {
+            "overall_status": "NETWORK_ASSESSED_WITH_DOWNSTREAM_STAGES_WITHHELD",
+            "network_assessment_status": "COMPLETED",
+            "modules": [{"name": "timeseries.py", "status": "WITHHELD", "reason": "Reference not independently validated."}],
+            "networks": [{"geometry": "ASC T170", "n_pairs": 3, "n_epochs": 4, "redundancy": 0, "topology_status": "EXACTLY_DETERMINED_NO_REDUNDANCY"}],
+            "common_reference_timeseries": {"duplicated_full_report": duplicate_diagnostic},
+            "network_assessment_log_excerpt": duplicate_diagnostic,
+        },
+        "aoi_wide_displacement_screen": {
+            "status": "COMPLETED_EXPLORATORY_RANKING",
+            "purpose": "FIND_DISPLACEMENTS_AOI_WIDE",
+            "target_required": False,
+            "target_coordinates_used": False,
+            "candidate_count": 0,
+            "series": [{
+                "series_id": "ASC_T170",
+                "product_family": "GOFF",
+                "track": 170,
+                "direction": "ASCENDING",
+                "pair_count": 3,
+                "status": "EXPLORATORY_RANKING_ONLY",
+                "pairs": [{"verbose_source_metadata": pair_metadata}],
+            }],
+            "rejected_products": [{"verbose": duplicate_diagnostic}],
+            "candidate_feature_collection": {"type": "FeatureCollection", "features": []},
+            "gunw_per_pixel_stack": {"status": "WITHHELD"},
+        },
+        "common_reference_timeseries": {
+            "status": "COMMON_DATUM_PAIRWISE_ONLY",
+            "reason": "No robust redundant network.",
+            "pairwise_measurements": [{"verbose_pair_receipt": pair_metadata}],
+            "components": [{
+                "network": "ASC T170", "component": 1,
+                "status": "WITHHELD_NO_REDUNDANT_ROBUST_NETWORK",
+                "pairs_count": 3, "redundancy": 0, "series": [],
+                "verbose_source_report": duplicate_diagnostic,
+            }],
+            "networks": [{"network": "ASC T170", "common_pixels_outside_target_buffer": 0, "verbose": pair_metadata}],
+        },
+    }
+    payload = _dashboard_zip(extra_manifest_fields=extra)
+    with ZipFile(BytesIO(payload), "r") as source_archive:
+        source_manifest = json.loads(source_archive.read("web-dashboard/manifest.json"))
+    source_bytes = len(json.dumps(source_manifest).encode("utf-8"))
+    assert source_bytes > main_module.MAX_DASHBOARD_MANIFEST_BYTES
+
+    artifact = {
+        "path": "aoi-derived-results.zip",
+        "kind": "aoi_derived_result_bundle",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "bytes": len(payload),
+        "drive_file_id": "private-drive-file-id",
+    }
+    class Store:
+        def get_displacement_job(self, owner_uid, requested_job_id):
+            return {"id": str(job_id), "owner_uid": owner_uid, "state": "succeeded",
+                    "result_summary": {"web_dashboard": {"status": "PASS"}, "artifacts": [artifact]}}
+
+    def download_bundle(_drive_id, destination, *, max_bytes=None):
+        Path(destination).write_bytes(payload)
+        return {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+
+    monkeypatch.setattr(main_module, "get_job_store", lambda: Store())
+    monkeypatch.setattr(main_module, "get_settings", lambda: SimpleNamespace(displacement_callback_secret="dashboard-assets-test-secret"))
+    monkeypatch.setattr(main_module, "DASHBOARD_ARCHIVE_CACHE_ROOT", tmp_path)
+    monkeypatch.setattr(main_module, "download_private_result_to_path", download_bundle)
+
+    response = authenticated_client().get(
+        f"/api/displacement-jobs/{job_id}/dashboard",
+        headers={"X-SARGuardian-Google-Maps-Key": "AIzaSyFakeRestrictedKey123456789012345"},
+    )
+    assert response.status_code == 200
+    assert len(response.content) < 4.5 * 1024 * 1024
+    assert "window.SARGUARDIAN_DASHBOARD=" in response.text
+    assert "EXACTLY_DETERMINED_NO_REDUNDANCY" in response.text
+    assert "WITHHELD" in response.text
+    assert "duplicated_full_report" not in response.text
+    assert "verbose_pair_receipt" not in response.text
+    assert duplicate_diagnostic not in response.text
+    assert pair_metadata not in response.text
+    assert hashlib.sha256(payload).hexdigest() == artifact["sha256"]
+
+
 
 
 def test_large_candidate_manifest_is_compacted_for_browser_without_changing_saved_result(monkeypatch, tmp_path) -> None:
@@ -767,8 +877,8 @@ def test_large_candidate_manifest_is_compacted_for_browser_without_changing_save
     assert '"candidate_features_displayed":100' in response.text
     assert '"candidate_features_omitted_from_map":50' in response.text
     assert '"candidate_properties_reduced_for_display":true' in response.text
-    assert "Map display note:" in response.text
-    assert "original candidate GeoJSON and scientific artifacts remain unchanged" in response.text
+    assert "Browser-view note:" in response.text
+    assert "original candidate GeoJSON" in response.text
     assert len(source_features) == 150
     # The private ZIP itself is still byte-for-byte the original object.
     assert hashlib.sha256(payload).hexdigest() == artifact["sha256"]
