@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createQueuedJob,
+  downloadDisplacementArtifact,
   getDisplacementJob,
   getInteractiveDashboardHtml,
   getProcessingJob,
@@ -47,6 +48,38 @@ describe('Authenticated interactive dashboard API contract', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+});
+
+describe('Owner-authenticated archived artifact download API contract', () => {
+  const jobId = '736bd4e6-8963-43be-a916-bc62336c8557';
+  const user = { getIdToken: vi.fn().mockResolvedValue('firebase-id-token') };
+
+  it('streams a retained result bundle through the account API, not a private Drive URL', async () => {
+    const bundle = new Blob(['verified result bundle'], { type: 'application/zip' });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, blob: async () => bundle });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(downloadDisplacementArtifact(jobId, 2, user)).resolves.toBe(bundle);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      `http://localhost:8000/api/displacement-jobs/${jobId}/artifacts/2`,
+    );
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({
+      Authorization: 'Bearer firebase-id-token',
+    });
+  });
+
+  it('surfaces private-storage authorization failures to the Archive UI', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({ detail: 'This result belongs to another account.' }),
+    }));
+
+    await expect(downloadDisplacementArtifact(jobId, 0, user))
+      .rejects.toThrow('This result belongs to another account.');
+  });
 });
 
 describe('NISAR catalogue preflight API contract', () => {
