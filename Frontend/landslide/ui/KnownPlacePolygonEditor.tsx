@@ -9,6 +9,7 @@ type ValidationResult = { valid: boolean; message: string };
 
 type Props = {
   outerAoiWkt: string | null;
+  initialMeasurementWkt?: string | null;
   onMeasurementChange: (wkt: string) => void;
   onReferenceChange: (wkt: string) => void;
   onValidationChange: (result: ValidationResult) => void;
@@ -137,6 +138,7 @@ function validatePolygonPair(
 
 export function KnownPlacePolygonEditor({
   outerAoiWkt,
+  initialMeasurementWkt,
   onMeasurementChange,
   onReferenceChange,
   onValidationChange,
@@ -164,6 +166,7 @@ export function KnownPlacePolygonEditor({
   const [measurementText, setMeasurementText] = useState('');
   const [referenceText, setReferenceText] = useState('');
   const [geometryError, setGeometryError] = useState('');
+  const initialMeasurementAppliedRef = useRef(false);
 
   drawingRoleRef.current = drawingRole;
 
@@ -183,6 +186,23 @@ export function KnownPlacePolygonEditor({
   useEffect(() => {
     onValidationChange(validation);
   }, [onValidationChange, validation]);
+
+  useEffect(() => {
+    if (!initialMeasurementWkt || initialMeasurementAppliedRef.current) return;
+    initialMeasurementAppliedRef.current = true;
+    try {
+      const points = parsePolygonWkt(initialMeasurementWkt);
+      if (points.length > 500) throw new Error('The suggested candidate outline is too detailed to edit safely. Draw a smaller measurement polygon.');
+      if (hasSelfIntersection(points)) throw new Error('The suggested candidate outline needs editing because its simplified boundary crosses itself.');
+      setMeasurement(points);
+      setMeasurementClosed(true);
+      setMeasurementText(initialMeasurementWkt);
+      setActiveRole('measurement');
+      setGeometryError('A candidate-derived Suggested Measurement Polygon was loaded. Review and edit its boundary before running measurement.');
+    } catch (error) {
+      setGeometryError(error instanceof Error ? error.message : 'The suggested candidate polygon could not be loaded.');
+    }
+  }, [initialMeasurementWkt]);
 
   useEffect(() => {
     try {
