@@ -923,8 +923,9 @@ function simplifyCandidateClosedRing(closedRing,maxClosedVertices=500){
  for(let i=1;i<points.length;i++){const d=(points[i][0]-origin[0])**2+(points[i][1]-origin[1])**2;if(d>pivotDistance){pivotDistance=d;pivot=i;}}
  if(pivotDistance<=0)return null;
  const firstPath=points.slice(0,pivot+1),secondPath=[...points.slice(pivot),origin];
- const xs=points.map(p=>p[0]),ys=points.map(p=>p[1]);
- const maxTolerance=Math.hypot(Math.max(...xs)-Math.min(...xs),Math.max(...ys)-Math.min(...ys));
+ let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+ for(const point of points){minX=Math.min(minX,point[0]);maxX=Math.max(maxX,point[0]);minY=Math.min(minY,point[1]);maxY=Math.max(maxY,point[1]);}
+ const maxTolerance=Math.hypot(maxX-minX,maxY-minY);
  let lo=0,hi=Math.max(maxTolerance,1e-12),best=null;
  for(let iteration=0;iteration<28;iteration++){
   const tolerance=(lo+hi)/2;
