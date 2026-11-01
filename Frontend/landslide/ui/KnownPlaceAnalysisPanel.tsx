@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { KnownPlacePolygonEditor } from './KnownPlacePolygonEditor';
 import type { User } from 'firebase/auth';
 import {
   getKnownPlaceAnalysisStatus,
@@ -66,13 +67,19 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
   const [direction, setDirection] = useState<'ANY' | 'A' | 'D'>('ANY');
   const [coherenceNeighbours, setCoherenceNeighbours] = useState<'1' | '5' | '10' | '15' | '20' | '25'>('1');
   const [allowedReleaseIds, setAllowedReleaseIds] = useState('');
+  const [measurementWkt, setMeasurementWkt] = useState('');
   const [referenceWkt, setReferenceWkt] = useState('');
+  const [polygonValidation, setPolygonValidation] = useState({ valid: false, message: 'Draw and close both analysis polygons.' });
   const [geometryHeight, setGeometryHeight] = useState('');
   const [confirmRawDownloads, setConfirmRawDownloads] = useState(false);
   const [pendingAction, setPendingAction] = useState<'dry-run' | 'analysis' | null>(null);
   const [run, setRun] = useState<StoredRun | null>(() => loadStoredRun(user.uid));
   const [error, setError] = useState('');
   const [pollError, setPollError] = useState('');
+  const handleMeasurementChange = useCallback((wkt: string) => setMeasurementWkt(wkt), []);
+  const handleReferenceChange = useCallback((wkt: string) => setReferenceWkt(wkt), []);
+  const handlePolygonValidation = useCallback((result: { valid: boolean; message: string }) => setPolygonValidation(result), []);
+  const canSubmitGeometry = Boolean(aoiWkt && measurementWkt && referenceWkt && polygonValidation.valid);
 
   useEffect(() => {
     if (!run) {
@@ -114,7 +121,11 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
 
   const submit = async (executeDownloads: boolean) => {
     if (!aoiWkt || !startDate || !endDate) {
-      setError('Return to the map and create a valid closed AOI and date window first.');
+      setError('Return to the AOI map and create a valid outer AOI and date window first.');
+      return;
+    }
+    if (!measurementWkt || !referenceWkt || !polygonValidation.valid) {
+      setError(polygonValidation.message || 'Draw and validate both the Measurement and Reference polygons before submitting.');
       return;
     }
     if (executeDownloads && !confirmRawDownloads) {
@@ -135,7 +146,8 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
     setPollError('');
     try {
       const submitted = await startKnownPlaceAnalysis({
-        aoi_wkt: aoiWkt,
+        aoi_wkt: measurementWkt,
+        scope_aoi_wkt: aoiWkt,
         start_date: startDate,
         end_date: endDate,
         hazard_mode: hazardMode,
@@ -145,7 +157,7 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
         direction,
         coherence_neighbours: coherenceNeighbours,
         allowed_release_ids: allowedReleaseIds.trim(),
-        reference_wkt: referenceWkt.trim(),
+        reference_wkt: referenceWkt,
         geometry_height_m: height,
         execute_downloads: executeDownloads,
         confirm_raw_downloads: executeDownloads && confirmRawDownloads,
@@ -167,15 +179,21 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
       <section className="nisar-results-summary">
         <span className="result-kicker">SEPARATE SCIENCE WORKFLOW · GOFF</span>
         <h1>Known Place Analysis</h1>
-        <p>Run the dedicated GOFF analysis workflow for the AOI and dates selected on the map. This is separate from Find Displacements, which continues to use the GUNW + GOFF account-processing pipeline.</p>
+        <p>Run the dedicated GOFF measurement workflow for two user-drawn polygons inside the outer AOI and the selected date window. This remains separate from Find Displacements, which continues to discover candidates without a measurement target.</p>
         <div className="catalog-stats">
           <div><span>Known place</span><strong>{placeName || 'AOI only — no named place'}</strong></div>
           <div><span>AOI area</span><strong>{Number.isFinite(aoiAreaKm2) && aoiAreaKm2 > 0 ? `${aoiAreaKm2.toFixed(2)} km²` : 'Not validated'}</strong></div>
           <div><span>Start date</span><strong>{startDate || 'Not selected'}</strong></div>
           <div><span>End date</span><strong>{endDate || 'Not selected'}</strong></div>
         </div>
-        <p className="catalog-notice">The polygon is the analysis region. A selected place name is context metadata, not proof that a hazard exists. The engine reports horizontal-offset measurements, uncertainty and quality gates where supported; it does not create a hazard alarm.</p>
-        {!aoiWkt && <p className="catalog-error" role="alert">A valid closed AOI is required. Go back to the map and draw your polygon.</p>}
+        <p className="catalog-notice">The original map AOI is retained as an outer selection boundary. The Measurement Polygon is the area whose pairwise motion is summarized; the separate Reference Polygon supplies background comparison. A selected reference area is not assumed to be stable ground.</p>
+        {!aoiWkt && <p className="catalog-error" role="alert">A valid outer AOI is required. Go back to the map and draw your polygon.</p>}
+        <KnownPlacePolygonEditor
+          outerAoiWkt={aoiWkt}
+          onMeasurementChange={handleMeasurementChange}
+          onReferenceChange={handleReferenceChange}
+          onValidationChange={handlePolygonValidation}
+        />
         <div className="known-place-form-grid">
           <label className="aoi-job-label">
             <span>Hazard context</span>
@@ -217,10 +235,6 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
             <span>Exact release IDs (optional, comma-separated)</span>
             <input value={allowedReleaseIds} onChange={(event) => setAllowedReleaseIds(event.target.value)} placeholder="Leave blank to retain valid candidates; conflicts fail safe" autoComplete="off" />
           </label>
-          <label className="aoi-job-label known-place-wide">
-            <span>Reference/background polygon WKT (optional)</span>
-            <textarea value={referenceWkt} onChange={(event) => setReferenceWkt(event.target.value)} rows={3} placeholder="Leave blank for the documented 2 km local-context component-median reference" spellCheck={false} />
-          </label>
           <label className="aoi-job-label">
             <span>Constant ellipsoidal height in metres (optional sensitivity only)</span>
             <input type="number" value={geometryHeight} onChange={(event) => setGeometryHeight(event.target.value)} min={-500} max={100000} step="any" placeholder="Blank = documented approximation" />
@@ -230,7 +244,7 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
         <section className="known-place-run-options" aria-label="Known Place run options">
           <h2>Choose how to run</h2>
           <p className="catalog-notice"><b>Catalog-only dry run:</b> checks the request, product availability and series plan. It does not download raw NISAR products.</p>
-          <button type="button" className="demo-button" disabled={!aoiWkt || pendingAction !== null} onClick={() => void submit(false)}>
+          <button type="button" className="demo-button" disabled={!canSubmitGeometry || pendingAction !== null} onClick={() => void submit(false)}>
             {pendingAction === 'dry-run' ? 'Submitting dry run…' : 'Run catalog-only dry run'}
           </button>
           <div className="known-place-consent">
@@ -238,7 +252,7 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
               <input type="checkbox" checked={confirmRawDownloads} onChange={(event) => setConfirmRawDownloads(event.target.checked)} />
               <span><b>I explicitly authorize raw NISAR GOFF downloads for this request.</b> The workflow checks Earthdata/Drive credentials before downloading, processes selected products one at a time, and retains derived results and receipts.</span>
             </label>
-            <button type="button" className="investigate-button" disabled={!aoiWkt || !confirmRawDownloads || pendingAction !== null} onClick={() => void submit(true)}>
+            <button type="button" className="investigate-button" disabled={!canSubmitGeometry || !confirmRawDownloads || pendingAction !== null} onClick={() => void submit(true)}>
               {pendingAction === 'analysis' ? 'Starting GOFF analysis…' : 'Run Known Place Analysis'}
             </button>
           </div>
