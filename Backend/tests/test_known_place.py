@@ -132,3 +132,24 @@ def test_status_with_unknown_request_id_remains_dispatching(monkeypatch: pytest.
     )
     assert response.status == "dispatching"
     assert response.github_run_id is None
+
+def test_known_place_request_preserves_outer_scope_polygon_and_dispatches_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    outer = "POLYGON ((85.49 28.24, 85.55 28.24, 85.55 28.30, 85.49 28.30, 85.49 28.24))"
+    observed: dict = {}
+
+    def fake_request(_settings, _method, _path, body=None):
+        observed.update(body or {})
+        return 204, {}
+
+    monkeypatch.setattr(known_place, "_github_request", fake_request)
+    request = known_place.KnownPlaceAnalysisRequest(**(REQUEST | {"scope_aoi_wkt": outer}))
+    assert request.scope_aoi_wkt is not None
+    response = known_place.dispatch_known_place_analysis(settings(), request)
+    assert response.status == "dispatching"
+    assert observed["inputs"]["scope_aoi_wkt"].startswith("POLYGON((" )
+
+
+def test_known_place_request_rejects_invalid_outer_scope_polygon() -> None:
+    with pytest.raises(ValidationError, match="SCOPE_AOI_WKT_INVALID"):
+        known_place.KnownPlaceAnalysisRequest(**(REQUEST | {"scope_aoi_wkt": "POLYGON ((0 0, 1 0, 1 1))"}))
+
