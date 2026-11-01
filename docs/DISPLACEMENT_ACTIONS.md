@@ -64,6 +64,49 @@ it is not a validated hazard alert. Callbacks have
 signed, ordered sequence numbers and bind the job ID plus request fingerprint. GitHub
 terminal success without the signed completion callback is recorded as failure.
 
+
+## Archived result retrieval contract
+
+Processing and viewing are deliberately separate lifecycles:
+
+1. Submitting **Find Displacements** creates one durable job and dispatches one
+   `sarguardian-displacement.yml` GitHub Actions run. That run discovers/processes the
+   NISAR products, assembles the dashboard and result package, uploads the verified
+   `aoi-derived-results.zip` to the job's private Drive folder, and sends a signed
+   completion callback containing the artifact ID, SHA-256 and byte count.
+2. Supabase stores the job state, dashboard readiness and private artifact inventory.
+   The Drive file remains private; the browser never receives a Drive file ID or public
+   Drive URL. There is no six-hour expiry on a succeeded displacement result in the
+   current schema. The preflight manifest has its own expiry, but that does not expire
+   an already completed analysis.
+3. Opening **Public Discovery**, **Explore the Evidence** or **Scientific Evidence**
+   is a read-only operation. Each view calls the same owner-authenticated
+   `GET /api/displacement-jobs/{job_id}/dashboard` endpoint and loads the same
+   verified ZIP. The selected view changes presentation only; it does not dispatch
+   GitHub Actions, re-download NISAR source granules, or run scientific processing.
+4. The backend verifies Firebase ownership, checks the stored artifact inventory,
+   downloads the private ZIP using the server-side Drive OAuth identity, verifies its
+   exact byte count and SHA-256, reads only the dashboard HTML/data assets from the ZIP,
+   and returns a self-contained HTML response. The browser receives no Drive credential
+   or artifact identifier.
+5. **Download complete result package** is a separate read-only operation against
+   `GET /api/displacement-jobs/{job_id}/artifacts/{artifact_index}`. It performs the
+   same owner and checksum checks before returning the retained ZIP.
+
+The frontend first probes `/health` to wake an idle Render service. It retries the
+health check with a bounded delay and retries only transient dashboard/package GET
+failures. These retries never dispatch a new workflow. Permanent errors such as
+non-owner access, a missing dashboard validation PASS, missing viewer assets, an
+oversized viewer bundle, or checksum mismatch are surfaced rather than disguised as a
+successful open.
+
+The GitHub Actions artifact retention window (used for intermediate workflow artifacts)
+is not the retention policy for the private Drive result bundle. A job may have a
+verified downloadable ZIP but no interactive dashboard if its stored
+`web_dashboard.status` is not `PASS`; this is a validation/readiness state, not a
+time-based expiry. In `derived-only` mode the package does not include original
+full-granule HDF5 files.
+
 Apply the migration files in ascending timestamp order, including
 [20261027123456_place_target_contract.sql](../Backend/supabase/migrations/20261027123456_place_target_contract.sql),
 before deploying the place/target API contract. Keep direct browser access revoked; the trusted
