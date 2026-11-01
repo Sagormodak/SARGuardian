@@ -744,7 +744,7 @@ def _get_cached_dashboard_archive(job_id: UUID, artifact: dict) -> Path:
                     max_bytes=artifact["bytes"],
                 )
             except DriveUploadError:
-                raise HTTPException(status_code=503, detail="Private dashboard storage is unavailable. Reopen the saved dashboard and retry.") from None
+                raise HTTPException(status_code=503, detail="Private dashboard storage is unavailable. Retry in a moment.") from None
             if received.get("bytes") != artifact["bytes"] or received.get("sha256") != artifact["sha256"]:
                 raise HTTPException(status_code=409, detail="Stored dashboard bundle no longer matches its verified checksum inventory.")
             _write_dashboard_archive_cache(archive_path, destination)
