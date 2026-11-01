@@ -997,6 +997,20 @@ VERDICT: NOT TESTABLE. No two consecutive pair intervals share the same complete
         self.assertIn("Pair records in screen:", viewer)
         self.assertNotIn("Compatible pair intervals:", viewer)
         self.assertIn("runPlainConclusion", viewer)
+        self.assertIn("What did the satellite data show?", viewer)
+        self.assertIn("public-explainer-grid", viewer)
+        self.assertIn("GUNW · Measurement", viewer)
+        self.assertIn("GOFF · Image pattern", viewer)
+        self.assertIn("Candidate · Review lead", viewer)
+        self.assertIn("GUNW pattern records", viewer)
+        self.assertIn("GOFF offset review regions", viewer)
+        self.assertIn("The whole-area scan found", viewer)
+        self.assertIn("No area crossed the configured candidate-screening thresholds", viewer)
+        self.assertIn("activeFamily='GUNW'", viewer)
+        self.assertIn("function hasRenderableFamily(family)", viewer)
+        self.assertIn("function firstRenderableIndex(family)", viewer)
+        self.assertIn("@media(max-width:760px){.public-explainer-grid{grid-template-columns:1fr}", viewer)
+        self.assertIn("@media(max-width:430px){.public-family-switch", viewer)
         self.assertIn("Locate on map", viewer)
         self.assertIn('data-public-family="GUNW"', viewer)
         self.assertIn('data-public-family="GOFF"', viewer)
@@ -1047,6 +1061,25 @@ if (obs[selected].id !== "GOFF-2") throw new Error("GOFF_NEXT_ESCAPED_FAMILY");
 """
             family_check = subprocess.run(["node", "-e", playback_logic], capture_output=True, text=True)
             self.assertEqual(family_check.returncode, 0, family_check.stderr)
+
+            helper_start = viewer.index("function familyIndices(family=activeFamily)")
+            helper_end = viewer.index("function syncFamilyControls()", helper_start)
+            family_helpers = viewer[helper_start:helper_end]
+            renderable_script = """
+const obs = [
+  {product_type: "GOFF", secondary_date: "2026-07-07", id: "GOFF-1"},
+  {product_type: "GUNW", secondary_date: "2026-07-19", id: "GUNW-1"},
+  {product_type: "GUNW", secondary_date: "2026-08-14", id: "GUNW-2"}
+];
+const layers = [{observation_id: "GOFF-1"}, {observation_id: "GUNW-2"}];
+let activeFamily = "GUNW";
+""" + family_helpers + """
+if (!hasRenderableFamily("GUNW")) throw new Error("RENDERABLE_GUNW_NOT_FOUND");
+if (firstRenderableIndex("GUNW") !== 2) throw new Error("FIRST_RENDERABLE_GUNW_NOT_SELECTED");
+if (!hasRenderableFamily("GOFF")) throw new Error("GOFF_FALLBACK_NOT_FOUND");
+"""
+            renderable_check = subprocess.run(["node", "-e", renderable_script], capture_output=True, text=True)
+            self.assertEqual(renderable_check.returncode, 0, renderable_check.stderr)
         self.assertIn("body[data-dashboard-mode=evidence] .science-only", viewer)
         self.assertIn("presentation-active", viewer)
         self.assertIn("if(!document.fullscreenElement)document.body.classList.remove('presentation-active')", viewer)
