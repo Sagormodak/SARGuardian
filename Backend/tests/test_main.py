@@ -713,7 +713,7 @@ def test_dashboard_projects_source_manifest_over_16_mib_onto_small_browser_contr
     assert response.status_code == 200
     assert len(response.content) < 4.5 * 1024 * 1024
     assert "window.SARGUARDIAN_DASHBOARD=" in response.text
-    assert "padding" not in response.text
+    assert ("x" * 1024) not in response.text
     assert "Browser-view note:" in response.text
     # Full source manifest remains intact in the original verified archive.
     assert len(source_manifest["padding"]) == 17 * 1024 * 1024
@@ -878,7 +878,7 @@ def test_large_candidate_manifest_is_compacted_for_browser_without_changing_save
     assert '"candidate_features_omitted_from_map":50' in response.text
     assert '"candidate_properties_reduced_for_display":true' in response.text
     assert "Browser-view note:" in response.text
-    assert "original candidate GeoJSON" in response.text
+    assert "source GeoJSON" in response.text
     assert len(source_features) == 150
     # The private ZIP itself is still byte-for-byte the original object.
     assert hashlib.sha256(payload).hexdigest() == artifact["sha256"]
