@@ -1047,12 +1047,12 @@
 .known-place-geometry-tools button.confirm-button { border-color: #a4efd0; background: #a4efd0; color: #0b3c54; }
 .known-place-geometry-tools button:disabled { opacity: .42; cursor: not-allowed; }
 .known-place-polygon-summaries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.known-place-polygon-summaries article { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 10px; border: 1px solid rgba(220, 248, 255, .2); border-radius: 6px; background: rgba(7, 55, 79, .55); cursor: pointer; }
-.known-place-polygon-summaries article.selected { border-color: rgba(158, 216, 255, .85); background: rgba(73, 184, 242, .13); }
-.known-place-polygon-summaries article > div { display: grid; gap: 3px; min-width: 0; flex: 1; }
-.known-place-polygon-summaries article strong { color: #f7fbff; font-size: 10px; }
-.known-place-polygon-summaries article small { color: rgba(231, 247, 255, .68); font-size: 9px; }
-.known-place-polygon-summaries article > span:last-child { color: #cfeaff; font-size: 9px; white-space: nowrap; }
+.known-place-polygon-summaries button { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 10px; border: 1px solid rgba(220, 248, 255, .2); border-radius: 6px; background: rgba(7, 55, 79, .55); color: inherit; cursor: pointer; text-align: left; }
+.known-place-polygon-summaries button.selected { border-color: rgba(158, 216, 255, .85); background: rgba(73, 184, 242, .13); }
+.known-place-polygon-summaries button > span:nth-child(2) { display: grid; gap: 3px; min-width: 0; flex: 1; }
+.known-place-polygon-summaries button strong { color: #f7fbff; font-size: 10px; }
+.known-place-polygon-summaries button small { color: rgba(231, 247, 255, .68); font-size: 9px; }
+.known-place-polygon-summaries button > span:last-child { color: #cfeaff; font-size: 9px; white-space: nowrap; }
 .polygon-role-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; }
 .measurement-dot { background: #f7c66b; }.reference-dot { background: #38bdf8; }
 .known-place-geometry-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
