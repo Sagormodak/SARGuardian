@@ -679,7 +679,13 @@ def _valid_private_artifacts(value: object) -> bool:
 
 MAX_DASHBOARD_ARCHIVE_BYTES = 100 * 1024 * 1024
 MAX_DASHBOARD_HTML_BYTES = 2 * 1024 * 1024
+# The stored source manifest may contain a very detailed AOI-wide candidate
+# FeatureCollection. It is parsed under a separate bounded limit, then reduced
+# to a clearly-labelled browser display subset before being embedded in HTML.
+MAX_DASHBOARD_SOURCE_MANIFEST_BYTES = 64 * 1024 * 1024
 MAX_DASHBOARD_MANIFEST_BYTES = 16 * 1024 * 1024
+MAX_DASHBOARD_CANDIDATE_FEATURES = 100
+MAX_DASHBOARD_CANDIDATE_RING_POINTS = 128
 MAX_DASHBOARD_PREVIEW_BYTES = 16 * 1024 * 1024
 DASHBOARD_VIEWER_PATH = "web-dashboard/index.html"
 DASHBOARD_MANIFEST_PATH = "web-dashboard/manifest.json"
@@ -688,6 +694,170 @@ DASHBOARD_ASSET_TICKET_TTL_SECONDS = 2 * 60 * 60
 DASHBOARD_ARCHIVE_CACHE_TTL_SECONDS = 3 * 60 * 60
 DASHBOARD_ARCHIVE_CACHE_ROOT = Path(tempfile.gettempdir()) / "sarguardian-dashboard-archive-cache"
 _DASHBOARD_ARCHIVE_CACHE_LOCK = threading.Lock()
+
+
+def _point_segment_distance_squared(point: list, start: list, end: list) -> float:
+    px, py = float(point[0]), float(point[1])
+    sx, sy = float(start[0]), float(start[1])
+    ex, ey = float(end[0]), float(end[1])
+    dx, dy = ex - sx, ey - sy
+    denominator = dx * dx + dy * dy
+    if denominator <= 0:
+        return (px - sx) ** 2 + (py - sy) ** 2
+    fraction = max(0.0, min(1.0, ((px - sx) * dx + (py - sy) * dy) / denominator))
+    nearest_x, nearest_y = sx + fraction * dx, sy + fraction * dy
+    return (px - nearest_x) ** 2 + (py - nearest_y) ** 2
+
+
+def _simplify_open_geojson_path(points: list, tolerance: float) -> list:
+    if len(points) <= 2:
+        return points
+    tolerance_squared = tolerance * tolerance
+    keep = {0, len(points) - 1}
+    pending = [(0, len(points) - 1)]
+    while pending:
+        start_index, end_index = pending.pop()
+        farthest_index = None
+        farthest_distance = tolerance_squared
+        for index in range(start_index + 1, end_index):
+            distance = _point_segment_distance_squared(points[index], points[start_index], points[end_index])
+            if distance > farthest_distance:
+                farthest_distance = distance
+                farthest_index = index
+        if farthest_index is not None:
+            keep.add(farthest_index)
+            pending.append((start_index, farthest_index))
+            pending.append((farthest_index, end_index))
+    return [points[index] for index in sorted(keep)]
+
+
+def _simplify_geojson_ring_for_display(ring: list) -> tuple[list, bool]:
+    """Simplify one polygon ring for map display only; source GeoJSON stays in the ZIP."""
+    if not isinstance(ring, list) or len(ring) <= MAX_DASHBOARD_CANDIDATE_RING_POINTS:
+        return ring, False
+    is_closed = (
+        len(ring) >= 4
+        and isinstance(ring[0], (list, tuple))
+        and isinstance(ring[-1], (list, tuple))
+        and list(ring[0][:2]) == list(ring[-1][:2])
+    )
+    points = ring[:-1] if is_closed else ring
+    if len(points) <= MAX_DASHBOARD_CANDIDATE_RING_POINTS:
+        return ring, False
+    try:
+        anchor_index = max(
+            range(1, len(points)),
+            key=lambda index: (
+                (float(points[index][0]) - float(points[0][0])) ** 2
+                + (float(points[index][1]) - float(points[0][1])) ** 2
+            ),
+        )
+        first_path = points[: anchor_index + 1]
+        second_path = points[anchor_index:] + [points[0]]
+        tolerance = 1e-8
+        simplified = points
+        while tolerance <= 360:
+            first = _simplify_open_geojson_path(first_path, tolerance)
+            second = _simplify_open_geojson_path(second_path, tolerance)
+            candidate = first + second[1:]
+            if candidate and candidate[-1][:2] != candidate[0][:2]:
+                candidate.append(candidate[0])
+            simplified = candidate
+            if len(simplified) <= MAX_DASHBOARD_CANDIDATE_RING_POINTS:
+                break
+            tolerance *= 2
+        if len(simplified) < 4:
+            return ring, False
+        return simplified, len(simplified) < len(ring)
+    except (IndexError, TypeError, ValueError, OverflowError):
+        return ring, False
+
+
+def _simplify_geojson_geometry_for_display(geometry: object) -> bool:
+    if not isinstance(geometry, dict):
+        return False
+    geometry_type = geometry.get("type")
+    coordinates = geometry.get("coordinates")
+    simplified_any = False
+
+    def simplify_rings(rings: object) -> None:
+        nonlocal simplified_any
+        if not isinstance(rings, list):
+            return
+        for index, ring in enumerate(rings):
+            simplified, changed = _simplify_geojson_ring_for_display(ring)
+            if changed:
+                rings[index] = simplified
+                simplified_any = True
+
+    if geometry_type == "Polygon" and isinstance(coordinates, list):
+        simplify_rings(coordinates)
+    elif geometry_type == "MultiPolygon" and isinstance(coordinates, list):
+        for polygon in coordinates:
+            simplify_rings(polygon)
+    return simplified_any
+
+
+def _serialize_dashboard_manifest_for_browser(manifest: dict) -> tuple[str, bool]:
+    """Bound the browser payload without changing the archived scientific GeoJSON."""
+    screen = manifest.get("aoi_wide_displacement_screen")
+    if not isinstance(screen, dict):
+        screen = {}
+    feature_collection = screen.get("candidate_feature_collection")
+    features = feature_collection.get("features") if isinstance(feature_collection, dict) else None
+    if not isinstance(features, list):
+        blob = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        return blob, False
+
+    source_feature_count = len(features)
+    reported_count = screen.get("candidate_count")
+    total_count = max(
+        source_feature_count,
+        reported_count if isinstance(reported_count, int) and not isinstance(reported_count, bool) and reported_count >= 0 else 0,
+    )
+    display_feature_count = min(source_feature_count, MAX_DASHBOARD_CANDIDATE_FEATURES)
+    simplified_any = False
+
+    for feature_limit in (MAX_DASHBOARD_CANDIDATE_FEATURES, 50, 20, 0):
+        selected = features[:feature_limit]
+        for feature in selected:
+            if not isinstance(feature, dict):
+                continue
+            geometry = feature.get("geometry")
+            if _simplify_geojson_geometry_for_display(geometry):
+                simplified_any = True
+            properties = feature.get("properties")
+            if isinstance(properties, dict):
+                # These are the properties consumed by the interactive candidate
+                # map. The complete properties remain in the original ZIP export.
+                feature["properties"] = {
+                    key: properties[key]
+                    for key in ("candidate_id", "direction", "track", "area_km2_approx", "pairs_with_candidate")
+                    if key in properties
+                }
+        feature_collection["features"] = selected
+        screen["candidate_features_total"] = total_count
+        screen["candidate_features_displayed"] = len(selected)
+        screen["candidate_features_omitted_from_map"] = max(0, total_count - len(selected))
+        screen["candidate_geometry_simplified_for_display"] = simplified_any
+        screen["candidate_overlay_is_complete"] = (
+            len(selected) == total_count and not simplified_any
+        )
+        if screen["candidate_features_omitted_from_map"] or simplified_any:
+            screen["candidate_overlay_display_note"] = (
+                "Browser map shows a capped and/or simplified candidate overlay for performance. "
+                "The original candidate GeoJSON and scientific artifacts remain unchanged in the saved result ZIP."
+            )
+        blob = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        if len(blob.encode("utf-8")) <= MAX_DASHBOARD_MANIFEST_BYTES:
+            return blob, bool(screen["candidate_features_omitted_from_map"] or simplified_any)
+    raise HTTPException(
+        status_code=413,
+        detail=(
+            "The dashboard's non-raster metadata remains too large after safely reducing only the browser candidate overlay. "
+            "The saved analysis is unchanged; download the original result package."
+        ),
+    )
 
 
 def _dashboard_archive_cache_path(job_id: UUID, digest: str) -> Path:
@@ -1891,8 +2061,13 @@ def get_displacement_dashboard(
                 raise HTTPException(status_code=404, detail="The result package does not contain the required interactive dashboard assets.")
             html_info = archive.getinfo(DASHBOARD_VIEWER_PATH)
             manifest_info = archive.getinfo(DASHBOARD_MANIFEST_PATH)
-            if html_info.file_size > MAX_DASHBOARD_HTML_BYTES or manifest_info.file_size > MAX_DASHBOARD_MANIFEST_BYTES:
-                raise HTTPException(status_code=413, detail="Dashboard viewer or manifest exceeds the safe browser-viewing size.")
+            if html_info.file_size > MAX_DASHBOARD_HTML_BYTES:
+                raise HTTPException(status_code=413, detail="Dashboard viewer exceeds the safe browser-viewing size.")
+            if manifest_info.file_size > MAX_DASHBOARD_SOURCE_MANIFEST_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="The source dashboard manifest exceeds the bounded server extraction size. The saved analysis is unchanged; download the original result package.",
+                )
             html = archive.read(html_info).decode("utf-8")
             manifest = json.loads(archive.read(manifest_info).decode("utf-8"))
             if not isinstance(manifest, dict) or not isinstance(manifest.get("layers"), list):
@@ -1930,7 +2105,7 @@ def get_displacement_dashboard(
     data_marker = '<script src="./dashboard-data.js"></script>'
     if html.count(data_marker) != 1:
         raise HTTPException(status_code=409, detail="Dashboard viewer does not match the supported external-data contract.")
-    manifest_blob = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    manifest_blob, candidate_overlay_compacted = _serialize_dashboard_manifest_for_browser(manifest)
     manifest_blob = manifest_blob.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     layer_blob = json.dumps(layer_urls, separators=(",", ":"), allow_nan=False)
     embedded_data = (
@@ -1949,7 +2124,20 @@ def get_displacement_dashboard(
     html = html.replace("<head>", "<head>" + meta, 1)
     html = _apply_dashboard_presentation(html)
     html = _apply_google_maps_dashboard(html, google_maps_api_key)
-    # Stream the viewer shell and manifest to stay within Vercel's 4.5 MiB buffered-response limit.
+    if candidate_overlay_compacted:
+        screen = manifest.get("aoi_wide_displacement_screen") or {}
+        displayed = screen.get("candidate_features_displayed", 0)
+        total = screen.get("candidate_features_total", displayed)
+        note = (
+            f'<aside role="note" style="margin:18px auto;max-width:1200px;padding:12px 16px;'
+            f'border:1px solid rgba(255,207,120,.42);border-radius:12px;'
+            f'background:#2a2115;color:#ffe7b2;font:12px/1.6 system-ui">'
+            f'Map display note: {displayed} of {total} AOI-wide candidate region(s) are shown, '
+            f'with simplified outlines where needed for browser performance. This is a display-only reduction; '
+            f'the original candidate GeoJSON and scientific artifacts remain unchanged in the saved result ZIP.</aside>'
+        )
+        html = html.replace("</body>", note + "</body>", 1) if "</body>" in html else html + note
+    # Stream the bounded viewer shell and manifest to stay within Vercel's 4.5 MiB buffered-response limit.
     return StreamingResponse(_iter_response_bytes(html.encode("utf-8")), media_type="text/html", headers={
         "Cache-Control": "private, no-store",
         "X-Content-Type-Options": "nosniff",
