@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
 import { listDisplacementJobs } from './api/catalog';
 import { Home } from './pages/Home';
+import { ArchivePage } from './pages/ArchivePage';
 import { LandslidePage } from '../landslide/ui/LandslidePage';
 import { auth, firebaseConfigured, googleProvider, missingFirebaseConfig } from './firebase';
-import { isLandslideDisplacementRoute, isLandslideKnownPlaceAnalysisRoute, isLandslideResultsRoute, isLandslideRoute, LANDSLIDE_DISPLACEMENT_PATH, LANDSLIDE_KNOWN_PLACE_PATH, LANDSLIDE_PATH, LANDSLIDE_RESULTS_PATH, navigatePath, normalizePathname } from './routing';
+import { isArchiveRoute, isLandslideDisplacementRoute, isLandslideKnownPlaceAnalysisRoute, isLandslideResultsRoute, isLandslideRoute, LANDSLIDE_DISPLACEMENT_PATH, LANDSLIDE_KNOWN_PLACE_PATH, LANDSLIDE_PATH, LANDSLIDE_RESULTS_PATH, navigatePath, normalizePathname } from './routing';
 
 function App() {
   const [pathname, setPathname] = useState(() => normalizePathname(window.location.pathname));
@@ -143,6 +144,18 @@ function App() {
     setAuthModalOpen(false);
     navigateTo(LANDSLIDE_PATH);
   }, [navigateTo, user]);
+
+  if (isArchiveRoute(pathname)) {
+    return (
+      <ArchivePage
+        user={user}
+        authState={authState}
+        onSignIn={handleSignIn}
+        onSignOut={handleSignOut}
+        onOpenWorkspace={handleOpenWorkspace}
+      />
+    );
+  }
 
   if (isLandslideRoute(pathname)) {
     if (!user) {
