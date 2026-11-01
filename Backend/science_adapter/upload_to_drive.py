@@ -56,9 +56,12 @@ def load_drive_config(environ: dict[str, str] | None = None) -> DriveConfig:
     values = environ if environ is not None else os.environ
     raw_client = values.get("GOOGLE_DRIVE_OAUTH_CLIENT_JSON", "").strip()
     refresh_token = values.get("GOOGLE_DRIVE_REFRESH_TOKEN", "").strip()
-    parent_folder_id = values.get("GOOGLE_DRIVE_FOLDER_ID", "").strip()
+    parent_folder_id = (
+        values.get("GOOGLE_DRIVE_FOLDER_ID", "").strip()
+        or values.get("GOOGLE_DRIVE_PARENT_FOLDER_ID", "").strip()
+    )
     if not raw_client or not refresh_token or not parent_folder_id:
-        raise DriveUploadError("Google Drive result storage is not fully configured.")
+        raise DriveUploadError("Google Drive result storage is not fully configured; check GOOGLE_DRIVE_OAUTH_CLIENT_JSON, GOOGLE_DRIVE_REFRESH_TOKEN and GOOGLE_DRIVE_FOLDER_ID or GOOGLE_DRIVE_PARENT_FOLDER_ID.")
     if not FOLDER_ID_PATTERN.fullmatch(parent_folder_id):
         raise DriveUploadError("Configured Google Drive folder identifier is invalid.")
     try:
