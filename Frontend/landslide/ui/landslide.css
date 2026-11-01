@@ -1068,3 +1068,7 @@
   .known-place-polygon-summaries, .known-place-geometry-fields { grid-template-columns: 1fr; }
   .known-place-geometry-tools button { flex: 1 1 calc(50% - 7px); }
 }
+
+.known-place-candidate-handoff { display: grid; gap: 5px; margin: 10px 0 14px; border-left: 3px solid #f7c66b; }
+.known-place-candidate-handoff strong { color: #ffe4aa; }
+.known-place-candidate-handoff span { display: block; }
