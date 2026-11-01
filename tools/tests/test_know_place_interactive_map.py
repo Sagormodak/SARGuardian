@@ -70,12 +70,12 @@ def test_interactive_map_has_aoi_pair_controls_preview_download_and_statuses(tmp
     report = sample_report()
     rendered = build_interactive_map_html(report)
     payload = _map_payload(report)
-    assert "Interactive AOI map" in rendered
+    assert "Interactive measurement map" in rendered
     assert "tile.openstreetmap.org" in rendered
     assert "pair-select" in rendered
     assert "opacity" in rendered.lower()
     assert "show-aoi" in rendered
-    assert "Zoom to AOI" in rendered
+    assert "Zoom to both polygons" in rendered or "Zoom to all polygons" in rendered
     assert "Download native-grid GeoTIFF" in rendered
     assert "A native-grid GeoTIFF is available only if a link is shown" in rendered
     assert 'id="valid-pixels-label">Valid AOI pixels</small>' in rendered
@@ -149,3 +149,32 @@ def test_interactive_map_inline_javascript_syntax_if_node_available(tmp_path):
     script_path.write_text(match.group(1), encoding="utf-8")
     checked = subprocess.run([shutil.which("node"), "--check", str(script_path)], capture_output=True, text=True, check=False)
     assert checked.returncode == 0, checked.stdout + checked.stderr
+
+def test_interactive_map_keeps_outer_measurement_and_reference_polygons_distinct():
+    report = sample_report()
+    report["request"]["scope_aoi"] = {
+        "type": "Polygon",
+        "crs": "EPSG:4326",
+        "role": "outer_selection_boundary",
+        "wkt": "POLYGON ((84.99 27.99, 85.02 27.99, 85.02 28.02, 84.99 28.02, 84.99 27.99))",
+    }
+    report["request"]["reference"] = {
+        "policy": "external_reference_polygon_component_median",
+        "polygon_wkt": "POLYGON ((84.995 28.001, 85.002 28.001, 85.002 28.008, 84.995 28.008, 84.995 28.001))",
+        "warning": "User-selected comparison area; stability is not independently verified.",
+    }
+    rendered = build_interactive_map_html(report)
+    payload = _map_payload(report)
+
+    assert payload["scope_aoi_ring_lon_lat"][0] == [84.99, 27.99]
+    assert payload["aoi_ring_lon_lat"][0] == [85.0, 28.0]
+    assert payload["reference_ring_lon_lat"][0] == [84.995, 28.001]
+    assert "Outer AOI boundary:" in rendered
+    assert "Measurement polygon:" in rendered
+    assert "Reference polygon:" in rendered
+    assert 'id="show-scope-aoi"' in rendered
+    assert 'id="show-aoi"' in rendered
+    assert 'id="show-reference"' in rendered
+    assert "Zoom to all polygons" in rendered
+    assert "User-selected comparison area; stability is not independently verified." in rendered
+
