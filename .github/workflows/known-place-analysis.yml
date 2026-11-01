@@ -67,7 +67,12 @@ on:
         type: string
         default: ""
       reference_wkt:
-        description: "Optional explicit background/reference polygon WKT"
+        description: "Optional explicit independent background/reference polygon WKT"
+        required: false
+        type: string
+        default: ""
+      candidate_context_json:
+        description: "Metadata-only provenance for a GOFF candidate transferred from Find Displacements"
         required: false
         type: string
         default: ""
@@ -111,6 +116,7 @@ jobs:
       coherence_neighbours: ${{ inputs.coherence_neighbours }}
       allowed_release_ids: ${{ inputs.allowed_release_ids }}
       reference_wkt: ${{ inputs.reference_wkt }}
+      candidate_context_json: ${{ inputs.candidate_context_json }}
       geometry_height_m: ${{ inputs.geometry_height_m }}
       consent_marker: ${{ inputs.consent_marker }}
       execute_downloads: ${{ inputs.execute_downloads }}
