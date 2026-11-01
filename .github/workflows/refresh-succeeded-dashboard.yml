@@ -1,0 +1,369 @@
+name: Refresh a succeeded SARGuardian dashboard from retained artifacts
+run-name: Public Discovery refresh · run 41268591823 · no raw replay
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Original successful AOI workflow run ID
+        required: true
+        type: string
+        default: "41268591823"
+      source_run_attempt:
+        description: Original workflow attempt containing the dashboard artifact
+        required: true
+        type: string
+        default: "1"
+      job_id:
+        description: Existing succeeded displacement job UUID
+        required: true
+        type: string
+        default: "792b14c6-6614-4d14-8c37-2df0182d810c"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/refresh-succeeded-dashboard.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: sarguardian-dashboard-refresh-41268591823
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Rebuild viewer and update only the saved dashboard pointer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SOURCE_RUN_ID: ${{ inputs.source_run_id || '41268591823' }}
+      SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt || '1' }}
+      JOB_ID: ${{ inputs.job_id || '792b14c6-6614-4d14-8c37-2df0182d810c' }}
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+      DISPLACEMENT_CALLBACK_SECRET: ${{ secrets.DISPLACEMENT_CALLBACK_SECRET }}
+      DYNAMIC_API_BASE_URL: https://sarguardian-dynamic.onrender.com
+      REFRESH_RUN_ID: ${{ github.run_id }}
+      BUILDER_COMMIT: ${{ github.sha }}
+    steps:
+      - name: Check out the dashboard builder and retained-storage uploader
+        uses: actions/checkout@v4
+
+      - name: Validate source identifiers
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[0-9]{5,15}$ ]]
+          [[ "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$JOB_ID" =~ ^[0-9a-fA-F-]{36}$ ]]
+          echo "run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "attempt=$SOURCE_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          echo "job_id=$JOB_ID" >> "$GITHUB_OUTPUT"
+          echo "SOURCE_RUN_ID=$SOURCE_RUN_ID"
+          echo "SOURCE_RUN_ATTEMPT=$SOURCE_RUN_ATTEMPT"
+          echo "RAW_HDF5_REPLAYED=false"
+
+      - name: Download the exact retained source-run dashboard artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sarguardian-aoi-dashboard-${{ steps.source.outputs.run_id }}-${{ steps.source.outputs.attempt }}
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/sarguardian-dashboard-refresh/source
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install only display-builder and retained-Drive dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 numpy rasterio matplotlib pillow
+          python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r tools/requirements-retention.txt
+
+      - name: Rebuild the viewer from retained clipped rasters only
+        id: rebuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/sarguardian-dashboard-refresh/source/dashboard"
+          test -s "$root/aoi-derived-results.zip"
+          test -s "$root/aoi-run-summary.json"
+          test -s "$root/aoi-processing-report.json"
+          test -s "$root/drive-dashboard-upload-receipt.json"
+          test -d "$root/product-data"
+
+          python - <<'PY'
+          import hashlib, json, os, zipfile
+          from pathlib import Path, PurePosixPath
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "sarguardian-dashboard-refresh" / "source" / "dashboard"
+          bundle = root / "aoi-derived-results.zip"
+          receipt_path = root / "drive-dashboard-upload-receipt.json"
+          receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+          assert receipt.get("remote_verification") == "PASS", "SOURCE_DRIVE_RECEIPT_NOT_VERIFIED"
+          assert receipt.get("raw_product_uploaded") is False, "SOURCE_RECEIPT_INCLUDES_RAW_PRODUCT"
+          rows = receipt.get("files")
+          assert isinstance(rows, list), "SOURCE_DRIVE_RECEIPT_HAS_NO_FILE_INVENTORY"
+          matches = [row for row in rows if row.get("name") == "aoi-derived-results.zip"]
+          assert len(matches) == 1, "SOURCE_DRIVE_RECEIPT_HAS_NO_UNIQUE_RESULT_BUNDLE"
+          old = matches[0]
+          digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
+          assert digest == old.get("sha256"), "SOURCE_ZIP_DOES_NOT_MATCH_ORIGINAL_DRIVE_RECEIPT"
+          assert bundle.stat().st_size == old.get("bytes"), "SOURCE_ZIP_SIZE_DOES_NOT_MATCH_DRIVE_RECEIPT"
+
+          with zipfile.ZipFile(bundle) as archive:
+              for name in archive.namelist():
+                  relative = PurePosixPath(name)
+                  assert not relative.is_absolute() and ".." not in relative.parts, f"UNSAFE_SOURCE_ZIP_MEMBER:{name}"
+              archive.extractall(root)
+
+          summary = json.loads((root / "aoi-run-summary.json").read_text(encoding="utf-8"))
+          report = json.loads((root / "aoi-processing-report.json").read_text(encoding="utf-8"))
+          products = report.get("products")
+          expected = summary.get("products_expected")
+          assert isinstance(expected, int) and expected > 0, "SOURCE_PRODUCT_COUNT_MISSING"
+          assert isinstance(products, list) and len(products) == expected, "SOURCE_REPORT_PRODUCT_COUNT_MISMATCH"
+          assert summary.get("run_id") == os.environ["SOURCE_RUN_ID"] + "-" + os.environ["SOURCE_RUN_ATTEMPT"], "SOURCE_RUN_ID_MISMATCH"
+          assert summary.get("status") == "PASS", "SOURCE_PROCESSING_SUMMARY_NOT_PASS"
+
+          # The prior viewer is presentation output only. Rebuild it from the
+          # retained AOI-clipped GeoTIFFs and existing science/candidate reports.
+          import shutil
+          shutil.rmtree(root / "web-dashboard", ignore_errors=True)
+
+          def hash_tiffs():
+              digest = hashlib.sha256()
+              for path in sorted(root.rglob("*.tif")):
+                  relative = path.relative_to(root).as_posix().encode()
+                  digest.update(relative + b"\0")
+                  digest.update(hashlib.sha256(path.read_bytes()).digest())
+              return digest.hexdigest()
+
+          before = hash_tiffs()
+          print("SOURCE_PRODUCTS=" + str(expected))
+          print("SOURCE_GUNW=" + str(summary.get("gunw_count", "not-reported")))
+          print("SOURCE_GOFF=" + str(summary.get("goff_count", "not-reported")))
+          print("SOURCE_ZIP_SHA256_VERIFIED=" + digest)
+          (root / ".source-tiff-inventory.sha256").write_text(before + "\n", encoding="utf-8")
+          PY
+
+          python dashboard/assets/prepare_web_assets.py --dashboard-root "$root"
+
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "sarguardian-dashboard-refresh" / "source" / "dashboard"
+          receipt_path = root / "web-dashboard-build-receipt.json"
+          receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+          summary_path = root / "aoi-run-summary.json"
+          report_path = root / "aoi-processing-report.json"
+          summary = json.loads(summary_path.read_text(encoding="utf-8"))
+          report = json.loads(report_path.read_text(encoding="utf-8"))
+          manifest = json.loads((root / "web-dashboard" / "manifest.json").read_text(encoding="utf-8"))
+          expected = int(summary["products_expected"])
+          observations = manifest.get("observations")
+          assert receipt.get("status") == "PASS", receipt
+          assert receipt.get("observations") == expected, receipt
+          assert isinstance(observations, list) and len(observations) == expected, "REFRESHED_OBSERVATION_COUNT_MISMATCH"
+          assert receipt.get("layers", 0) > 0, receipt
+          assert receipt.get("derived_layer_errors") == 0, receipt
+          assert manifest.get("target_free_analysis") is True, "TARGET_FREE_AOI_ANALYSIS_FLAG_MISSING"
+          validation = manifest.get("validation") if isinstance(manifest.get("validation"), dict) else {}
+          assert validation.get("independent_geophysical_validation") == "NOT_PERFORMED", validation
+
+          html = (root / "web-dashboard" / "index.html").read_text(encoding="utf-8")
+          assert "How to understand the results" in html
+          assert "Distance change along the radar view" in html
+          assert "Places where radar images do not line up as expected" in html
+          assert "GUNW · Radar-view distance patterns to review" in html
+          assert "GOFF · Radar-image patterns to review" in html
+          assert "Colour is not a hazard score:" in html
+          assert "function firstRenderableIndex(family)" in html
+          assert "if(hasRenderableFamily('GUNW'))activeFamily='GUNW'" in html
+
+          def hash_tiffs():
+              digest = hashlib.sha256()
+              for path in sorted(root.rglob("*.tif")):
+                  relative = path.relative_to(root).as_posix().encode()
+                  digest.update(relative + b"\0")
+                  digest.update(hashlib.sha256(path.read_bytes()).digest())
+              return digest.hexdigest()
+
+          expected_tiff_hash = (root / ".source-tiff-inventory.sha256").read_text(encoding="utf-8").strip()
+          actual_tiff_hash = hash_tiffs()
+          assert actual_tiff_hash == expected_tiff_hash, "SCIENTIFIC_TIFFS_CHANGED_DURING_VIEWER_REBUILD"
+          (root / ".source-tiff-inventory.sha256").unlink()
+
+          summary["web_dashboard"] = receipt
+          report["web_dashboard"] = receipt
+          report["summary"] = summary
+          summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
+          report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
+          print("RETAINED_DASHBOARD_REBUILD=PASS")
+          print("OBSERVATIONS=" + str(receipt["observations"]))
+          print("GUNW_GOFF_LAYER_COUNT=" + str(receipt["layers"]))
+          print("DERIVED_LAYER_COUNT=" + str(receipt["derived_layers"]))
+          print("RENDERABLE_LAYER_COUNT=" + str(receipt["renderable_layers"]))
+          print("CANDIDATE_FEATURES=" + str(receipt["aoi_candidate_features"]))
+          print("GOFF_REVIEW_REGIONS=" + str(receipt["legacy_goff_candidate_features"]))
+          print("SOURCE_TIFFS_UNCHANGED=PASS")
+          print("RAW_HDF5_REPLAYED=false")
+          PY
+
+      - name: Repackage a checksum-verifiable refreshed result ZIP
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/sarguardian-dashboard-refresh/source/dashboard"
+          output="$RUNNER_TEMP/sarguardian-dashboard-refresh/aoi-derived-results-refreshed.zip"
+          python - <<'PY'
+          import hashlib, json, os, zipfile
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "sarguardian-dashboard-refresh" / "source" / "dashboard"
+          output = Path(os.environ["RUNNER_TEMP"]) / "sarguardian-dashboard-refresh" / "aoi-derived-results-refreshed.zip"
+          old = root / "aoi-derived-results.zip"
+          with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+              for path in sorted(root.rglob("*")):
+                  if not path.is_file() or path == old or path == output:
+                      continue
+                  archive.write(path, path.relative_to(root).as_posix())
+          with zipfile.ZipFile(output) as archive:
+              names = archive.namelist()
+              required = [
+                  "aoi-run-summary.json", "aoi-processing-report.json", "products.csv",
+                  "web-dashboard/index.html", "web-dashboard/dashboard-data.js",
+                  "web-dashboard/manifest.json", "web-dashboard/timeline.json",
+                  "web-dashboard/metrics.json", "web-dashboard/stac/catalog.json",
+              ]
+              for name in required:
+                  assert names.count(name) == 1, f"RESULT_BUNDLE_REQUIRED_MEMBER_INVALID:{name}:{names.count(name)}"
+              assert len(names) == len(set(names)), "RESULT_BUNDLE_DUPLICATE_PATHS"
+          digest = hashlib.sha256(output.read_bytes()).hexdigest()
+          print("REFRESHED_ZIP_SHA256=" + digest)
+          print("REFRESHED_ZIP_BYTES=" + str(output.stat().st_size))
+          print("REFRESHED_ZIP_MEMBERS=" + str(len(names)))
+          PY
+
+      - name: Upload refreshed ZIP to a new immutable private Drive run folder
+        id: drive
+        env:
+          OUT_ROOT: ${{ runner.temp }}/sarguardian-dashboard-refresh/source/dashboard
+          REFRESH_ZIP: ${{ runner.temp }}/sarguardian-dashboard-refresh/aoi-derived-results-refreshed.zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$OUT_ROOT"
+          cp "$REFRESH_ZIP" "$root/aoi-derived-results.zip"
+          run_name="SARGuardian-AOI-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}-PublicDiscoveryRefresh-${REFRESH_RUN_ID}"
+          python tools/drive_resumable_upload.py \
+            --root "$root" --run-name "$run_name" \
+            --files "$root/aoi-derived-results.zip" \
+            --out "$RUNNER_TEMP/sarguardian-dashboard-refresh/drive-refresh-receipt.json"
+          echo "DRIVE_REFRESH_UPLOAD=PASS"
+
+      - name: Atomically update the succeeded job dashboard pointer with HMAC
+        id: callback
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, hmac, json, os, time
+          from pathlib import Path
+          from urllib.error import HTTPError, URLError
+          from urllib.request import Request, urlopen
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "sarguardian-dashboard-refresh"
+          source = root / "source" / "dashboard"
+          old_receipt = json.loads((source / "drive-dashboard-upload-receipt.json").read_text(encoding="utf-8"))
+          new_receipt = json.loads((root / "drive-refresh-receipt.json").read_text(encoding="utf-8"))
+          build = json.loads((source / "web-dashboard-build-receipt.json").read_text(encoding="utf-8"))
+          old_rows = [row for row in old_receipt.get("files", []) if row.get("name") == "aoi-derived-results.zip"]
+          new_rows = [row for row in new_receipt.get("files", []) if row.get("name") == "aoi-derived-results.zip"]
+          assert len(old_rows) == 1 and len(new_rows) == 1, "DRIVE_ZIP_RECEIPT_ENTRY_MISSING"
+          old = old_rows[0]
+          new = new_rows[0]
+          bundle = source / "aoi-derived-results.zip"
+          assert hashlib.sha256(bundle.read_bytes()).hexdigest() == new.get("sha256"), "NEW_DRIVE_ZIP_SHA_MISMATCH"
+          assert new_receipt.get("remote_verification") == "PASS", "NEW_DRIVE_UPLOAD_NOT_VERIFIED"
+
+          job_id = os.environ["JOB_ID"]
+          payload = {
+              "job_id": job_id,
+              "source_run_id": os.environ["SOURCE_RUN_ID"],
+              "github_run_id": os.environ["SOURCE_RUN_ID"],
+              "expected_previous_sha256": old["sha256"],
+              "replacement": {
+                  "drive_file_id": new["id"],
+                  "bytes": new["bytes"],
+                  "sha256": new["sha256"],
+              },
+              "web_dashboard": build,
+              "provenance": {
+                  "builder_commit": os.environ["BUILDER_COMMIT"],
+                  "refresh_workflow_run_id": os.environ["REFRESH_RUN_ID"],
+                  "raw_hdf5_replayed": False,
+                  "scientific_outputs_changed": False,
+              },
+          }
+          body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+          secret = os.environ["DISPLACEMENT_CALLBACK_SECRET"]
+          signature = "sha256=" + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+          url = os.environ["DYNAMIC_API_BASE_URL"].rstrip("/") + f"/api/displacement-jobs/{job_id}/dashboard-refresh"
+          request = Request(url, data=body, method="POST", headers={
+              "Content-Type": "application/json",
+              "X-SARGuardian-Signature": signature,
+          })
+
+          last_error = None
+          for attempt in range(1, 8):
+              try:
+                  with urlopen(request, timeout=45) as response:
+                      result = json.loads(response.read().decode("utf-8"))
+                      assert response.status == 200 and result.get("status") == "accepted", result
+                      print("SIGNED_DASHBOARD_REFRESH=PASS")
+                      print("SAVED_JOB_STATE=" + str(result.get("job_status")))
+                      print("OBSERVATIONS=" + str(build["observations"]))
+                      print("DASHBOARD_POINTER_UPDATED=YES")
+                      print("RAW_HDF5_REPLAYED=false")
+                      raise SystemExit(0)
+              except HTTPError as exc:
+                  code = exc.code
+                  if code not in {408, 425, 429, 500, 502, 503, 504} or attempt == 7:
+                      detail = exc.read(1000).decode("utf-8", "replace")
+                      raise SystemExit(f"DASHBOARD_REFRESH_API_REJECTED status={code} detail={detail}") from None
+                  last_error = f"HTTP_{code}"
+              except (URLError, TimeoutError) as exc:
+                  last_error = type(exc).__name__
+                  if attempt == 7:
+                      raise SystemExit(f"DASHBOARD_REFRESH_API_UNAVAILABLE error={last_error}") from None
+              delay = min(5 * attempt, 30)
+              print(f"API_RETRY attempt={attempt} reason={last_error} delay_seconds={delay}")
+              time.sleep(delay)
+          raise SystemExit(f"DASHBOARD_REFRESH_API_FAILED error={last_error}")
+          PY
+
+      - name: Publish the refreshed viewer and immutable result ZIP
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarguardian-public-discovery-refresh-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/sarguardian-dashboard-refresh/source/dashboard/web-dashboard/
+            ${{ runner.temp }}/sarguardian-dashboard-refresh/source/dashboard/web-dashboard-build-receipt.json
+            ${{ runner.temp }}/sarguardian-dashboard-refresh/source/dashboard/aoi-run-summary.json
+            ${{ runner.temp }}/sarguardian-dashboard-refresh/source/dashboard/aoi-derived-results.zip
+            ${{ runner.temp }}/sarguardian-dashboard-refresh/drive-refresh-receipt.json
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 1
