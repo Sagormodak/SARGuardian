@@ -9,6 +9,7 @@ on:
       - "dashboard/**"
       - "tools/aggregate_aoi_run.py"
       - ".github/workflows/dashboard-assets-test.yml"
+      - ".github/workflows/refresh-succeeded-dashboard.yml"
   pull_request:
     branches:
       - main
@@ -16,6 +17,7 @@ on:
       - "dashboard/**"
       - "tools/aggregate_aoi_run.py"
       - ".github/workflows/dashboard-assets-test.yml"
+      - ".github/workflows/refresh-succeeded-dashboard.yml"
 
 permissions:
   contents: read
@@ -73,7 +75,7 @@ jobs:
 
       - name: Validate dashboard workflow YAML
         shell: bash
-        run: ruby -e 'require "yaml"; YAML.load_file(".github/workflows/sarguardian-aoi-wkt-dashboard.yml"); YAML.load_file(".github/workflows/dashboard-assets-test.yml"); puts "DASHBOARD_WORKFLOW_YAML_PASS"'
+        run: ruby -e 'require "yaml"; YAML.load_file(".github/workflows/sarguardian-aoi-wkt-dashboard.yml"); YAML.load_file(".github/workflows/dashboard-assets-test.yml"); YAML.load_file(".github/workflows/refresh-succeeded-dashboard.yml"); puts "DASHBOARD_WORKFLOW_YAML_PASS"'
 
       - name: Test georeferenced layers, CRS handling, STAC paths and source immutability
         env:
