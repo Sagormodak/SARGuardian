@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import json
 from pathlib import Path
 from io import BytesIO
 from zipfile import ZipFile
@@ -227,6 +229,192 @@ def _dashboard_zip() -> bytes:
         )
         archive.writestr("web-dashboard/dashboard-data.js", "window.SARGUARDIAN_DASHBOARD={safe:true};")
     return buffer.getvalue()
+
+
+def _dashboard_refresh_request(job_id, expected_previous_sha256: str, *, secret: str = "refresh-secret") -> tuple[bytes, dict[str, str]]:
+    payload = {
+        "job_id": str(job_id),
+        "source_run_id": "41268591823",
+        "github_run_id": "41268591823",
+        "expected_previous_sha256": expected_previous_sha256,
+        "replacement": {
+            "drive_file_id": "new-private-drive-file-identifier",
+            "bytes": 4_000_000,
+            "sha256": "b" * 64,
+        },
+        "web_dashboard": {
+            "status": "PASS",
+            "schema_version": "sarguardian-web-dashboard/1.0",
+            "viewer": "web-dashboard/index.html",
+            "observations": 35,
+            "layers": 122,
+            "derived_layers": 48,
+            "renderable_layers": 170,
+            "derived_layer_errors": 0,
+        },
+        "provenance": {
+            "builder_commit": "c" * 40,
+            "refresh_workflow_run_id": "41273900123",
+            "raw_hdf5_replayed": False,
+            "scientific_outputs_changed": False,
+        },
+    }
+    body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    signature = "sha256=" + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return body, {"Content-Type": "application/json", "X-SARGuardian-Signature": signature}
+
+
+def _dashboard_refresh_store(job_id, old_digest: str):
+    class RefreshStore:
+        def __init__(self):
+            self.record = {
+                "id": str(job_id),
+                "state": "succeeded",
+                "worker_contract_version": 2,
+                "github_run_id": "41268591823",
+                "callback_sequence": 2,
+                "result_summary": {
+                    "schema_version": 2,
+                    "products": [{"id": f"product-{i}"} for i in range(35)],
+                    "selected_granule_counts": {"GUNW": 17, "GOFF": 18},
+                    "validation": {"status": "PASS"},
+                    "artifacts": [
+                        {
+                            "path": "aoi-derived-results.zip",
+                            "kind": "result_bundle",
+                            "sha256": old_digest,
+                            "bytes": 4_200_000,
+                            "drive_file_id": "old-private-drive-file-identifier",
+                        },
+                        {
+                            "path": "products.csv",
+                            "kind": "result_table_csv",
+                            "sha256": "a" * 64,
+                            "bytes": 1024,
+                            "drive_file_id": "products-csv-drive-file-identifier",
+                        },
+                    ],
+                    "web_dashboard": {"status": "PASS", "observations": 35, "layers": 100},
+                },
+            }
+            self.update_calls = 0
+
+        def get_displacement_job_unscoped(self, requested_job_id):
+            assert requested_job_id == job_id
+            return self.record
+
+        def update_displacement_job(self, requested_job_id, values, *, expected_state=None, expected_sequence=None):
+            assert requested_job_id == job_id
+            assert expected_state == "succeeded"
+            assert expected_sequence == 2
+            self.update_calls += 1
+            self.record.update(values)
+            return self.record
+
+    return RefreshStore()
+
+
+def test_signed_dashboard_refresh_replaces_only_bundle_pointer_without_job_state_change(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    job_id = uuid4()
+    old_digest = "a" * 64
+    store = _dashboard_refresh_store(job_id, old_digest)
+    monkeypatch.setattr(main_module, "get_job_store", lambda: store)
+    monkeypatch.setattr(main_module, "get_settings", lambda: SimpleNamespace(displacement_callback_secret="refresh-secret"))
+    body, headers = _dashboard_refresh_request(job_id, old_digest)
+
+    response = client.post(f"/api/displacement-jobs/{job_id}/dashboard-refresh", content=body, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "accepted", "job_id": str(job_id), "job_status": "succeeded"}
+    assert store.update_calls == 1
+    assert store.record["state"] == "succeeded"
+    assert store.record["callback_sequence"] == 2
+    summary = store.record["result_summary"]
+    refreshed = next(item for item in summary["artifacts"] if item["path"] == "aoi-derived-results.zip")
+    untouched = next(item for item in summary["artifacts"] if item["path"] == "products.csv")
+    assert refreshed["sha256"] == "b" * 64
+    assert refreshed["drive_file_id"] == "new-private-drive-file-identifier"
+    assert refreshed["bytes"] == 4_000_000
+    assert untouched["sha256"] == "a" * 64
+    assert untouched["drive_file_id"] == "products-csv-drive-file-identifier"
+    assert summary["web_dashboard"]["observations"] == 35
+    assert summary["dashboard_refresh"]["raw_hdf5_replayed"] is False
+    assert summary["dashboard_refresh"]["scientific_outputs_changed"] is False
+
+
+def test_dashboard_refresh_rejects_invalid_signature_before_reading_job(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    job_id = uuid4()
+    old_digest = "a" * 64
+    store = _dashboard_refresh_store(job_id, old_digest)
+    monkeypatch.setattr(main_module, "get_job_store", lambda: store)
+    monkeypatch.setattr(main_module, "get_settings", lambda: SimpleNamespace(displacement_callback_secret="refresh-secret"))
+    body, _headers = _dashboard_refresh_request(job_id, old_digest)
+
+    response = client.post(
+        f"/api/displacement-jobs/{job_id}/dashboard-refresh",
+        content=body,
+        headers={"Content-Type": "application/json", "X-SARGuardian-Signature": "sha256=" + "0" * 64},
+    )
+
+    assert response.status_code == 401
+    assert store.update_calls == 0
+
+
+def test_dashboard_refresh_rejects_stale_original_bundle_hash(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    job_id = uuid4()
+    store = _dashboard_refresh_store(job_id, "a" * 64)
+    monkeypatch.setattr(main_module, "get_job_store", lambda: store)
+    monkeypatch.setattr(main_module, "get_settings", lambda: SimpleNamespace(displacement_callback_secret="refresh-secret"))
+    body, headers = _dashboard_refresh_request(job_id, "c" * 64)
+
+    response = client.post(f"/api/displacement-jobs/{job_id}/dashboard-refresh", content=body, headers=headers)
+
+    assert response.status_code == 409
+    assert store.update_calls == 0
+    assert store.record["result_summary"]["artifacts"][0]["sha256"] == "a" * 64
+
+
+def test_dashboard_refresh_rejects_changed_product_inventory(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    job_id = uuid4()
+    old_digest = "a" * 64
+    store = _dashboard_refresh_store(job_id, old_digest)
+    monkeypatch.setattr(main_module, "get_job_store", lambda: store)
+    monkeypatch.setattr(main_module, "get_settings", lambda: SimpleNamespace(displacement_callback_secret="refresh-secret"))
+    payload = json.loads(_dashboard_refresh_request(job_id, old_digest)[0])
+    payload["web_dashboard"]["observations"] = 34
+    body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    headers = {"Content-Type": "application/json", "X-SARGuardian-Signature": "sha256=" + hmac.new(
+        b"refresh-secret", body, hashlib.sha256
+    ).hexdigest()}
+
+    response = client.post(f"/api/displacement-jobs/{job_id}/dashboard-refresh", content=body, headers=headers)
+
+    assert response.status_code == 422
+    assert store.update_calls == 0
+
+
+def test_dashboard_refresh_rejects_running_job(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    job_id = uuid4()
+    store = _dashboard_refresh_store(job_id, "a" * 64)
+    store.record["state"] = "running"
+    monkeypatch.setattr(main_module, "get_job_store", lambda: store)
+    monkeypatch.setattr(main_module, "get_settings", lambda: SimpleNamespace(displacement_callback_secret="refresh-secret"))
+    body, headers = _dashboard_refresh_request(job_id, "a" * 64)
+
+    response = client.post(f"/api/displacement-jobs/{job_id}/dashboard-refresh", content=body, headers=headers)
+
+    assert response.status_code == 409
+    assert store.update_calls == 0
 
 
 def test_interactive_dashboard_is_returned_only_for_verified_owner_and_inlines_bundle(monkeypatch) -> None:
