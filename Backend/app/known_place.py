@@ -39,7 +39,9 @@ class KnownPlaceWorkflowError(RuntimeError):
 
 
 class KnownPlaceAnalysisRequest(BaseModel):
+    # aoi_wkt is the measurement polygon; scope_aoi_wkt preserves the outer map AOI.
     aoi_wkt: str = Field(min_length=20, max_length=100_000)
+    scope_aoi_wkt: str | None = Field(default=None, max_length=100_000)
     start_date: date
     end_date: date
     hazard_mode: Literal["landslide", "glacier_collapse", "ice_rock_avalanche", "mixed"] = "mixed"
@@ -61,6 +63,16 @@ class KnownPlaceAnalysisRequest(BaseModel):
             return validate_wkt(value).wkt
         except ValueError as exc:
             raise ValueError(f"AOI_WKT_INVALID: {exc}") from None
+
+    @field_validator("scope_aoi_wkt")
+    @classmethod
+    def validate_scope_aoi_wkt(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        try:
+            return validate_wkt(value).wkt
+        except ValueError as exc:
+            raise ValueError(f"SCOPE_AOI_WKT_INVALID: {exc}") from None
 
     @field_validator("reference_wkt")
     @classmethod
@@ -180,6 +192,7 @@ def dispatch_known_place_analysis(
     inputs = {
         "request_id": request_id,
         "aoi_wkt": payload.aoi_wkt,
+        "scope_aoi_wkt": payload.scope_aoi_wkt or "",
         "start_date": payload.start_date.isoformat(),
         "end_date": payload.end_date.isoformat(),
         "hazard_mode": payload.hazard_mode,
