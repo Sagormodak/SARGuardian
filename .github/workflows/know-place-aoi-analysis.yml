@@ -85,8 +85,13 @@ on:
         default: ""
         type: string
       reference_wkt:
-        description: "Optional reference/background polygon WKT; blank uses a 2 km local-context component-median reference"
+        description: "Optional independent reference/background polygon WKT; blank uses local-context correction"
         required: false
+        type: string
+      candidate_context_json:
+        description: "Optional provenance JSON for a GOFF candidate imported from Find Displacements; metadata only"
+        required: false
+        default: ""
         type: string
       consent_marker:
         description: "Required: enter exactly [run-know-place] when execute_downloads is true"
@@ -148,6 +153,11 @@ on:
         default: ""
         type: string
       reference_wkt:
+        required: false
+        default: ""
+        type: string
+      candidate_context_json:
+        description: "Optional metadata-only provenance for an imported GOFF candidate"
         required: false
         default: ""
         type: string
@@ -223,6 +233,7 @@ jobs:
           DIRECTION: ${{ inputs.direction }}
           ALLOWED_RELEASE_IDS: ${{ inputs.allowed_release_ids }}
           REFERENCE_WKT: ${{ inputs.reference_wkt }}
+          CANDIDATE_CONTEXT_JSON: ${{ inputs.candidate_context_json }}
           CONSENT_MARKER: ${{ inputs.consent_marker || '' }}
         run: |
           set -euo pipefail
@@ -277,6 +288,12 @@ jobs:
                   "role": "outer_selection_boundary",
                   "wkt": scope_aoi,
               }
+          raw_candidate_context = os.environ.get("CANDIDATE_CONTEXT_JSON", "").strip()
+          if raw_candidate_context:
+              candidate_context = json.loads(raw_candidate_context)
+              if not isinstance(candidate_context, dict):
+                  raise SystemExit("CANDIDATE_CONTEXT_JSON_MUST_BE_OBJECT")
+              request["candidate_context"] = candidate_context
           raw_height = os.environ.get("GEOMETRY_HEIGHT_M", "").strip()
           if raw_height:
               try:
