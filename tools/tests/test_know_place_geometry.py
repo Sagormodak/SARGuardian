@@ -155,3 +155,35 @@ def test_independent_reference_polygon_rejects_overlap_containment_and_touch(ref
             reference_wkt=reference_wkt,
         )
 
+OUTER_AOI_WKT = (
+    "POLYGON ((85.495000 28.274000, 85.560000 28.274000, "
+    "85.560000 28.307000, 85.495000 28.307000, 85.495000 28.274000))"
+)
+
+
+def test_independent_polygons_are_recorded_inside_outer_aoi():
+    xs, ys = _two_polygon_grid(MEASUREMENT_WKT, REFERENCE_WKT)
+    roi = build_independent_reference_roi(
+        xs, ys, 32645,
+        measurement_wkt=MEASUREMENT_WKT,
+        reference_wkt=REFERENCE_WKT,
+        scope_wkt=OUTER_AOI_WKT,
+    )
+    assert roi.crown_mask.any()
+    assert roi.reference_mask is not None and roi.reference_mask.any()
+
+
+def test_independent_reference_polygon_outside_outer_aoi_is_rejected():
+    xs, ys = _two_polygon_grid(MEASUREMENT_WKT, REFERENCE_WKT)
+    narrow_outer = (
+        "POLYGON ((85.520000 28.280000, 85.560000 28.280000, "
+        "85.560000 28.302000, 85.520000 28.302000, 85.520000 28.280000))"
+    )
+    with pytest.raises(GoffReadError, match="REFERENCE_POLYGON_OUTSIDE_OUTER_AOI"):
+        build_independent_reference_roi(
+            xs, ys, 32645,
+            measurement_wkt=MEASUREMENT_WKT,
+            reference_wkt=REFERENCE_WKT,
+            scope_wkt=narrow_outer,
+        )
+
