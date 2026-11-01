@@ -21,6 +21,10 @@ class AnalysisROI:
     crown_mask: np.ndarray
     box_ring_projected: tuple[tuple[float, float], ...]
     crown_ring_projected: tuple[tuple[float, float], ...]
+    # Present for the generic two-polygon workflow. None preserves the historic
+    # encompassing-box/crown semantics used by the paper-specific path.
+    reference_mask: np.ndarray | None = None
+    reference_ring_projected: tuple[tuple[float, float], ...] | None = None
 
 
 def parse_polygon_wkt(wkt: str, *, max_vertices: int = 500) -> list[tuple[float, float]]:
@@ -211,3 +215,166 @@ def build_analysis_roi(
         box_ring_projected=box,
         crown_ring_projected=crown,
     )
+
+def _orientation(a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]) -> float:
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _segments_intersect(
+    a: tuple[float, float], b: tuple[float, float],
+    c: tuple[float, float], d: tuple[float, float],
+    *, tolerance_m: float = 1e-7,
+) -> bool:
+    """Return true for crossing, collinear overlap, or touching polygon edges."""
+    o1, o2 = _orientation(a, b, c), _orientation(a, b, d)
+    o3, o4 = _orientation(c, d, a), _orientation(c, d, b)
+
+    def on_segment(p, q, r) -> bool:
+        return (
+            min(p[0], r[0]) - tolerance_m <= q[0] <= max(p[0], r[0]) + tolerance_m
+            and min(p[1], r[1]) - tolerance_m <= q[1] <= max(p[1], r[1]) + tolerance_m
+        )
+
+    if ((o1 > tolerance_m and o2 < -tolerance_m) or (o1 < -tolerance_m and o2 > tolerance_m)) and (
+        (o3 > tolerance_m and o4 < -tolerance_m) or (o3 < -tolerance_m and o4 > tolerance_m)
+    ):
+        return True
+    return (
+        (abs(o1) <= tolerance_m and on_segment(a, c, b))
+        or (abs(o2) <= tolerance_m and on_segment(a, d, b))
+        or (abs(o3) <= tolerance_m and on_segment(c, a, d))
+        or (abs(o4) <= tolerance_m and on_segment(c, b, d))
+    )
+
+
+def _rings_overlap_or_touch(
+    first: tuple[tuple[float, float], ...],
+    second: tuple[tuple[float, float], ...],
+) -> bool:
+    """Detect polygon containment, crossing, and boundary contact in projected metres."""
+    first_x = np.asarray([[point[0] for point in first[:-1]]], dtype=float)
+    first_y = np.asarray([[point[1] for point in first[:-1]]], dtype=float)
+    second_x = np.asarray([[point[0] for point in second[:-1]]], dtype=float)
+    second_y = np.asarray([[point[1] for point in second[:-1]]], dtype=float)
+    if points_in_ring(first_x, first_y, second).any() or points_in_ring(second_x, second_y, first).any():
+        return True
+    return any(
+        _segments_intersect(a, b, c, d)
+        for a, b in zip(first[:-1], first[1:])
+        for c, d in zip(second[:-1], second[1:])
+    )
+
+
+def polygon_pair_envelope_wkt(first_wkt: str, second_wkt: str, epsg: int) -> str:
+    """Return a WGS84 rectangle covering two independent polygons in a projected CRS."""
+    first = project_wkt_ring(first_wkt, epsg)
+    second = project_wkt_ring(second_wkt, epsg)
+    points = (*first, *second)
+    xmin = min(point[0] for point in points)
+    xmax = max(point[0] for point in points)
+    ymin = min(point[1] for point in points)
+    ymax = max(point[1] for point in points)
+    if not (xmin < xmax and ymin < ymax):
+        raise GoffReadError("MEASUREMENT_REFERENCE_ENVELOPE_INVALID")
+    try:
+        from pyproj import Transformer
+    except ImportError as exc:
+        raise GoffReadError("PYPROJ_REQUIRED_FOR_AOI_PROJECTION") from exc
+    reverse = Transformer.from_crs(f"EPSG:{int(epsg)}", "EPSG:4326", always_xy=True)
+    lon, lat = reverse.transform(
+        [xmin, xmax, xmax, xmin, xmin],
+        [ymin, ymin, ymax, ymax, ymin],
+    )
+    if not all(math.isfinite(float(x)) and math.isfinite(float(y)) for x, y in zip(lon, lat)):
+        raise GoffReadError("MEASUREMENT_REFERENCE_ENVELOPE_NONFINITE")
+    return "POLYGON ((" + ", ".join(
+        f"{float(x):.9f} {float(y):.9f}" for x, y in zip(lon, lat)
+    ) + "))"
+
+
+def build_independent_reference_roi(
+    x_coordinates_m: np.ndarray,
+    y_coordinates_m: np.ndarray,
+    epsg: int,
+    *,
+    measurement_wkt: str,
+    reference_wkt: str,
+    coherence_halo_cells: int = 2,
+) -> AnalysisROI:
+    """Rasterize disjoint measurement and reference polygons on one native GOFF grid.
+
+    Unlike build_analysis_roi (the historic paper box/crown contract), the
+    reference polygon is an independent background region. It must neither
+    contain nor overlap/touch the measurement polygon. Both masks are retained
+    explicitly; the legacy box_mask is their union for existing correction and
+    control kernels, so box_mask & ~crown_mask is exactly the reference mask.
+    """
+    if not isinstance(coherence_halo_cells, int) or coherence_halo_cells < 2:
+        raise GoffReadError("COHERENCE_CONTEXT_HALO_MUST_BE_AT_LEAST_TWO_CELLS")
+    x = np.asarray(x_coordinates_m, dtype=float)
+    y = np.asarray(y_coordinates_m, dtype=float)
+    if x.ndim != 1 or y.ndim != 1:
+        raise GoffReadError("GOFF_XY_COORDINATES_MUST_BE_1D")
+    if not np.isfinite(x).all() or not np.isfinite(y).all():
+        raise GoffReadError("GOFF_XY_COORDINATES_NONFINITE")
+    if len(x) < 2 or len(y) < 2:
+        raise GoffReadError("GOFF_GRID_TOO_SMALL")
+    if not (np.all(np.diff(x) > 0) or np.all(np.diff(x) < 0)):
+        raise GoffReadError("GOFF_X_COORDINATES_NOT_MONOTONIC")
+    if not (np.all(np.diff(y) > 0) or np.all(np.diff(y) < 0)):
+        raise GoffReadError("GOFF_Y_COORDINATES_NOT_MONOTONIC")
+
+    measurement = project_wkt_ring(measurement_wkt, epsg)
+    reference = project_wkt_ring(reference_wkt, epsg)
+    if _rings_overlap_or_touch(measurement, reference):
+        raise GoffReadError("MEASUREMENT_REFERENCE_POLYGONS_OVERLAP_OR_TOUCH")
+
+    vertices = (*measurement, *reference)
+    xmin, xmax = min(p[0] for p in vertices), max(p[0] for p in vertices)
+    ymin, ymax = min(p[1] for p in vertices), max(p[1] for p in vertices)
+    x_hits = np.flatnonzero((x >= xmin) & (x <= xmax))
+    y_hits = np.flatnonzero((y >= ymin) & (y <= ymax))
+    if not x_hits.size or not y_hits.size:
+        raise GoffReadError("MEASUREMENT_REFERENCE_POLYGONS_DO_NOT_INTERSECT_GOFF_GRID")
+    row_start, row_stop = int(y_hits.min()), int(y_hits.max()) + 1
+    col_start, col_stop = int(x_hits.min()), int(x_hits.max()) + 1
+    row0 = max(0, row_start - coherence_halo_cells)
+    row1 = min(len(y), row_stop + coherence_halo_cells)
+    col0 = max(0, col_start - coherence_halo_cells)
+    col1 = min(len(x), col_stop + coherence_halo_cells)
+    if (
+        row_start - row0 < coherence_halo_cells
+        or row1 - row_stop < coherence_halo_cells
+        or col_start - col0 < coherence_halo_cells
+        or col1 - col_stop < coherence_halo_cells
+    ):
+        raise GoffReadError("GOFF_GRID_TOO_SMALL_FOR_FULL_COHERENCE_HALO")
+
+    roi_x, roi_y = x[col0:col1], y[row0:row1]
+    xx, yy = np.meshgrid(roi_x, roi_y)
+    measurement_mask = points_in_ring(xx, yy, measurement)
+    reference_mask = points_in_ring(xx, yy, reference)
+    if not measurement_mask.any():
+        raise GoffReadError("MEASUREMENT_POLYGON_HAS_NO_GRID_CELL_CENTRES")
+    if not reference_mask.any():
+        raise GoffReadError("REFERENCE_POLYGON_HAS_NO_GRID_CELL_CENTRES")
+    if np.any(measurement_mask & reference_mask):
+        raise GoffReadError("MEASUREMENT_REFERENCE_RASTER_MASKS_OVERLAP")
+
+    envelope = (
+        (xmin, ymin), (xmax, ymin), (xmax, ymax),
+        (xmin, ymax), (xmin, ymin),
+    )
+    return AnalysisROI(
+        row_slice=slice(row0, row1),
+        col_slice=slice(col0, col1),
+        x_coordinates_m=roi_x,
+        y_coordinates_m=roi_y,
+        box_mask=measurement_mask | reference_mask,
+        crown_mask=measurement_mask,
+        box_ring_projected=envelope,
+        crown_ring_projected=measurement,
+        reference_mask=reference_mask,
+        reference_ring_projected=reference,
+    )
+
