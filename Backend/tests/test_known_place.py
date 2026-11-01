@@ -153,3 +153,45 @@ def test_known_place_request_rejects_invalid_outer_scope_polygon() -> None:
     with pytest.raises(ValidationError, match="SCOPE_AOI_WKT_INVALID"):
         known_place.KnownPlaceAnalysisRequest(**(REQUEST | {"scope_aoi_wkt": "POLYGON ((0 0, 1 0, 1 1))"}))
 
+def candidate_context() -> dict:
+    return {
+        "source": "FIND_DISPLACEMENTS",
+        "candidate_id": "GOFF-CANDIDATE-004",
+        "product_type": "GOFF",
+        "metric": "GOFF_SLANT_RANGE_OFFSET_MM",
+        "evidence_class": "GOFF_OFFSET_ANOMALY_NOT_GROUND_MOTION",
+        "status": "REPEATED_SPATIAL_CANDIDATE",
+        "support_pairs": 3,
+        "pixel_count": 42,
+        "approx_area_m2": 268800.0,
+        "product_ids": ["NISAR_GOFF_P05023_A", "NISAR_GOFF_P05023_B"],
+        "pair_intervals": [{"reference_date": "2026-07-01", "secondary_date": "2026-07-13"}],
+        "geometry_original_vertices": 1800,
+        "geometry_suggested_vertices": 420,
+        "geometry_simplified": True,
+        "interpretation": "Offset anomaly candidate; not measured ground motion.",
+    }
+
+
+def test_goff_candidate_provenance_is_validated_and_dispatched(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: dict = {}
+
+    def fake_request(_settings, _method, _path, body=None):
+        observed.update(body or {})
+        return 204, {}
+
+    monkeypatch.setattr(known_place, "_github_request", fake_request)
+    request = known_place.KnownPlaceAnalysisRequest(**(REQUEST | {"candidate_context": candidate_context()}))
+    known_place.dispatch_known_place_analysis(settings(), request)
+    sent = __import__("json").loads(observed["inputs"]["candidate_context_json"])
+    assert sent["source"] == "FIND_DISPLACEMENTS"
+    assert sent["product_type"] == "GOFF"
+    assert sent["candidate_id"] == "GOFF-CANDIDATE-004"
+    assert sent["geometry_simplified"] is True
+
+
+def test_gunw_candidate_cannot_be_sent_to_goff_known_place_measurement() -> None:
+    value = candidate_context() | {"product_type": "GUNW", "evidence_class": "GUNW_LOS_DISPLACEMENT_ANOMALY_UNCONFIRMED"}
+    with pytest.raises(ValidationError, match="CANDIDATE_CONTEXT_MUST_BE_A_GOFF"):
+        known_place.KnownPlaceAnalysisRequest(**(REQUEST | {"candidate_context": value}))
+
