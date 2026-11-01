@@ -85,7 +85,7 @@ describe('Authenticated interactive dashboard API contract', () => {
     expect(fetchMock.mock.calls[1][0]).toBe('http://localhost:8000/health');
     expect(fetchMock.mock.calls[2][0]).toContain('/api/displacement-jobs/');
     expect(statuses.some((message) => message.includes('Waking the result service'))).toBe(true);
-    expect(statuses.at(-1)).toContain('Retrieving the saved result');
+    expect(statuses[statuses.length - 1]).toContain('Retrieving the saved result');
   });
 
   it('does not request dashboard HTML when the frontend Maps key is missing', async () => {
