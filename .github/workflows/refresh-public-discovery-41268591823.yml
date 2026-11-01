@@ -170,7 +170,7 @@ jobs:
           PYTHONPATH: builder-source
         run: |
           set -euo pipefail
-          python builder-source/dashboard/assets/prepare_web_assets.py             --dashboard-root "$RUNNER_TEMP/sarguardian-dashboard-refresh/dashboard"
+          python builder-source/dashboard/assets/prepare_web_assets.py             --dashboard-root "$RUNNER_TEMP/sarguardian-dashboard-refresh/dashboard/dashboard"
 
       - name: Verify rebuild retained all science and update only viewer receipts
         id: build-check
