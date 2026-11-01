@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { User } from 'firebase/auth';
 import { listDisplacementJobs, type DisplacementJob } from '../api/catalog';
-import { ScientificResults, hasScientificResultOutputs } from '../../landslide/ui/ScientificResults';
+import { ScientificResults } from '../../landslide/ui/ScientificResults';
+import { hasScientificResultOutputs } from '../../landslide/ui/resultAvailability';
 
 function formatDate(value: string): string {
   const date = new Date(value);
