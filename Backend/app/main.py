@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import base64
 import math
 import logging
 import hashlib
+import hmac
 import json
 import re
+import shutil
+import tempfile
+import threading
+import time
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
 from zipfile import BadZipFile, ZipFile
@@ -673,9 +679,119 @@ def _valid_private_artifacts(value: object) -> bool:
 
 MAX_DASHBOARD_ARCHIVE_BYTES = 100 * 1024 * 1024
 MAX_DASHBOARD_HTML_BYTES = 2 * 1024 * 1024
-MAX_DASHBOARD_DATA_BYTES = 40 * 1024 * 1024
+MAX_DASHBOARD_MANIFEST_BYTES = 16 * 1024 * 1024
+MAX_DASHBOARD_PREVIEW_BYTES = 16 * 1024 * 1024
 DASHBOARD_VIEWER_PATH = "web-dashboard/index.html"
+DASHBOARD_MANIFEST_PATH = "web-dashboard/manifest.json"
 DASHBOARD_DATA_PATH = "web-dashboard/dashboard-data.js"
+DASHBOARD_ASSET_TICKET_TTL_SECONDS = 2 * 60 * 60
+DASHBOARD_ARCHIVE_CACHE_TTL_SECONDS = 3 * 60 * 60
+DASHBOARD_ARCHIVE_CACHE_ROOT = Path(tempfile.gettempdir()) / "sarguardian-dashboard-archive-cache"
+_DASHBOARD_ARCHIVE_CACHE_LOCK = threading.Lock()
+
+
+def _dashboard_archive_cache_path(job_id: UUID, digest: str) -> Path:
+    if not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise HTTPException(status_code=409, detail="Dashboard archive checksum metadata is invalid.")
+    return DASHBOARD_ARCHIVE_CACHE_ROOT / f"{job_id}-{digest}.zip"
+
+
+def _write_dashboard_archive_cache(source: Path, destination: Path) -> None:
+    DASHBOARD_ARCHIVE_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + f".{uuid4().hex}.tmp")
+    try:
+        shutil.copyfile(source, temporary)
+        temporary.replace(destination)
+        now = time.time()
+        for cached in DASHBOARD_ARCHIVE_CACHE_ROOT.glob("*.zip"):
+            try:
+                if cached != destination and now - cached.stat().st_mtime > DASHBOARD_ARCHIVE_CACHE_TTL_SECONDS:
+                    cached.unlink(missing_ok=True)
+            except OSError:
+                continue
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _cache_verified_dashboard_archive(source: Path, job_id: UUID, digest: str) -> Path:
+    destination = _dashboard_archive_cache_path(job_id, digest)
+    with _DASHBOARD_ARCHIVE_CACHE_LOCK:
+        _write_dashboard_archive_cache(source, destination)
+    return destination
+
+
+def _get_cached_dashboard_archive(job_id: UUID, artifact: dict) -> Path:
+    destination = _dashboard_archive_cache_path(job_id, str(artifact.get("sha256") or ""))
+    now = time.time()
+    try:
+        if destination.is_file() and destination.stat().st_size == artifact.get("bytes") and now - destination.stat().st_mtime <= DASHBOARD_ARCHIVE_CACHE_TTL_SECONDS:
+            destination.touch()
+            return destination
+    except OSError:
+        pass
+
+    with _DASHBOARD_ARCHIVE_CACHE_LOCK:
+        now = time.time()
+        try:
+            if destination.is_file() and destination.stat().st_size == artifact.get("bytes") and now - destination.stat().st_mtime <= DASHBOARD_ARCHIVE_CACHE_TTL_SECONDS:
+                destination.touch()
+                return destination
+        except OSError:
+            pass
+
+        with TemporaryDirectory(prefix="sarguardian-dashboard-asset-") as temporary_directory:
+            archive_path = Path(temporary_directory) / "aoi-derived-results.zip"
+            try:
+                received = download_private_result_to_path(
+                    artifact["drive_file_id"],
+                    archive_path,
+                    max_bytes=artifact["bytes"],
+                )
+            except DriveUploadError:
+                raise HTTPException(status_code=503, detail="Private dashboard storage is unavailable. Reopen the saved dashboard and retry.") from None
+            if received.get("bytes") != artifact["bytes"] or received.get("sha256") != artifact["sha256"]:
+                raise HTTPException(status_code=409, detail="Stored dashboard bundle no longer matches its verified checksum inventory.")
+            _write_dashboard_archive_cache(archive_path, destination)
+    return destination
+
+
+def _create_dashboard_asset_ticket(job_id: UUID, digest: str, owner_uid: str, secret: str) -> str:
+    if not secret:
+        raise HTTPException(status_code=503, detail="Private dashboard asset access is not configured.")
+    claims = {
+        "job": str(job_id),
+        "digest": digest,
+        "owner": hashlib.sha256(owner_uid.encode("utf-8")).hexdigest(),
+        "expires": int(time.time()) + DASHBOARD_ASSET_TICKET_TTL_SECONDS,
+    }
+    payload = json.dumps(claims, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    signature = hmac.new(secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+    return encoded + "." + signature
+
+
+def _read_dashboard_asset_ticket(ticket: str, secret: str) -> dict | None:
+    if not secret or not isinstance(ticket, str) or len(ticket) > 2048 or "." not in ticket:
+        return None
+    encoded, signature = ticket.rsplit(".", 1)
+    expected = hmac.new(secret.encode("utf-8"), encoded.encode("ascii", errors="ignore"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(claims, dict) or not isinstance(claims.get("expires"), int):
+        return None
+    if claims["expires"] < int(time.time()):
+        return None
+    if not isinstance(claims.get("job"), str) or not isinstance(claims.get("digest"), str) or not isinstance(claims.get("owner"), str):
+        return None
+    if not re.fullmatch(r"[a-f0-9]{64}", claims["digest"]) or not re.fullmatch(r"[a-f0-9]{64}", claims["owner"]):
+        return None
+    return claims
+
 
 @app.post("/api/displacement-jobs/{job_id}/dashboard-refresh")
 async def refresh_succeeded_job_dashboard(job_id: UUID, request: Request) -> dict[str, str]:
@@ -1712,14 +1828,15 @@ async def get_displacement_dashboard(
     google_maps_api_key: str | None = Header(default=None, alias="X-SARGuardian-Google-Maps-Key"),
     user: dict = Depends(get_current_user),
 ) -> Response:
-    """Return the verified owner's interactive dashboard as self-contained HTML.
+    """Return the verified owner's dashboard shell and lazy, private raster URLs.
 
-    The private Drive ZIP is verified against the signed callback inventory before
-    reading its viewer assets. Only two exact in-archive files are read; no archive
-    paths are extracted to disk and no Drive ID is disclosed to the browser.
+    The signed Drive bundle is checksum-verified before its viewer and manifest
+    are read. Preview PNGs remain separate ZIP entries and are served on demand
+    through short-lived HMAC tickets; they are never base64-inlined into HTML.
     """
+    owner_uid = _required_owner_uid(user)
     try:
-        record = _require_store().get_displacement_job(_required_owner_uid(user), job_id)
+        record = _require_store().get_displacement_job(owner_uid, job_id)
     except PersistenceError:
         raise HTTPException(status_code=503, detail="Could not read the requested interactive dashboard.") from None
     if not record:
@@ -1740,7 +1857,7 @@ async def get_displacement_dashboard(
         raise HTTPException(status_code=404, detail="A unique verified dashboard result bundle was not found.")
     artifact = matches[0]
     if artifact["bytes"] > MAX_DASHBOARD_ARCHIVE_BYTES:
-        raise HTTPException(status_code=413, detail="This dashboard bundle is too large to open in the interactive viewer. Download the result package instead.")
+        raise HTTPException(status_code=413, detail="This dashboard bundle is too large to retrieve safely. Download the result package instead.")
     if not isinstance(google_maps_api_key, str):
         raise HTTPException(
             status_code=503,
@@ -1752,9 +1869,15 @@ async def get_displacement_dashboard(
             status_code=503,
             detail="Google Maps is not configured. Check VITE_GOOGLE_MAPS_API_KEY in the frontend deployment.",
         )
-    # Stream the ZIP to ephemeral disk and hash it as it arrives. Keeping a
-    # 100 MiB archive in memory while ZipFile and decompressed assets are built
-    # can exceed the Render 512 MiB service limit, especially during retries.
+
+    settings = get_settings()
+    asset_ticket = _create_dashboard_asset_ticket(
+        job_id, artifact["sha256"], owner_uid, settings.displacement_callback_secret,
+    )
+
+    # Stream the original ZIP to ephemeral disk, verify its signed inventory,
+    # and retain a bounded local cache so parallel PNG requests do not each
+    # download the full private archive from Drive.
     with TemporaryDirectory(prefix="sarguardian-dashboard-") as temporary_directory:
         archive_path = Path(temporary_directory) / "aoi-derived-results.zip"
         try:
@@ -1764,12 +1887,12 @@ async def get_displacement_dashboard(
                 max_bytes=artifact["bytes"],
             )
         except DriveUploadError as exc:
-            # Log only the helper's sanitized reason; never log IDs or tokens.
             logger.warning("Private dashboard Drive retrieval failed for job %s: %s", job_id, exc)
             raise HTTPException(status_code=503, detail="Private dashboard storage is unavailable. Retry in a moment.") from None
 
         if received.get("bytes") != artifact["bytes"] or received.get("sha256") != artifact["sha256"]:
             raise HTTPException(status_code=409, detail="Stored dashboard bundle no longer matches its verified checksum inventory.")
+        _cache_verified_dashboard_archive(archive_path, job_id, artifact["sha256"])
 
         try:
             with ZipFile(archive_path, "r") as archive:
@@ -1780,23 +1903,52 @@ async def get_displacement_dashboard(
                     item_path = PurePosixPath(name)
                     if name.startswith("/") or "\\" in name or ".." in item_path.parts or "\x00" in name:
                         raise HTTPException(status_code=409, detail="Dashboard bundle contains an unsafe archive path.")
-                if names.count(DASHBOARD_VIEWER_PATH) != 1 or names.count(DASHBOARD_DATA_PATH) != 1:
-                    raise HTTPException(status_code=404, detail="The result package does not contain the interactive dashboard assets.")
+                if names.count(DASHBOARD_VIEWER_PATH) != 1 or names.count(DASHBOARD_MANIFEST_PATH) != 1:
+                    raise HTTPException(status_code=404, detail="The result package does not contain the required interactive dashboard assets.")
                 html_info = archive.getinfo(DASHBOARD_VIEWER_PATH)
-                data_info = archive.getinfo(DASHBOARD_DATA_PATH)
-                if html_info.file_size > MAX_DASHBOARD_HTML_BYTES or data_info.file_size > MAX_DASHBOARD_DATA_BYTES:
-                    raise HTTPException(status_code=413, detail="Interactive dashboard assets exceed the safe browser-viewing size.")
+                manifest_info = archive.getinfo(DASHBOARD_MANIFEST_PATH)
+                if html_info.file_size > MAX_DASHBOARD_HTML_BYTES or manifest_info.file_size > MAX_DASHBOARD_MANIFEST_BYTES:
+                    raise HTTPException(status_code=413, detail="Dashboard viewer or manifest exceeds the safe browser-viewing size.")
                 html = archive.read(html_info).decode("utf-8")
-                dashboard_data = archive.read(data_info).decode("utf-8")
+                manifest = json.loads(archive.read(manifest_info).decode("utf-8"))
+                if not isinstance(manifest, dict) or not isinstance(manifest.get("layers"), list):
+                    raise HTTPException(status_code=409, detail="Dashboard manifest does not match the supported layer contract.")
         except HTTPException:
             raise
-        except (BadZipFile, KeyError, UnicodeDecodeError, OSError):
-            raise HTTPException(status_code=409, detail="Stored result bundle does not contain a readable dashboard.") from None
+        except (BadZipFile, KeyError, UnicodeDecodeError, json.JSONDecodeError, OSError):
+            raise HTTPException(status_code=409, detail="Stored result bundle does not contain a readable dashboard manifest.") from None
+
+    layer_urls: dict[str, str] = {}
+    for layer in manifest["layers"]:
+        if not isinstance(layer, dict):
+            raise HTTPException(status_code=409, detail="Dashboard manifest contains an invalid raster layer.")
+        layer_id = layer.get("id")
+        preview_asset = layer.get("preview_asset")
+        if not isinstance(layer_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", layer_id):
+            raise HTTPException(status_code=409, detail="Dashboard manifest contains an invalid raster layer ID.")
+        asset_path = PurePosixPath(str(preview_asset or ""))
+        if (asset_path.is_absolute() or len(asset_path.parts) != 2 or asset_path.parts[0] != "layers"
+                or asset_path.suffix.lower() != ".png" or ".." in asset_path.parts
+                or asset_path.name != layer_id + ".png" or "\\" in str(preview_asset)):
+            raise HTTPException(status_code=409, detail="Dashboard manifest contains an unsafe raster asset path.")
+        if layer_id in layer_urls:
+            raise HTTPException(status_code=409, detail="Dashboard manifest contains duplicate raster layer IDs.")
+        layer_urls[layer_id] = (
+            "__SARGUARDIAN_API_BASE__/api/displacement-jobs/" + str(job_id)
+            + "/dashboard-assets/" + asset_path.as_posix() + "?ticket=" + asset_ticket
+        )
 
     data_marker = '<script src="./dashboard-data.js"></script>'
-    if html.count(data_marker) != 1 or "</script" in dashboard_data.lower():
-        raise HTTPException(status_code=409, detail="Dashboard viewer does not match the supported embedded-data contract.")
-    html = html.replace(data_marker, "<script>\n" + dashboard_data + "\n</script>", 1)
+    if html.count(data_marker) != 1:
+        raise HTTPException(status_code=409, detail="Dashboard viewer does not match the supported external-data contract.")
+    manifest_blob = json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    manifest_blob = manifest_blob.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    layer_blob = json.dumps(layer_urls, separators=(",", ":"), allow_nan=False)
+    embedded_data = (
+        "<script>\\nwindow.SARGUARDIAN_DASHBOARD=" + manifest_blob
+        + ";\\nwindow.SARGUARDIAN_LAYER_DATA=" + layer_blob + ";\\n</script>"
+    )
+    html = html.replace(data_marker, embedded_data, 1)
     html = html.replace(
         '<a href="../index.html" style="color:var(--aqua);padding:9px">Processing report ↗</a>',
         '<span style="color:var(--aqua);padding:9px">Verified research dashboard</span>',
@@ -1810,6 +1962,68 @@ async def get_displacement_dashboard(
     html = _apply_google_maps_dashboard(html, google_maps_api_key)
     return Response(content=html, media_type="text/html", headers={
         "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "origin",
+    })
+
+
+@app.get("/api/displacement-jobs/{job_id}/dashboard-assets/{asset_path:path}")
+def get_displacement_dashboard_asset(job_id: UUID, asset_path: str, ticket: str) -> Response:
+    """Serve one private PNG preview using a short-lived, job-scoped capability."""
+    settings = get_settings()
+    claims = _read_dashboard_asset_ticket(ticket, settings.displacement_callback_secret)
+    if not claims or claims.get("job") != str(job_id):
+        raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
+
+    safe_asset_path = PurePosixPath(asset_path)
+    if (safe_asset_path.is_absolute() or len(safe_asset_path.parts) != 2
+            or safe_asset_path.parts[0] != "layers" or safe_asset_path.suffix.lower() != ".png"
+            or ".." in safe_asset_path.parts or "\\" in asset_path or "\x00" in asset_path):
+        raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
+
+    try:
+        record = _require_store().get_displacement_job_unscoped(job_id)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not verify the saved dashboard asset.") from None
+    if not record or record.get("state") != JobState.SUCCEEDED.value:
+        raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
+    owner_uid = record.get("owner_uid")
+    if not isinstance(owner_uid, str) or not hmac.compare_digest(
+        hashlib.sha256(owner_uid.encode("utf-8")).hexdigest(), claims["owner"],
+    ):
+        raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
+
+    summary = record.get("result_summary")
+    artifacts = summary.get("artifacts") if isinstance(summary, dict) else None
+    if not _valid_private_artifacts(artifacts):
+        raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
+    matches = [
+        item for item in artifacts
+        if item.get("path") == "aoi-derived-results.zip" and item.get("sha256") == claims["digest"]
+    ]
+    if len(matches) != 1 or matches[0].get("bytes", 0) > MAX_DASHBOARD_ARCHIVE_BYTES:
+        raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
+    artifact = matches[0]
+
+    archive_path = _get_cached_dashboard_archive(job_id, artifact)
+    archive_name = "web-dashboard/" + safe_asset_path.as_posix()
+    try:
+        with ZipFile(archive_path, "r") as archive:
+            if archive.namelist().count(archive_name) != 1:
+                raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
+            asset_info = archive.getinfo(archive_name)
+            if asset_info.file_size <= 8 or asset_info.file_size > MAX_DASHBOARD_PREVIEW_BYTES:
+                raise HTTPException(status_code=413, detail="Dashboard raster preview exceeds the safe image size.")
+            content = archive.read(asset_info)
+    except HTTPException:
+        raise
+    except (BadZipFile, KeyError, OSError):
+        raise HTTPException(status_code=409, detail="Stored dashboard raster asset is unreadable.") from None
+
+    if not content.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+        raise HTTPException(status_code=409, detail="Dashboard raster asset is not a valid PNG preview.")
+    return Response(content=content, media_type="image/png", headers={
+        "Cache-Control": "private, max-age=300",
         "X-Content-Type-Options": "nosniff",
         "Referrer-Policy": "origin",
     })
