@@ -202,7 +202,7 @@ def test_outer_scope_aoi_is_canonicalized_and_kept_separate_from_measurement_pol
 
 def test_outer_scope_aoi_rejects_invalid_geometry_and_crs():
     payload = request()
-    payload["scope_aoi"] = {"wkt": "POLYGON ((0 0, 1 0, 1 1))", "crs": "EPSG:4326"}
+    payload["scope_aoi"] = {"wkt": "POLYGON ((0 0, 1 1, 1 0, 0 1, 0 0))", "crs": "EPSG:4326"}
     with pytest.raises(AOIRequestError, match="SCOPE_AOI_GEOMETRY_INVALID"):
         validate_aoi_request(payload)
 
