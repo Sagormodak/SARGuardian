@@ -89,8 +89,10 @@ export function ScientificResults({ job, user }: { job: DisplacementJob; user: P
   const [opening, setOpening] = useState(false);
   const [selectedView, setSelectedView] = useState<DashboardView>('public');
   const [dashboardError, setDashboardError] = useState('');
+  const [dashboardProgress, setDashboardProgress] = useState('');
   const [downloadingBundle, setDownloadingBundle] = useState(false);
   const [bundleError, setBundleError] = useState('');
+  const [bundleProgress, setBundleProgress] = useState('');
 
   async function openDashboard() {
     setDashboardError('');
@@ -116,7 +118,7 @@ export function ScientificResults({ job, user }: { job: DisplacementJob; user: P
       popupReady = true;
       popup.document.title = 'SARGuardian · Interactive dashboard';
       popup.document.body.textContent = 'Verifying the private result bundle and preparing the selected dashboard view…';
-      const html = await getInteractiveDashboardHtml(job.id, user);
+      const html = await getInteractiveDashboardHtml(job.id, user, setDashboardProgress);
       writeDashboardHtml(popup, dashboardHtmlWithPreferredView(html, selectedView));
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Could not open the interactive dashboard.';
@@ -134,6 +136,7 @@ export function ScientificResults({ job, user }: { job: DisplacementJob; user: P
       }
     } finally {
       setOpening(false);
+      setDashboardProgress('');
     }
   }
 
@@ -144,7 +147,7 @@ export function ScientificResults({ job, user }: { job: DisplacementJob; user: P
     try {
       // The Drive folder is intentionally private. Stream the retained ZIP via
       // the owner-authenticated API instead of sending the user to a private Drive URL.
-      const blob = await downloadDisplacementArtifact(job.id, bundleArtifactIndex, user);
+      const blob = await downloadDisplacementArtifact(job.id, bundleArtifactIndex, user, setBundleProgress);
       const objectUrl = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = objectUrl;
@@ -158,6 +161,7 @@ export function ScientificResults({ job, user }: { job: DisplacementJob; user: P
       setBundleError(error instanceof Error ? error.message : 'Could not download the archived result package.');
     } finally {
       setDownloadingBundle(false);
+      setBundleProgress('');
     }
   }
 
@@ -217,6 +221,8 @@ export function ScientificResults({ job, user }: { job: DisplacementJob; user: P
         </p>
       )}
       {canOpenDashboard && <p className="scientific-results-note">A processing PASS confirms structural and provenance checks, not independent geophysical accuracy. Candidate patterns are not hazard confirmations; pairwise LOS is not automatically cumulative or 3-D movement.</p>}
+      {dashboardProgress && <p className="scientific-results-note" role="status">{dashboardProgress}</p>}
+      {bundleProgress && <p className="scientific-results-note" role="status">{bundleProgress}</p>}
       {bundleError && <p className="scientific-results-error" role="alert">{bundleError}</p>}
       {dashboardError && <p className="scientific-results-error" role="alert">{dashboardError}</p>}
     </section>
