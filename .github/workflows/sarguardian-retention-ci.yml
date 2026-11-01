@@ -35,7 +35,7 @@ jobs:
           python -m pip install --disable-pip-version-check --no-cache-dir -r tools/requirements-retention.txt
           # The repository-wide regression suite also collects Known Place and
           # dashboard geospatial tests; install their pinned runtime dependencies.
-          python -m pip install --disable-pip-version-check --no-cache-dir -r tools/know_place/requirements.txt pillow
+          python -m pip install --disable-pip-version-check --no-cache-dir -r tools/know_place/requirements.txt pillow matplotlib
       - name: Compile Python tools and tests
         run: python -m compileall -q tools tests
       - name: Run repository regression suite
