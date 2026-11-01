@@ -2044,7 +2044,7 @@ def get_displacement_dashboard_asset(job_id: UUID, asset_path: str, ticket: str)
 
 
 @app.get("/api/displacement-jobs/{job_id}/artifacts/{artifact_index}")
-async def download_displacement_artifact(job_id: UUID, artifact_index: int, user: dict = Depends(get_current_user)) -> Response:
+def download_displacement_artifact(job_id: UUID, artifact_index: int, user: dict = Depends(get_current_user)) -> Response:
     """Stream one private, verified Drive artifact to its authenticated owner."""
     if artifact_index < 0 or artifact_index > 10_000:
         raise HTTPException(status_code=404, detail="Result artifact was not found.")
@@ -2057,15 +2057,34 @@ async def download_displacement_artifact(job_id: UUID, artifact_index: int, user
     if not _valid_private_artifacts(artifacts) or artifact_index >= len(artifacts):
         raise HTTPException(status_code=404, detail="Result artifact was not found.")
     artifact = artifacts[artifact_index]
+
+    # Verify the complete private Drive object on ephemeral disk before sending
+    # headers, then stream chunks and remove the temporary file at response end.
+    temporary_directory = TemporaryDirectory(prefix="sarguardian-private-artifact-")
+    artifact_path = Path(temporary_directory.name) / "result-artifact"
     try:
-        received, data = download_private_result(artifact["drive_file_id"])
-    except DriveUploadError:
+        received = download_private_result_to_path(
+            artifact["drive_file_id"], artifact_path, max_bytes=artifact["bytes"],
+        )
+    except (DriveUploadError, OSError):
+        temporary_directory.cleanup()
         raise HTTPException(status_code=503, detail="Private result storage is unavailable. Retry the download.") from None
-    import hashlib
-    if received["bytes"] != artifact["bytes"] or hashlib.sha256(data).hexdigest() != artifact["sha256"]:
+
+    if received.get("bytes") != artifact["bytes"] or received.get("sha256") != artifact["sha256"]:
+        temporary_directory.cleanup()
         raise HTTPException(status_code=409, detail="Stored result artifact no longer matches the validated inventory.")
+
     filename = artifact["path"].rsplit("/", 1)[-1]
-    return Response(content=data, media_type="application/octet-stream", headers={
+
+    def stream_artifact():
+        try:
+            with artifact_path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    yield chunk
+        finally:
+            temporary_directory.cleanup()
+
+    return StreamingResponse(stream_artifact(), media_type="application/octet-stream", headers={
         "Content-Disposition": f'attachment; filename="{filename}"',
         "Cache-Control": "private, no-store",
     })
