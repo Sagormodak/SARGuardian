@@ -948,6 +948,26 @@ function candidateFeatureMeasurementGeometry(feature){
  if(ring.length<4||ring.length>500)return null;
  return {wkt:'POLYGON (('+ring.map(point=>point[0].toFixed(8)+' '+point[1].toFixed(8)).join(', ')+'))',simplified,originalVertices,vertices:ring.length};
 }
+function normalizeCandidatePairIntervals(values){
+ if(!Array.isArray(values))return [];
+ return values.slice(0,30).flatMap(value=>{
+  if(value&&typeof value==='object'&&!Array.isArray(value)){
+   const referenceDate=String(value.reference_date||value.referenceDate||'');
+   const secondaryDate=String(value.secondary_date||value.secondaryDate||'');
+   return referenceDate&&secondaryDate?[{reference_date:referenceDate,secondary_date:secondaryDate}]:[];
+  }
+  if(typeof value!=='string')return [];
+  const pieces=value.split('/');
+  if(pieces.length!==2)return [];
+  return [{reference_date:pieces[0].slice(0,10),secondary_date:pieces[1].slice(0,10)}];
+ });
+}
+function stableCandidateId(properties,geometryWkt){
+ const source=[String(properties.network||''),String(properties.product_type||''),String(properties.metric||''),...(Array.isArray(properties.pair_intervals)?properties.pair_intervals.map(String):[]),geometryWkt].join('|');
+ let hash=2166136261;
+ for(let i=0;i<source.length;i++){hash^=source.charCodeAt(i);hash=Math.imul(hash,16777619);}
+ return 'GOFF-CANDIDATE-'+(hash>>>0).toString(16).padStart(8,'0');
+}
 function transferGoffCandidate(feature){
  const p=feature&&feature.properties||{};
  if(p.product_type!=='GOFF'||!feature.geometry||feature.geometry.type!=='Polygon')return false;
@@ -957,13 +977,13 @@ function transferGoffCandidate(feature){
   schemaVersion:'sarguardian-known-place-candidate/1.0',
   measurementWkt:geometry.wkt,
   candidate:{
-   candidateId:String(p.candidate_id||'GOFF candidate').slice(0,160),
+   candidateId:stableCandidateId(p,geometry.wkt),
    productType:'GOFF',metric:String(p.metric||'GOFF_OFFSET_ANOMALY').slice(0,120),
    evidenceClass:String(p.evidence_class||'GOFF_OFFSET_ANOMALY_NOT_GROUND_MOTION').slice(0,160),
    status:String(p.status||'UNCONFIRMED').slice(0,100),supportPairs:Number(p.support_pairs||0),
    pixelCount:Number(p.pixel_count||0),approximateAreaM2:Number(p.approx_area_m2||0),
    productIds:Array.isArray(p.product_ids)?p.product_ids.slice(0,30).map(String):[],
-   pairIntervals:Array.isArray(p.pair_intervals)?p.pair_intervals.slice(0,30):[],
+   pairIntervals:normalizeCandidatePairIntervals(p.pair_intervals),
    geometryOriginalVertices:geometry.originalVertices,geometrySuggestedVertices:geometry.vertices,
    geometrySimplified:geometry.simplified,
    interpretation:String(p.interpretation||'Offset anomaly candidate; not measured ground motion.').slice(0,500)
