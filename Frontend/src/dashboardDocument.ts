@@ -26,35 +26,37 @@ export function withDashboardPreferredView(html: string, view: DashboardView, or
   const withoutExistingBase = html.replace(/<base\b[^>]*>/gi, '');
   const withBrowserContext = withoutExistingBase.replace(
     headPattern,
-    \`\${headMatch[0]}<base href="\${safeOrigin}/"><meta name="referrer" content="origin">\`,
+    headMatch[0] + '<base href="' + safeOrigin + '/"><meta name="referrer" content="origin">',
   );
-  const script = \`<script id="sarguardian-preferred-dashboard-view">
-(function () {
-  var preferredView = \${JSON.stringify(view)};
-  function selectPreferredView() {
-    var button = document.querySelector('[data-sg-mode="' + preferredView + '"]');
-    if (!button) return false;
-    if (button.getAttribute('aria-selected') !== 'true') button.click();
-    return true;
-  }
-  function start() {
-    if (selectPreferredView()) return;
-    var observer = new MutationObserver(function () {
-      if (selectPreferredView()) observer.disconnect();
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-    window.setTimeout(function () { observer.disconnect(); }, 5000);
-  }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start, { once: true });
-  } else {
-    start();
-  }
-})();
-</script>\`;
+  const script = [
+    '<script id="sarguardian-preferred-dashboard-view">',
+    '(function () {',
+    '  var preferredView = ' + JSON.stringify(view) + ';',
+    '  function selectPreferredView() {',
+    '    var button = document.querySelector(\\'[data-sg-mode="\\' + preferredView + \\'"]\\');',
+    '    if (!button) return false;',
+    '    if (button.getAttribute("aria-selected") !== "true") button.click();',
+    '    return true;',
+    '  }',
+    '  function start() {',
+    '    if (selectPreferredView()) return;',
+    '    var observer = new MutationObserver(function () {',
+    '      if (selectPreferredView()) observer.disconnect();',
+    '    });',
+    '    observer.observe(document.body, { childList: true, subtree: true });',
+    '    window.setTimeout(function () { observer.disconnect(); }, 5000);',
+    '  }',
+    '  if (document.readyState === "loading") {',
+    '    document.addEventListener("DOMContentLoaded", start, { once: true });',
+    '  } else {',
+    '    start();',
+    '  }',
+    '})();',
+    '</script>',
+  ].join('\\n');
   return /<\\/body>/i.test(withBrowserContext)
-    ? withBrowserContext.replace(/<\\/body>/i, \`\${script}</body>\`)
-    : \`\${withBrowserContext}\${script}\`;
+    ? withBrowserContext.replace(/<\\/body>/i, script + '</body>')
+    : withBrowserContext + script;
 }
 
 export function writeDashboardDocument(target: Pick<Document, 'open' | 'write' | 'close'>, html: string): void {
