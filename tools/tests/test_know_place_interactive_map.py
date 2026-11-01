@@ -27,7 +27,7 @@ def sample_report():
             "date_range": {"start": "2026-06-20", "end": "2026-08-31", "inclusive": True},
         },
         "pairs": [{
-            "reference_date": "2026-07-26", "secondary_date": "2026-08-19",
+            "reference_date": "2026-07-26", "secondary_date": "2026-08-19", "interval_days": 24.0,
             "release_id": "P05023", "status": "METRICS_COMPUTED", "epsg": 32645,
             "valid_aoi_pixels": 147, "aoi_total_grid_cells": 160,
             "valid_aoi_fraction": 147 / 160, "high_magnitude_flagged_pixels": 2,
@@ -36,7 +36,7 @@ def sample_report():
             "map_preview": {
                 "values": [[0.1, 0.2], [None, 0.5]],
                 "min_x_m": 300000.0, "max_y_m": 3100000.0,
-                "pixel_size_x_m": 80.0, "pixel_size_y_m": 80.0,
+                "pixel_size_x_m": 80.0, "pixel_size_y_m": 80.0, "stride_cells": 4,
             },
         }],
     }
@@ -87,6 +87,13 @@ def test_interactive_map_has_aoi_pair_controls_preview_download_and_statuses(tmp
     assert "P05023" in rendered
     assert payload["aoi_ring_lon_lat"][0] == [85.0, 28.0]
     assert payload["pairs"][0]["preview"]["bounds"] is not None
+    assert payload["pairs"][0]["preview"]["stride_cells"] == 4
+    assert payload["pairs"][0]["interval_days"] == 24.0
+    assert 'id="preview-pixel-readout"' in rendered
+    assert 'interactive:true' in rendered
+    assert "Preview block median:" in rendered
+    assert "not a native-pixel value or instantaneous velocity" in rendered
+    assert "Download native-grid GeoTIFF" in rendered
     assert payload["pairs"][0]["geotiff_href"] == "../maps/pair_displacement.tif"
     assert payload["hazard_detection_status"] == "NOT_EVALUATED"
     target = write_interactive_map(report, tmp_path / "visuals" / "interactive-map.html")
