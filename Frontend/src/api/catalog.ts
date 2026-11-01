@@ -270,7 +270,11 @@ export async function getInteractiveDashboardHtml(
   if (!type.toLowerCase().includes('text/html')) {
     throw new Error('The processing service returned an unexpected dashboard format.');
   }
-  return response.text();
+  const dashboardHtml = await response.text();
+  // Raster previews are served from the authenticated API using short-lived,
+  // job-scoped tickets. Resolve the server placeholder here so the saved
+  // document can keep the frontend origin as its base for its own scripts.
+  return dashboardHtml.split('__SARGUARDIAN_API_BASE__').join(API_BASE);
 }
 
 async function getFirebaseIdToken(user: Pick<User, 'getIdToken'> | null): Promise<string> {
