@@ -32,6 +32,7 @@ class AOIRequestError(ValueError):
 class AOIRequest:
     schema_version: str
     aoi_wkt: str
+    scope_aoi_wkt: str | None
     aoi_crs: str
     start_date: date
     end_date: date
@@ -59,7 +60,11 @@ class AOIRequest:
         """Return stable, JSON-safe normalized parameters (not raw secrets)."""
         return {
             "schema_version": self.schema_version,
-            "aoi": {"type": "Polygon", "wkt": self.aoi_wkt, "crs": self.aoi_crs},
+            "aoi": {"type": "Polygon", "wkt": self.aoi_wkt, "crs": self.aoi_crs, "role": "measurement"},
+            "scope_aoi": (
+                {"type": "Polygon", "wkt": self.scope_aoi_wkt, "crs": self.aoi_crs, "role": "outer_selection_boundary"}
+                if self.scope_aoi_wkt else None
+            ),
             "date_range": {
                 "start": self.start_date.isoformat(),
                 "end": self.end_date.isoformat(),
@@ -144,6 +149,15 @@ def validate_aoi_request(payload: dict[str, Any]) -> AOIRequest:
     if crs not in {"EPSG:4326", "OGC:CRS84"}:
         raise AOIRequestError("AOI_CRS_MUST_BE_EPSG4326_OR_CRS84")
     aoi_wkt = _canonical_wkt(aoi.get("wkt"), "aoi")
+    scope_config = payload.get("scope_aoi")
+    if scope_config is not None and not isinstance(scope_config, dict):
+        raise AOIRequestError("SCOPE_AOI_MUST_BE_OBJECT")
+    scope_aoi_wkt = None
+    if isinstance(scope_config, dict):
+        scope_crs = str(scope_config.get("crs", "EPSG:4326")).upper()
+        if scope_crs not in {"EPSG:4326", "OGC:CRS84"}:
+            raise AOIRequestError("SCOPE_AOI_CRS_MUST_BE_EPSG4326_OR_CRS84")
+        scope_aoi_wkt = _canonical_wkt(scope_config.get("wkt"), "scope_aoi")
 
     dates = payload.get("date_range")
     if not isinstance(dates, dict):
@@ -285,7 +299,8 @@ def validate_aoi_request(payload: dict[str, Any]) -> AOIRequest:
 
     normalized = {
         "schema_version": REQUEST_SCHEMA,
-        "aoi": {"wkt": aoi_wkt, "crs": "EPSG:4326"},
+        "aoi": {"wkt": aoi_wkt, "crs": "EPSG:4326", "role": "measurement"},
+        "scope_aoi": {"wkt": scope_aoi_wkt, "crs": "EPSG:4326", "role": "outer_selection_boundary"} if scope_aoi_wkt else None,
         "date_range": {"start": start_date.isoformat(), "end": end_date.isoformat(), "inclusive": True},
         "hazard_mode": hazard_mode,
         "analysis_mode": analysis_mode,
@@ -307,6 +322,7 @@ def validate_aoi_request(payload: dict[str, Any]) -> AOIRequest:
     return AOIRequest(
         schema_version=REQUEST_SCHEMA,
         aoi_wkt=aoi_wkt,
+        scope_aoi_wkt=scope_aoi_wkt,
         aoi_crs="EPSG:4326",
         start_date=start_date,
         end_date=end_date,
