@@ -546,7 +546,7 @@ body.presentation-active .story-card{min-height:76px;padding:10px 13px}
 body.presentation-active .story-card strong{font-size:22px}
 @media(max-width:1120px){
   main{width:min(100% - 36px,1680px)}
-  .layout,body[data-dashboard-mode=evidence] .layout,body[data-dashboard-mode=science] .layout{grid-template-columns:minmax(0,1fr)}
+  .layout,body[data-dashboard-mode=public] .layout,body[data-dashboard-mode=evidence] .layout,body[data-dashboard-mode=science] .layout{grid-template-columns:minmax(0,1fr)}
   .evidence-panel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 14px}
   .evidence-panel>.kicker,.evidence-panel>h2,.evidence-panel>#productDescription,.evidence-panel>#productMetrics,.evidence-panel>label,.evidence-panel>.candidate-section,.evidence-panel>.science-only,.evidence-panel>.evidence-only{grid-column:1/-1}
   .maphead{grid-template-columns:1fr}
