@@ -470,16 +470,16 @@ export function KnownPlacePolygonEditor({
         <button type="button" disabled={drawingRole !== null && drawingRole !== activeRole} onClick={clearSelected}>Clear selected</button>
       </div>
       <div className="known-place-polygon-summaries">
-        <article className={activeRole === 'measurement' ? 'selected' : ''} onClick={() => setActiveRole('measurement')}>
+        <button type="button" className={activeRole === 'measurement' ? 'selected' : ''} aria-pressed={activeRole === 'measurement'} onClick={() => setActiveRole('measurement')}>
           <span className="polygon-role-dot measurement-dot" />
-          <div><strong>Measurement Polygon</strong><small>{measurement.length} vertices · {measurementClosed ? `${measurementArea.toFixed(3)} km²` : 'not closed'}</small></div>
+          <span><strong>Measurement Polygon</strong><small>{measurement.length} vertices · {measurementClosed ? `${measurementArea.toFixed(3)} km²` : 'not closed'}</small></span>
           <span>{measurementClosed ? 'Ready' : 'Draw required'}</span>
-        </article>
-        <article className={activeRole === 'reference' ? 'selected' : ''} onClick={() => setActiveRole('reference')}>
+        </button>
+        <button type="button" className={activeRole === 'reference' ? 'selected' : ''} aria-pressed={activeRole === 'reference'} onClick={() => setActiveRole('reference')}>
           <span className="polygon-role-dot reference-dot" />
-          <div><strong>Reference / Background Polygon</strong><small>{reference.length} vertices · {referenceClosed ? `${referenceArea.toFixed(3)} km²` : 'not closed'}</small></div>
+          <span><strong>Reference / Background Polygon</strong><small>{reference.length} vertices · {referenceClosed ? `${referenceArea.toFixed(3)} km²` : 'not closed'}</small></span>
           <span>{referenceClosed ? 'Ready' : 'Draw required'}</span>
-        </article>
+        </button>
       </div>
       <div className="known-place-geometry-fields">
         <label className="aoi-job-label">
