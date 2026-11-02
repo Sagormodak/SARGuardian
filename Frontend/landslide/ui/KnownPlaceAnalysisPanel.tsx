@@ -356,9 +356,9 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
   return (
     <main className="nisar-results-main displacement-preparation known-place-analysis">
       <section className="nisar-results-summary">
-        <span className="result-kicker">SEPARATE SCIENCE WORKFLOW · GOFF</span>
+        <span className="result-kicker">KNOWN PLACE · TWO DISTINCT SCIENCE PATHS</span>
         <h1>Known Place Analysis</h1>
-        <p>Run the dedicated GOFF measurement workflow for two user-drawn polygons inside the outer AOI and the selected date window. This remains separate from Find Displacements, which continues to discover candidates without a measurement target.</p>
+        <p>Use the fixed Bhote Koshi author-exact benchmark to reproduce the research workflow, or use the custom two-polygon path for a separate generic GOFF measurement. Neither path is merged into target-free Find Displacements.</p>
         <div className="catalog-stats">
           <div><span>Known place</span><strong>{placeName || 'AOI only — no named place'}</strong></div>
           <div><span>AOI area</span><strong>{Number.isFinite(aoiAreaKm2) && aoiAreaKm2 > 0 ? `${aoiAreaKm2.toFixed(2)} km²` : 'Not validated'}</strong></div>
@@ -367,6 +367,50 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
         </div>
         <p className="catalog-notice">The original map AOI is retained as an outer selection boundary. The Measurement Polygon is the area whose pairwise motion is summarized; the separate Reference Polygon supplies background comparison. A selected reference area is not assumed to be stable ground.</p>
         {!aoiWkt && <p className="catalog-error" role="alert">A valid outer AOI is required. Go back to the map and draw your polygon.</p>}
+        <section className="known-place-paper-reproduction" aria-labelledby="known-place-paper-title">
+          <div className="known-place-paper-heading">
+            <span className="result-kicker">FIXED RESEARCH BENCHMARK · AUTHOR-EXACT P05023</span>
+            <h2 id="known-place-paper-title">Bhote Koshi 2026 paper reproduction</h2>
+            <p>Replays the five author-specified ascending T098 HH GOFF pairs from 20 June–31 August 2026 using the separately pinned P05023 source path, author terrain inputs, numerical parity checks and derived-only retention.</p>
+          </div>
+          <div className="known-place-paper-facts">
+            <div><span>Author release</span><strong>P05023 only</strong></div>
+            <div><span>Study site</span><strong>Bhote Koshi, Nepal</strong></div>
+            <div><span>Five intervals</span><strong>20 Jun → 31 Aug 2026</strong></div>
+            <div><span>Output retention</span><strong>Derived-only + Drive receipt</strong></div>
+          </div>
+          <p className="catalog-notice">Scientific claim boundary: the backend's current whole-paper status is PARTIAL. A successful raw replay is not by itself full-paper parity; the original crown vector/golden mask, displacement-null draw history, RGI 6.0 overlay and terrain provenance remain separate evidence gates. Hazard detection remains NOT_EVALUATED.</p>
+          <div className="known-place-paper-consent">
+            <label>
+              <input type="checkbox" checked={paperRawConsent} onChange={(event) => setPaperRawConsent(event.target.checked)} />
+              <span><b>I explicitly authorize a new author-exact raw-data replay.</b> This requests the five pinned P05023 GOFF products. Earthdata and Google Drive credentials are checked before acquisition; raw HDF5 stays temporary and derived results/receipts are retained.</span>
+            </label>
+            <button type="button" className="investigate-button" disabled={!paperRawConsent || paperPending} onClick={() => void submitPaperReproduction()}>
+              {paperPending ? 'Submitting paper reproduction…' : 'Run Bhote Koshi author-exact replay'}
+            </button>
+          </div>
+          {paperError && <p className="catalog-error" role="alert">{paperError}</p>}
+          {paperRun && (
+            <div className="known-place-paper-run" aria-live="polite">
+              <div className="known-place-run-heading">
+                <span className="result-kicker">AUTHOR-EXACT RUN STATUS</span>
+                <strong>{resultLabel(paperRun)}</strong>
+              </div>
+              <p><b>Request ID:</b> <code>{paperRun.request_id}</code></p>
+              {paperRun.github_run_id && <p><b>GitHub Actions run:</b> <code>{paperRun.github_run_id}</code></p>}
+              {paperRun.conclusion && <p><b>Conclusion:</b> {paperRun.conclusion}</p>}
+              {paperRun.notice && <p className="catalog-notice">{paperRun.notice}</p>}
+              {paperPollError && !paperRunTerminal && <p className="action-hint" role="status">{paperPollError} Automatic status checks will retry.</p>}
+              {paperRun.github_run_url && <a className="known-place-run-link" href={paperRun.github_run_url} target="_blank" rel="noreferrer">Open author-exact GitHub run and result bundle</a>}
+              {paperRunSucceeded && <p className="catalog-notice">The workflow completed. Inspect the actual P05023 hashes, comparison counts, remaining PARITY status and Drive receipt before describing the paper as reproduced.</p>}
+              {paperRunFailed && <p className="catalog-error">The author-exact workflow ended with {paperRun.conclusion || 'an error'}. Open the run link to inspect the credential gate or failed scientific stage.</p>}
+            </div>
+          )}
+        </section>
+        <section className="known-place-custom-measurement" aria-labelledby="known-place-custom-title">
+          <span className="result-kicker">CUSTOM MEASUREMENT · GENERIC GOFF METHOD</span>
+          <h2 id="known-place-custom-title">Two-polygon known-place measurement</h2>
+          <p>This separate path measures a user-drawn target polygon relative to a disjoint user-drawn background polygon on the selected AOI/date window. It is not the author-exact paper method and reports PAPER_REPRODUCTION_STATUS=NOT_EVALUATED_GENERIC_AOI.</p>
         {candidateTransfer && <div className="catalog-notice known-place-candidate-handoff" role="status">
           <strong>Suggested Measurement Polygon imported from Find Displacements</strong>
           <span>{candidateTransfer.candidate.candidateId} · GOFF offset-anomaly candidate · {candidateTransfer.candidate.supportPairs} supporting pair(s) · {candidateTransfer.candidate.pixelCount} pixels</span>
@@ -463,6 +507,7 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
             {runFailed && <p className="catalog-error">Workflow ended with {run.conclusion || 'an error'}. Open the run link above to see the failing stage and safe error summary.</p>}
           </section>
         )}
+        </section>
         <button type="button" className="workspace-nav-link known-place-back" onClick={onBack}>← Back to AOI map</button>
       </section>
     </main>
