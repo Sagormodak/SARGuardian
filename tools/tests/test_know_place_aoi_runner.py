@@ -27,6 +27,7 @@ from tools.know_place.aoi_runner import (
     _preview,
     _trusted_download_url,
     discover_nisar_goff,
+    run_aoi_analysis,
 )
 import numpy as np
 from pyproj import Transformer
@@ -64,6 +65,44 @@ def product(name, *, maturity="PROVISIONAL", polarization="HH", bytes_size=101):
         },
         get_urls=lambda: [url],
     )
+
+def test_ambiguous_release_failure_is_explained_and_stops_before_download(tmp_path, monkeypatch):
+    duplicate = PAIR_NAMES[0].replace("_X05026_", "_P05023_")
+    records = [
+        {"granule_name": PAIR_NAMES[0], "polarization": "HH", "release_id": "X05026", "maturity": "PROVISIONAL"},
+        {"granule_name": duplicate, "polarization": "HH", "release_id": "P05023", "maturity": "PROVISIONAL"},
+    ]
+    manifest = {
+        "schema_version": "know-place-aoi-catalog-manifest/1.0",
+        "result_count": 2,
+        "eligible_count": 2,
+        "candidates": [
+            {"granule_name": row["granule_name"], "release_id": row["release_id"], "decision": "ELIGIBLE_CATALOG_CANDIDATE"}
+            for row in records
+        ],
+    }
+    monkeypatch.setattr(aoi_runner, "discover_nisar_goff", lambda _request: (records, manifest))
+    monkeypatch.setattr(
+        aoi_runner,
+        "_download_exact_product",
+        lambda *_args, **_kwargs: pytest.fail("ambiguous series must be rejected before any raw product download"),
+    )
+
+    output_root = tmp_path / "output"
+    with pytest.raises(AOIRunError, match="AMBIGUOUS_PRODUCT_RELEASE_VARIANTS") as exc_info:
+        run_aoi_analysis(request().to_dict(), output_root, cache_root=tmp_path / "cache", ephemeral_source_cache=True)
+
+    assert exc_info.value.code == "AMBIGUOUS_PRODUCT_RELEASE_VARIANTS"
+    run_dirs = [path for path in output_root.iterdir() if path.is_dir()]
+    assert len(run_dirs) == 1
+    failure = json.loads((run_dirs[0] / "failure.json").read_text(encoding="utf-8"))
+    detail = failure["failure"]
+    assert detail["code"] == "AMBIGUOUS_PRODUCT_RELEASE_VARIANTS"
+    assert detail["selection_diagnostics"]["candidate_release_ids"] == ["P05023", "X05026"]
+    assert detail["selection_diagnostics"]["ambiguous_pairs"][0]["candidate_granules"] == sorted([PAIR_NAMES[0], duplicate])
+    assert "catalog-only preflight" in detail["selection_diagnostics"]["required_action"]
+    assert "never silently substitute" in detail["required_user_action"]
+    assert not list((tmp_path / "cache").rglob("*.h5"))
 
 def test_asf_catalog_contract_preserves_exact_ids_and_query_evidence(monkeypatch):
     calls = {}
