@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from pathlib import Path
 import zipfile
 import sys
+from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
+from urllib.request import Request
 
 import pytest
 
@@ -274,6 +277,32 @@ def test_bundle_uploader_logs_safe_drive_http_status(tmp_path, monkeypatch, caps
 
     assert uploader.main() == 2
     output = capsys.readouterr().out
-    assert "ERROR=DriveClientError:DRIVE_FILE_LOOKUP_FAILED" in output
+    assert "ERROR=DRIVE_PARENT_FOLDER_NOT_FOUND_OR_NOT_ACCESSIBLE" in output
+    assert "ACTION=CHECK_GOOGLE_DRIVE_PARENT_FOLDER_ID_AND_GRANT_ACCESS_TO_EXPECTED_STORAGE_ACCOUNT" in output
     assert "DRIVE_HTTP_STATUS=404" in output
+
+
+
+def test_drive_client_preserves_safe_google_api_error_reason(monkeypatch):
+    client = DriveClient("client-id", "client-secret", "refresh-token")
+    request = Request("https://www.googleapis.com/drive/v3/files/missing-folder")
+
+    def fake_urlopen(*args, **kwargs):
+        body = json.dumps({
+            "error": {
+                "code": 404,
+                "message": "File not found: secret-resource-id",
+                "errors": [{"reason": "notFound", "message": "File not found: secret-resource-id"}],
+            }
+        }).encode("utf-8")
+        raise HTTPError(request.full_url, 404, "Not Found", hdrs={}, fp=io.BytesIO(body))
+
+    monkeypatch.setattr(drive_client_module, "urlopen", fake_urlopen)
+
+    with pytest.raises(DriveClientError) as captured:
+        client._request_json(request, "DRIVE_FILE_LOOKUP_FAILED")
+
+    assert captured.value.status == 404
+    assert captured.value.api_reason == "notFound"
+    assert "secret-resource-id" not in str(captured.value)
 
