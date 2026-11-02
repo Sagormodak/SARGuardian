@@ -337,10 +337,12 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
         execute_downloads: executeDownloads,
         request_fingerprint: requestFingerprint,
       });
-      try {
-        sessionStorage.removeItem('sarguardian.knownPlaceCandidate.v1');
-        sessionStorage.removeItem(geometryDraftKey(user.uid));
-      } catch { /* accepted workflow request remains authoritative */ }
+      if (executeDownloads) {
+        try {
+          sessionStorage.removeItem('sarguardian.knownPlaceCandidate.v1');
+          sessionStorage.removeItem(geometryDraftKey(user.uid));
+        } catch { /* accepted raw workflow request remains authoritative */ }
+      }
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : 'Could not submit Known Place Analysis.');
     } finally {
