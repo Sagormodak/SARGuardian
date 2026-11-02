@@ -43,7 +43,7 @@ jobs:
     name: Run exact-author Bhote Koshi P05023 replay
     uses: moshiour0/SARGuardian-backend/.github/workflows/know-place-author-exact-replay.yml@d847b0461a2fec1bdf2abcce0a6b1d2f9dddabc9
     with:
-      backend_code_ref: "d847b0461a2fec1bdf2abcce0a6b1d2f9dddabc9"
+      backend_code_ref: "b825df798ea4cb9874aa10dd01174d2a8ef73cba"
       consent_marker: ${{ inputs.consent_marker }}
       bridge_authorized: false
       geometry_height_m: ${{ inputs.geometry_height_m }}
