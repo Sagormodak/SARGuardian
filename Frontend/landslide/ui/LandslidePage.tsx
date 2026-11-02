@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { importLibrary, setOptions } from '@googlemaps/js-api-loader';
+import { importLibrary } from '@googlemaps/js-api-loader';
+import { configureGoogleMaps } from '../../src/googleMapsLoader';
 import type { User } from 'firebase/auth';
 import { analyzeGunwAoiQuality, createDisplacementJob, createQueuedJob, DEFAULT_DISPLACEMENT_OPTIONS, getNisarHarmonyJobStatus, getProcessingJob, inspectNisarAoiWindow, listProcessingJobs, searchNisarCatalog, startGunwQualityLayers, startNisarHarmonyLayerJob, verifyGunwNativeSourceMask } from '../../src/api/catalog';
 import type { AoiWindowResponse, CatalogProduct, CatalogResponse, GunwQualityAnalysisResponse, HarmonyLayerRole, HarmonyQualityLayerBundle, HarmonyQualityLayerJob, NativeSourceMaskVerificationResponse, NisarProductType, ProcessingJob, SubmittedHarmonyLayerJob } from '../../src/api/catalog';
@@ -15,7 +16,6 @@ import type { Coordinate, InvestigationResult, LocationSelection } from '../engi
 import './landslide.css';
 import './workspace.css';
 
-let mapsLoaderConfigured = false;
 const MIN_MAP_ZOOM = 5;
 const DEFAULT_MAP_ZOOM = 5;
 
@@ -85,9 +85,11 @@ function MapCanvas({ location, searchText, coordinates, areaClosed, drawing, sel
       return undefined;
     }
 
-    if (!mapsLoaderConfigured) {
-      setOptions({ key: apiKey, v: 'weekly' });
-      mapsLoaderConfigured = true;
+    try {
+      configureGoogleMaps(apiKey);
+    } catch {
+      setMapError('Google Maps configuration is already bound to a different API key.');
+      return undefined;
     }
 
     void Promise.all([importLibrary('maps'), importLibrary('geometry')])
