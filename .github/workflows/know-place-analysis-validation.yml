@@ -6,6 +6,7 @@ on:
       - feat/know-place-analysis
       - feat/known-place-independent-reference-20261102
       - fix/known-place-enclosing-reference-20261102
+      - fix/known-place-drive-shared-drive-support-20261102
     paths:
       - "tools/know_place/**"
       - "tools/tests/test_know_place_*.py"
