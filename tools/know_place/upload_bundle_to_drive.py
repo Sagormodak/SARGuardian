@@ -159,8 +159,14 @@ def main() -> int:
         })
         receipt_path = args.run_root.expanduser().resolve() / f"{args.folder_name}.drive-upload-receipt.json"
         receipt_path.write_text(json.dumps(receipt, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    except (OSError, ValueError, DriveClientError, BundleUploadError) as exc:
-        print(f"DRIVE_BUNDLE_UPLOAD_STATUS=FAIL")
+    except DriveClientError as exc:
+        print("DRIVE_BUNDLE_UPLOAD_STATUS=FAIL")
+        print(f"ERROR=DriveClientError:{exc.code}")
+        if exc.status is not None:
+            print(f"DRIVE_HTTP_STATUS={exc.status}")
+        return 2
+    except (OSError, ValueError, BundleUploadError) as exc:
+        print("DRIVE_BUNDLE_UPLOAD_STATUS=FAIL")
         print(f"ERROR={type(exc).__name__}:{str(exc).split(':', 1)[0][:120]}")
         return 2
 
