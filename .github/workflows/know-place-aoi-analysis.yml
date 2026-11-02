@@ -461,7 +461,7 @@ jobs:
                   lines.append("- Action: " + str(detail["required_user_action"]))
           if lines:
               with summary_path.open("a", encoding="utf-8") as stream:
-                  stream.write("\\n".join(lines) + "\\n")
+                  stream.write("\n".join(lines) + "\n")
           PY
           fi
 
