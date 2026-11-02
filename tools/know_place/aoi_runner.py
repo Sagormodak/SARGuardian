@@ -1230,7 +1230,9 @@ def run_aoi_analysis(
                 "reference_policy": reference_status,
                 "reference_geometry": {
                     "type": (
-                        roi.reference_geometry_mode
+                        "INDEPENDENT_USER_POLYGON"
+                        if roi.reference_geometry_mode == "INDEPENDENT_REFERENCE_POLYGON"
+                        else roi.reference_geometry_mode
                         if roi.reference_geometry_mode is not None
                         else "LOCAL_CONTEXT_OUTSIDE_MEASUREMENT"
                     ),
