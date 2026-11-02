@@ -23,10 +23,16 @@ from science_adapter.geometry import validate_wkt
 
 KNOWN_PLACE_REPOSITORY = "moshiour0/SARGuardian_Dynamic"
 KNOWN_PLACE_WORKFLOW = "known-place-analysis.yml"
+KNOWN_PLACE_PAPER_WORKFLOW = "known-place-paper-reproduction.yml"
 KNOWN_PLACE_REF = "main"
 KNOWN_PLACE_WORKFLOW_PAGE = (
     f"https://github.com/{KNOWN_PLACE_REPOSITORY}/actions/workflows/{KNOWN_PLACE_WORKFLOW}"
 )
+KNOWN_PLACE_PAPER_WORKFLOW_PAGE = (
+    f"https://github.com/{KNOWN_PLACE_REPOSITORY}/actions/workflows/{KNOWN_PLACE_PAPER_WORKFLOW}"
+)
+# Immutable backend commit containing the author-exact workflow and science code.
+KNOWN_PLACE_AUTHOR_BACKEND_REF = "f3f93509dbc04e4b24f7495fba73f0a3028946c0"
 KNOWN_PLACE_MAX_DATE_WINDOW_DAYS = 90
 
 
@@ -36,6 +42,17 @@ class KnownPlaceRequestError(ValueError):
 
 class KnownPlaceWorkflowError(RuntimeError):
     """A safe GitHub Actions dispatch/status error; never includes credentials."""
+
+
+class KnownPlacePaperReproductionRequest(BaseModel):
+    """Fixed Bhote Koshi author-exact run; raw download is always explicit."""
+    confirm_raw_downloads: bool = False
+
+    @model_validator(mode="after")
+    def require_explicit_author_replay_consent(self) -> "KnownPlacePaperReproductionRequest":
+        if self.confirm_raw_downloads is not True:
+            raise ValueError("EXPLICIT_AUTHOR_EXACT_RAW_DOWNLOAD_CONSENT_REQUIRED")
+        return self
 
 
 class KnownPlaceAnalysisRequest(BaseModel):
@@ -275,6 +292,98 @@ def dispatch_known_place_analysis(
             if payload.execute_downloads
             else "Catalog/series-plan dry run only. No raw NISAR products will be downloaded."
         ),
+    )
+
+
+def dispatch_known_place_paper_reproduction(
+    settings: RuntimeSettings,
+    payload: KnownPlacePaperReproductionRequest,
+) -> KnownPlaceAnalysisSubmission:
+    """Dispatch the fixed author-exact Bhote Koshi P05023 reproduction workflow."""
+    if not settings.displacement_actions_enabled:
+        raise KnownPlaceWorkflowError("Processing is disabled by server configuration.")
+    if payload.confirm_raw_downloads is not True:
+        raise KnownPlaceWorkflowError("Explicit author-exact raw-download consent is required.")
+    request_id = str(uuid4())
+    workflow_path = (
+        f"/repos/{KNOWN_PLACE_REPOSITORY}/actions/workflows/{KNOWN_PLACE_PAPER_WORKFLOW}/dispatches"
+    )
+    inputs = {
+        "request_id": request_id,
+        "consent_marker": "[run-know-place]",
+        "backend_code_ref": KNOWN_PLACE_AUTHOR_BACKEND_REF,
+        "geometry_height_m": "5151",
+        "control_draws": "1000",
+        "seed": "260826",
+    }
+    status, _ = _github_request(
+        settings,
+        "POST",
+        workflow_path,
+        {"ref": KNOWN_PLACE_REF, "inputs": inputs},
+    )
+    if status != 204:
+        raise KnownPlaceWorkflowError("GitHub Actions did not accept the author-exact paper reproduction request.")
+    return KnownPlaceAnalysisSubmission(
+        request_id=request_id,
+        status="dispatching",
+        github_run_id=None,
+        github_run_url=KNOWN_PLACE_PAPER_WORKFLOW_PAGE,
+        execute_downloads=True,
+        notice=(
+            "Author-exact Bhote Koshi P05023 replay requested. The workflow checks Earthdata and Drive credentials before any raw download; "
+            "its final paper-reproduction status remains evidence-gated and may remain PARTIAL."
+        ),
+    )
+
+
+def get_known_place_paper_reproduction_status(
+    settings: RuntimeSettings,
+    request_id: str,
+) -> KnownPlaceAnalysisSubmission:
+    try:
+        normalized_id = str(UUID(request_id))
+    except (ValueError, TypeError, AttributeError):
+        raise KnownPlaceWorkflowError("Invalid Known Place paper-reproduction request ID.") from None
+    query = urlencode({"branch": KNOWN_PLACE_REF, "event": "workflow_dispatch", "per_page": "30"})
+    path = (
+        f"/repos/{KNOWN_PLACE_REPOSITORY}/actions/workflows/{KNOWN_PLACE_PAPER_WORKFLOW}/runs?{query}"
+    )
+    _status, response = _github_request(settings, "GET", path)
+    runs = response.get("workflow_runs")
+    if not isinstance(runs, list):
+        raise KnownPlaceWorkflowError("GitHub returned an invalid author-exact paper reproduction status response.")
+    expected_title = f"Known Place Paper Reproduction {normalized_id}"
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        if (
+            run.get("display_title") != expected_title
+            or run.get("path") != f".github/workflows/{KNOWN_PLACE_PAPER_WORKFLOW}"
+            or run.get("head_branch") != KNOWN_PLACE_REF
+            or run.get("event") != "workflow_dispatch"
+        ):
+            continue
+        raw_status = str(run.get("status") or "")
+        state = "completed" if raw_status == "completed" else "in_progress" if raw_status == "in_progress" else "queued"
+        return KnownPlaceAnalysisSubmission(
+            request_id=normalized_id,
+            status=state,
+            github_run_id=str(run.get("id")) if run.get("id") is not None else None,
+            github_run_url=str(run.get("html_url") or KNOWN_PLACE_PAPER_WORKFLOW_PAGE),
+            conclusion=str(run.get("conclusion")) if run.get("conclusion") is not None else None,
+            created_at=str(run.get("created_at")) if run.get("created_at") else None,
+            updated_at=str(run.get("updated_at")) if run.get("updated_at") else None,
+            execute_downloads=True,
+            notice="Open the author-exact GitHub run for the P05023 source hashes, parity gates, derived bundle and Drive receipt.",
+        )
+    return KnownPlaceAnalysisSubmission(
+        request_id=normalized_id,
+        status="dispatching",
+        github_run_id=None,
+        github_run_url=KNOWN_PLACE_PAPER_WORKFLOW_PAGE,
+        execute_downloads=True,
+        notice="GitHub accepted the author-exact request. The workflow run is still being allocated; refresh status shortly.",
     )
 
 
