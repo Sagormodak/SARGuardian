@@ -327,13 +327,13 @@ def build_independent_reference_roi(
     scope_wkt: str | None = None,
     coherence_halo_cells: int = 2,
 ) -> AnalysisROI:
-    """Rasterize disjoint measurement and reference polygons on one native GOFF grid.
+    """Rasterize measurement and background geometry on one native GOFF grid.
 
-    Unlike build_analysis_roi (the historic paper box/crown contract), the
-    reference polygon is an independent background region. It must neither
-    contain nor overlap/touch the measurement polygon. Both masks are retained
-    explicitly; the legacy box_mask is their union for existing correction and
-    control kernels, so box_mask & ~crown_mask is exactly the reference mask.
+    A reference polygon may be disjoint from the measurement polygon, or may
+    enclose it. In the latter case the background mask is the enclosing region
+    minus the measurement mask, reproducing the box/crown mask relationship
+    without allowing target pixels to self-reference. Partial overlap, reverse
+    containment, and boundary contact are rejected.
     """
     if not isinstance(coherence_halo_cells, int) or coherence_halo_cells < 2:
         raise GoffReadError("COHERENCE_CONTEXT_HALO_MUST_BE_AT_LEAST_TWO_CELLS")
