@@ -28,6 +28,11 @@ on:
         required: false
         default: ""
         type: string
+      backend_code_ref:
+        description: "Immutable 40-character SARGuardian-backend commit to check out"
+        required: true
+        default: "5edf41a61d5b10b0f3d4bd8f67619d512cb1c204"
+        type: string
       geometry_height_m:
         description: "Exploratory geometry height in metres; not a datum correction"
         required: true
@@ -45,6 +50,10 @@ on:
         type: string
   workflow_call:
     inputs:
+      backend_code_ref:
+        description: "Immutable 40-character SARGuardian-backend source commit to execute"
+        required: true
+        type: string
       consent_marker:
         description: "Must be exactly [run-know-place] before any raw HDF5 download"
         required: false
@@ -149,11 +158,25 @@ jobs:
           echo "CREDENTIAL_PREFLIGHT=PASS"
           echo "RAW_DOWNLOAD_CONSENT=PASS"
 
-      - name: Checkout backend at exact triggering commit
+      - name: Verify immutable backend source pin
+        if: steps.credentials.outputs.secrets_ready == 'true'
+        shell: bash
+        env:
+          BACKEND_CODE_REF: ${{ inputs.backend_code_ref || '' }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$BACKEND_CODE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR=BACKEND_CODE_REF_MUST_BE_IMMUTABLE_40_CHAR_SHA"
+            exit 1
+          fi
+          echo "BACKEND_CODE_REF_VERIFIED=$BACKEND_CODE_REF"
+
+      - name: Checkout SARGuardian-backend at the immutable source commit
         if: steps.credentials.outputs.secrets_ready == 'true'
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          repository: moshiour0/SARGuardian-backend
+          ref: ${{ inputs.backend_code_ref }}
 
       - name: Checkout pinned science acquisition helper
         if: steps.credentials.outputs.secrets_ready == 'true'
