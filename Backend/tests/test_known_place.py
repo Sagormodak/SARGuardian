@@ -169,6 +169,7 @@ def candidate_context() -> dict:
         "geometry_original_vertices": 1800,
         "geometry_suggested_vertices": 420,
         "geometry_simplified": True,
+        "geometry_edited": True,
         "interpretation": "Offset anomaly candidate; not measured ground motion.",
     }
 
