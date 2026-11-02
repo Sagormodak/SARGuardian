@@ -161,9 +161,15 @@ def main() -> int:
         receipt_path.write_text(json.dumps(receipt, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     except DriveClientError as exc:
         print("DRIVE_BUNDLE_UPLOAD_STATUS=FAIL")
-        print(f"ERROR=DriveClientError:{exc.code}")
+        if exc.code == "DRIVE_FILE_LOOKUP_FAILED" and exc.status == 404:
+            print("ERROR=DRIVE_PARENT_FOLDER_NOT_FOUND_OR_NOT_ACCESSIBLE")
+            print("ACTION=CHECK_GOOGLE_DRIVE_PARENT_FOLDER_ID_AND_GRANT_ACCESS_TO_EXPECTED_STORAGE_ACCOUNT")
+        else:
+            print(f"ERROR=DriveClientError:{exc.code}")
         if exc.status is not None:
             print(f"DRIVE_HTTP_STATUS={exc.status}")
+        if exc.api_reason:
+            print(f"DRIVE_API_REASON={exc.api_reason}")
         return 2
     except (OSError, ValueError, BundleUploadError) as exc:
         print("DRIVE_BUNDLE_UPLOAD_STATUS=FAIL")
