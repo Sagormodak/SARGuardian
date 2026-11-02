@@ -25,6 +25,7 @@ class AnalysisROI:
     # encompassing-box/crown semantics used by the paper-specific path.
     reference_mask: np.ndarray | None = None
     reference_ring_projected: tuple[tuple[float, float], ...] | None = None
+    reference_geometry_mode: str | None = None
 
 
 def parse_polygon_wkt(wkt: str, *, max_vertices: int = 500) -> list[tuple[float, float]]:
@@ -255,6 +256,22 @@ def _segments_intersect(
     )
 
 
+def _ring_strictly_contains(
+    outer: tuple[tuple[float, float], ...],
+    inner: tuple[tuple[float, float], ...],
+) -> bool:
+    """Return true only when the complete inner boundary is strictly inside outer."""
+    inner_x = np.asarray([[point[0] for point in inner[:-1]]], dtype=float)
+    inner_y = np.asarray([[point[1] for point in inner[:-1]]], dtype=float)
+    if not points_in_ring(inner_x, inner_y, outer).all():
+        return False
+    return not any(
+        _segments_intersect(a, b, c, d)
+        for a, b in zip(inner[:-1], inner[1:])
+        for c, d in zip(outer[:-1], outer[1:])
+    )
+
+
 def _rings_overlap_or_touch(
     first: tuple[tuple[float, float], ...],
     second: tuple[tuple[float, float], ...],
@@ -335,7 +352,13 @@ def build_independent_reference_roi(
 
     measurement = project_wkt_ring(measurement_wkt, epsg)
     reference = project_wkt_ring(reference_wkt, epsg)
-    if _rings_overlap_or_touch(measurement, reference):
+    # Two explicit and scientifically distinct layouts are supported:
+    # 1) disjoint measurement + reference polygons; or
+    # 2) an enclosing reference region whose background mask is that region
+    #    minus the measurement polygon (the paper-style box/crown relationship).
+    # Partial overlap, reverse containment, and boundary-touch remain invalid.
+    enclosing_reference = _ring_strictly_contains(reference, measurement)
+    if _rings_overlap_or_touch(measurement, reference) and not enclosing_reference:
         raise GoffReadError("MEASUREMENT_REFERENCE_POLYGONS_OVERLAP_OR_TOUCH")
     if scope_wkt:
         scope = project_wkt_ring(scope_wkt, epsg)
@@ -375,13 +398,27 @@ def build_independent_reference_roi(
     roi_x, roi_y = x[col0:col1], y[row0:row1]
     xx, yy = np.meshgrid(roi_x, roi_y)
     measurement_mask = points_in_ring(xx, yy, measurement)
-    reference_mask = points_in_ring(xx, yy, reference)
+    reference_region_mask = points_in_ring(xx, yy, reference)
     if not measurement_mask.any():
         raise GoffReadError("MEASUREMENT_POLYGON_HAS_NO_GRID_CELL_CENTRES")
-    if not reference_mask.any():
+    if not reference_region_mask.any():
         raise GoffReadError("REFERENCE_POLYGON_HAS_NO_GRID_CELL_CENTRES")
-    if np.any(measurement_mask & reference_mask):
-        raise GoffReadError("MEASUREMENT_REFERENCE_RASTER_MASKS_OVERLAP")
+    if enclosing_reference:
+        if np.any(measurement_mask & ~reference_region_mask):
+            raise GoffReadError("MEASUREMENT_MASK_NOT_CONTAINED_IN_REFERENCE_MASK")
+        # The outer polygon is the reference context; exclude every measurement
+        # cell from the background mask to avoid self-referencing the target.
+        box_mask = reference_region_mask
+        reference_mask = reference_region_mask & ~measurement_mask
+        reference_mode = "ENCLOSING_REFERENCE_REGION_MINUS_MEASUREMENT"
+    else:
+        if np.any(measurement_mask & reference_region_mask):
+            raise GoffReadError("MEASUREMENT_REFERENCE_RASTER_MASKS_OVERLAP")
+        box_mask = measurement_mask | reference_region_mask
+        reference_mask = reference_region_mask
+        reference_mode = "INDEPENDENT_REFERENCE_POLYGON"
+    if not reference_mask.any():
+        raise GoffReadError("REFERENCE_BACKGROUND_HAS_NO_GRID_CELL_CENTRES_AFTER_MEASUREMENT_EXCLUSION")
 
     envelope = (
         (xmin, ymin), (xmax, ymin), (xmax, ymax),
@@ -392,11 +429,12 @@ def build_independent_reference_roi(
         col_slice=slice(col0, col1),
         x_coordinates_m=roi_x,
         y_coordinates_m=roi_y,
-        box_mask=measurement_mask | reference_mask,
+        box_mask=box_mask,
         crown_mask=measurement_mask,
         box_ring_projected=envelope,
         crown_ring_projected=measurement,
         reference_mask=reference_mask,
         reference_ring_projected=reference,
+        reference_geometry_mode=reference_mode,
     )
 
