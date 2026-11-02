@@ -66,8 +66,9 @@ def test_github_dispatch_403_explains_target_repository_permission(
     monkeypatch.setattr(known_place, "urlopen", forbidden)
     owner, name = repository.split("/")
     path = f"/repos/{owner}/{name}/actions/workflows/{workflow}/dispatches"
-    with pytest.raises(known_place.KnownPlaceWorkflowError, match=repository.replace("/", r"\\/")) as exc:
+    with pytest.raises(known_place.KnownPlaceWorkflowError, match="GitHub denied workflow dispatch to") as exc:
         known_place._github_request(settings(), "POST", path, {"ref": "main", "inputs": {}})
+    assert repository in str(exc.value)
     assert "Actions: read and write" in str(exc.value)
 
 
