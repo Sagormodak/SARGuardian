@@ -61,6 +61,10 @@ def test_dry_run_dispatch_does_not_include_raw_download_consent(monkeypatch: pyt
     assert response.status == "dispatching"
     assert response.execute_downloads is False
     assert observed["method"] == "POST"
+    assert observed["path"] == (
+        "/repos/moshiour0/SARGuardian-backend/actions/workflows/"
+        "know-place-aoi-dispatcher.yml/dispatches"
+    )
     assert observed["body"]["ref"] == "main"
     inputs = observed["body"]["inputs"]
     assert inputs["request_id"] == response.request_id
@@ -82,6 +86,8 @@ def test_raw_analysis_dispatch_needs_confirmed_checkbox_and_sets_exact_marker(mo
     response = known_place.dispatch_known_place_analysis(settings(), request)
 
     assert response.execute_downloads is True
+    assert observed["path"].startswith("/repos/moshiour0/SARGuardian-backend/")
+    assert observed["path"].endswith("/know-place-aoi-dispatcher.yml/dispatches")
     assert observed["inputs"]["execute_downloads"] is True
     assert observed["inputs"]["consent_marker"] == "[run-know-place]"
 
@@ -91,18 +97,18 @@ def test_status_is_matched_by_random_request_id_and_workflow_identity(monkeypatc
 
     def fake_request(_settings, method, path, body=None):
         assert method == "GET"
-        assert "known-place-analysis.yml/runs" in path
+        assert "/repos/moshiour0/SARGuardian-backend/actions/workflows/know-place-aoi-dispatcher.yml/runs" in path
         return 200, {
             "workflow_runs": [
                 {
                     "id": 12345,
                     "display_title": f"Known Place Analysis {request_id}",
-                    "path": ".github/workflows/known-place-analysis.yml",
+                    "path": ".github/workflows/know-place-aoi-dispatcher.yml",
                     "head_branch": "main",
                     "event": "workflow_dispatch",
                     "status": "completed",
                     "conclusion": "success",
-                    "html_url": "https://github.com/moshiour0/SARGuardian_Dynamic/actions/runs/12345",
+                    "html_url": "https://github.com/moshiour0/SARGuardian-backend/actions/runs/12345",
                     "created_at": "2026-10-28T00:00:00Z",
                     "updated_at": "2026-10-28T00:01:00Z",
                 },
@@ -210,7 +216,7 @@ def test_author_exact_paper_reproduction_status_is_matched_by_request_and_workfl
                 {
                     "id": 54320,
                     "display_title": "Unrelated workflow",
-                    "path": ".github/workflows/known-place-analysis.yml",
+                    "path": ".github/workflows/know-place-aoi-dispatcher.yml",
                     "head_branch": "main",
                     "event": "workflow_dispatch",
                     "status": "completed",
@@ -271,16 +277,19 @@ def test_gunw_candidate_cannot_be_sent_to_goff_known_place_measurement() -> None
         known_place.KnownPlaceAnalysisRequest(**(REQUEST | {"candidate_context": value}))
 
 
-def test_author_exact_paper_workflow_is_separate_and_pinned_to_immutable_backend_source() -> None:
+def test_generic_known_place_dispatch_is_backend_owned_and_paper_reproduction_stays_separate() -> None:
     repository_root = Path(__file__).resolve().parents[2]
     paper_workflow = (repository_root / ".github" / "workflows" / known_place.KNOWN_PLACE_PAPER_WORKFLOW).read_text(encoding="utf-8")
-    generic_workflow = (repository_root / ".github" / "workflows" / known_place.KNOWN_PLACE_WORKFLOW).read_text(encoding="utf-8")
 
+    assert known_place.KNOWN_PLACE_REPOSITORY == "moshiour0/SARGuardian-backend"
+    assert known_place.KNOWN_PLACE_WORKFLOW == "know-place-aoi-dispatcher.yml"
+    assert known_place.KNOWN_PLACE_REF == "main"
+    assert known_place.KNOWN_PLACE_PAPER_REPOSITORY == "moshiour0/SARGuardian_Dynamic"
     assert known_place.KNOWN_PLACE_PAPER_WORKFLOW != known_place.KNOWN_PLACE_WORKFLOW
     assert "moshiour0/SARGuardian-backend/.github/workflows/know-place-author-exact-replay.yml@" in paper_workflow
     assert known_place.KNOWN_PLACE_AUTHOR_BACKEND_REF in paper_workflow
     assert 'backend_code_ref: "' + known_place.KNOWN_PLACE_AUTHOR_BACKEND_REF + '"' in paper_workflow
     assert "consent_marker: ${{ inputs.consent_marker }}" in paper_workflow
     assert "bridge_authorized: false" in paper_workflow
-    assert "know-place-aoi-analysis.yml@" in generic_workflow
-    assert "know-place-author-exact-replay.yml@" not in generic_workflow
+    assert "know-place-aoi-analysis.yml@" not in paper_workflow
+    assert "know-place-author-exact-replay.yml@" in paper_workflow
