@@ -7,12 +7,17 @@ import {
   getKnownPlacePaperReproductionStatus,
   startKnownPlaceAnalysis,
   startKnownPlacePaperReproduction,
+  type KnownPlaceAnalysisInput,
   type KnownPlaceAnalysisMode,
   type KnownPlaceAnalysisRun,
   type KnownPlaceHazardMode,
 } from '../../src/api/knownPlace';
+import {
+  hasMatchingKnownPlaceCatalogPreflight,
+  knownPlaceRequestFingerprint,
+} from './knownPlacePreflight';
 
-type StoredRun = KnownPlaceAnalysisRun & { execute_downloads: boolean };
+type StoredRun = KnownPlaceAnalysisRun & { execute_downloads: boolean; request_fingerprint?: string };
 
 type CandidateTransfer = {
   schemaVersion: 'sarguardian-known-place-candidate/1.0';
@@ -163,6 +168,43 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
   const [run, setRun] = useState<StoredRun | null>(() => loadStoredRun(user.uid));
   const [error, setError] = useState('');
   const [pollError, setPollError] = useState('');
+  const createAnalysisInput = (executeDownloads: boolean): KnownPlaceAnalysisInput => ({
+    aoi_wkt: measurementWkt,
+    scope_aoi_wkt: aoiWkt || '',
+    start_date: startDate,
+    end_date: endDate,
+    hazard_mode: hazardMode,
+    analysis_mode: analysisMode,
+    polarization,
+    track: track.trim().toUpperCase(),
+    direction,
+    coherence_neighbours: coherenceNeighbours,
+    allowed_release_ids: allowedReleaseIds.trim(),
+    reference_wkt: referenceWkt,
+    candidate_context: candidateTransfer ? {
+      source: 'FIND_DISPLACEMENTS',
+      candidate_id: candidateTransfer.candidate.candidateId,
+      product_type: 'GOFF',
+      metric: candidateTransfer.candidate.metric,
+      evidence_class: candidateTransfer.candidate.evidenceClass,
+      status: candidateTransfer.candidate.status,
+      support_pairs: candidateTransfer.candidate.supportPairs,
+      pixel_count: candidateTransfer.candidate.pixelCount,
+      approx_area_m2: candidateTransfer.candidate.approximateAreaM2,
+      product_ids: candidateTransfer.candidate.productIds,
+      pair_intervals: candidateTransfer.candidate.pairIntervals,
+      geometry_original_vertices: candidateTransfer.candidate.geometryOriginalVertices,
+      geometry_suggested_vertices: candidateTransfer.candidate.geometrySuggestedVertices,
+      geometry_simplified: candidateTransfer.candidate.geometrySimplified,
+      geometry_edited: !samePolygonGeometry(measurementWkt, candidateTransfer.measurementWkt),
+      interpretation: candidateTransfer.candidate.interpretation,
+    } : null,
+    geometry_height_m: geometryHeight.trim() ? Number(geometryHeight) : null,
+    execute_downloads: executeDownloads,
+    confirm_raw_downloads: executeDownloads && confirmRawDownloads,
+  });
+  const currentRequestFingerprint = knownPlaceRequestFingerprint(createAnalysisInput(false));
+  const catalogPreflightReady = hasMatchingKnownPlaceCatalogPreflight(run, currentRequestFingerprint);
   const handleMeasurementChange = useCallback((wkt: string) => setMeasurementWkt(wkt), []);
   const handleReferenceChange = useCallback((wkt: string) => setReferenceWkt(wkt), []);
   const handlePolygonValidation = useCallback((result: { valid: boolean; message: string }) => setPolygonValidation(result), []);
@@ -263,6 +305,10 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
       setError(polygonValidation.message || 'Draw and validate the Measurement and Reference polygons before submitting. The Reference may be a larger enclosing region; partial overlap is invalid.');
       return;
     }
+    if (executeDownloads && !catalogPreflightReady) {
+      setError('Run a successful catalog-only dry run for these exact settings first. If it reports duplicate release variants, select the intended release ID and rerun the dry run before authorizing raw downloads.');
+      return;
+    }
     if (executeDownloads && !confirmRawDownloads) {
       setError('Confirm raw-data download permission before starting the GOFF measurement run.');
       return;
@@ -280,46 +326,23 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
     setError('');
     setPollError('');
     try {
-      const submitted = await startKnownPlaceAnalysis({
-        aoi_wkt: measurementWkt,
-        scope_aoi_wkt: aoiWkt,
-        start_date: startDate,
-        end_date: endDate,
-        hazard_mode: hazardMode,
-        analysis_mode: analysisMode,
-        polarization,
-        track: track.trim().toUpperCase(),
-        direction,
-        coherence_neighbours: coherenceNeighbours,
-        allowed_release_ids: allowedReleaseIds.trim(),
-        reference_wkt: referenceWkt,
-        candidate_context: candidateTransfer ? {
-          source: 'FIND_DISPLACEMENTS',
-          candidate_id: candidateTransfer.candidate.candidateId,
-          product_type: 'GOFF',
-          metric: candidateTransfer.candidate.metric,
-          evidence_class: candidateTransfer.candidate.evidenceClass,
-          status: candidateTransfer.candidate.status,
-          support_pairs: candidateTransfer.candidate.supportPairs,
-          pixel_count: candidateTransfer.candidate.pixelCount,
-          approx_area_m2: candidateTransfer.candidate.approximateAreaM2,
-          product_ids: candidateTransfer.candidate.productIds,
-          pair_intervals: candidateTransfer.candidate.pairIntervals,
-          geometry_original_vertices: candidateTransfer.candidate.geometryOriginalVertices,
-          geometry_suggested_vertices: candidateTransfer.candidate.geometrySuggestedVertices,
-          geometry_simplified: candidateTransfer.candidate.geometrySimplified,
-          geometry_edited: !samePolygonGeometry(measurementWkt, candidateTransfer.measurementWkt),
-          interpretation: candidateTransfer.candidate.interpretation,
-        } : null,
+      const analysisInput = {
+        ...createAnalysisInput(executeDownloads),
         geometry_height_m: height,
+      };
+      const requestFingerprint = knownPlaceRequestFingerprint(analysisInput);
+      const submitted = await startKnownPlaceAnalysis(analysisInput, user);
+      setRun({
+        ...submitted,
         execute_downloads: executeDownloads,
-        confirm_raw_downloads: executeDownloads && confirmRawDownloads,
-      }, user);
-      setRun({ ...submitted, execute_downloads: executeDownloads });
-      try {
-        sessionStorage.removeItem('sarguardian.knownPlaceCandidate.v1');
-        sessionStorage.removeItem(geometryDraftKey(user.uid));
-      } catch { /* accepted workflow request remains authoritative */ }
+        request_fingerprint: requestFingerprint,
+      });
+      if (executeDownloads) {
+        try {
+          sessionStorage.removeItem('sarguardian.knownPlaceCandidate.v1');
+          sessionStorage.removeItem(geometryDraftKey(user.uid));
+        } catch { /* accepted raw workflow request remains authoritative */ }
+      }
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : 'Could not submit Known Place Analysis.');
     } finally {
@@ -463,8 +486,9 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
             </select>
           </label>
           <label className="aoi-job-label known-place-wide">
-            <span>Exact release IDs (optional, comma-separated)</span>
-            <input value={allowedReleaseIds} onChange={(event) => setAllowedReleaseIds(event.target.value)} placeholder="e.g. P05023 — pin one release when duplicate pairs exist" autoComplete="off" />
+            <span>Allowed release IDs (comma-separated)</span>
+            <input value={allowedReleaseIds} onChange={(event) => setAllowedReleaseIds(event.target.value)} placeholder="Leave blank only when catalog pairs are unambiguous" autoComplete="off" />
+            <span className="catalog-field-hint">Run the catalog-only dry run first. When it reports duplicate variants, enter only the intended release ID (for example, P05023) and rerun the dry run. SARGuardian never auto-selects a release.</span>
           </label>
           <label className="aoi-job-label">
             <span>Constant ellipsoidal height in metres (optional sensitivity only)</span>
@@ -474,16 +498,21 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
 
         <section className="known-place-run-options" aria-label="Known Place run options">
           <h2>Choose how to run</h2>
-          <p className="catalog-notice"><b>Catalog-only dry run:</b> checks the request, product availability and series plan. It does not download raw NISAR products.</p>
+          <p className="catalog-notice"><b>Required preflight:</b> run the catalog-only dry run first. It verifies product availability and release-consistent series planning without downloading raw NISAR products.</p>
           <button type="button" className="demo-button" disabled={!canSubmitGeometry || pendingAction !== null} onClick={() => void submit(false)}>
             {pendingAction === 'dry-run' ? 'Submitting dry run…' : 'Run catalog-only dry run'}
           </button>
+          <p className="catalog-notice" role="status">
+            {catalogPreflightReady
+              ? 'Catalog preflight passed for the exact current polygons, dates and processing settings. Raw download still requires the separate consent checkbox.'
+              : 'Raw GOFF downloads remain locked until a catalog-only dry run succeeds for the exact current settings. Changing a polygon, date, track, direction, polarization or release filter requires a new dry run.'}
+          </p>
           <div className="known-place-consent">
             <label>
               <input type="checkbox" checked={confirmRawDownloads} onChange={(event) => setConfirmRawDownloads(event.target.checked)} />
               <span><b>I explicitly authorize raw NISAR GOFF downloads for this request.</b> The workflow checks Earthdata/Drive credentials before downloading, processes selected products one at a time, and retains derived results and receipts.</span>
             </label>
-            <button type="button" className="investigate-button" disabled={!canSubmitGeometry || !confirmRawDownloads || pendingAction !== null} onClick={() => void submit(true)}>
+            <button type="button" className="investigate-button" disabled={!canSubmitGeometry || !confirmRawDownloads || !catalogPreflightReady || pendingAction !== null} onClick={() => void submit(true)}>
               {pendingAction === 'analysis' ? 'Starting GOFF analysis…' : 'Run Known Place Analysis'}
             </button>
           </div>
@@ -503,8 +532,12 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
             {run.notice && <p className="catalog-notice">{run.notice}</p>}
             {pollError && !runTerminal && <p className="action-hint" role="status">{pollError} Automatic status checks will retry.</p>}
             {run.github_run_url && <a className="known-place-run-link" href={run.github_run_url} target="_blank" rel="noreferrer">Open GitHub run and view the result bundle</a>}
-            {runSucceeded && <p className="catalog-notice">Workflow succeeded. Inspect the measurement, uncertainty and reference-method reports in the run artifact; a completed run is not independent hazard-detection validation.</p>}
-            {runFailed && <p className="catalog-error">Workflow ended with {run.conclusion || 'an error'}. Open the run link above to see the failing stage and safe error summary.</p>}
+            {runSucceeded && (run.execute_downloads
+              ? <p className="catalog-notice">Workflow succeeded. Inspect the measurement, uncertainty and reference-method reports in the run artifact; a completed run is not independent hazard-detection validation.</p>
+              : <p className="catalog-notice">Catalog-only preflight passed. No raw NISAR products were downloaded. You may now separately authorize a raw GOFF run for these unchanged settings.</p>)}
+            {runFailed && (run.execute_downloads
+              ? <p className="catalog-error">Raw GOFF workflow ended with {run.conclusion || 'an error'}. Open the run link above to inspect the failing stage.</p>
+              : <p className="catalog-error">Catalog-only preflight failed; no raw download was requested. Open the run summary and artifact for the exact failing pair and candidate release IDs. Enter the intended release filter, then rerun the catalog-only preflight before authorizing downloads.</p>)}
           </section>
         )}
         </section>
