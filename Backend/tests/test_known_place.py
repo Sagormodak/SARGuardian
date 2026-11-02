@@ -343,6 +343,21 @@ def _known_place_test_artifact() -> bytes:
             "high_magnitude_threshold": 10,
             "quality_gate_counts": {"valid": 9},
             "interval_coverage_warning": "Interval-averaged pairwise observation.",
+            "epsg": 32645,
+            "map_preview": {
+                "width": 2,
+                "height": 2,
+                "values": [[0.12, 0.18], [0.09, 0.15]],
+                "east_values_m": [[0.08, 0.10], [0.06, 0.09]],
+                "north_values_m": [[0.03, 0.04], [0.02, 0.03]],
+                "min_x_m": 500040,
+                "max_y_m": 3100120,
+                "pixel_size_x_m": 80,
+                "pixel_size_y_m": 80,
+                "stride_cells": 1,
+                "aoi_ring_xy": [[500000, 3100000], [500160, 3100000], [500160, 3100160], [500000, 3100160], [500000, 3100000]],
+                "reference_ring_xy": [[500320, 3099920], [500480, 3099920], [500480, 3100160], [500320, 3100160], [500320, 3099920]],
+            },
         })
         features.append({
             "reference_date": reference_date,
@@ -482,6 +497,9 @@ def test_known_place_result_parser_preserves_separate_chains_and_claim_gates() -
     assert result["pairwise_series_plan"]["cumulative_displacement_status"] == "SEPARATE_CHAINS_REVIEW_REQUIRED"
     assert {pair["track"] for pair in result["pairs"]} == {"048", "098"}
     assert result["pairs"][0]["median_horizontal_displacement_rate_m_per_day"] == 24.48
+    assert result["pairs"][0]["map_preview"]["epsg"] == 32645
+    assert result["pairs"][0]["map_preview"]["width"] == 2
+    assert result["pairs"][0]["map_preview"]["east_values_m"][0][0] == 0.08
     assert result["hazard_detection_status"] == "NOT_EVALUATED"
     assert result["paper_reproduction_status"] == "NOT_EVALUATED_GENERIC_AOI"
     assert parsed["storage"]["hash_verified"] is True
@@ -575,3 +593,46 @@ def test_known_place_result_lookup_rejects_artifact_digest_mismatch(monkeypatch:
     monkeypatch.setattr(known_place, "_download_known_place_artifact", lambda _settings, _artifact_id: _known_place_test_artifact())
     with pytest.raises(known_place.KnownPlaceWorkflowError, match="SHA-256 verification"):
         known_place.get_known_place_analysis_results(settings(), request_id)
+
+
+
+def test_known_place_map_preview_rejects_unsafe_or_ungeoreferenced_grids() -> None:
+    valid = {
+        "epsg": 32645,
+        "map_preview": {
+            "width": 1,
+            "height": 1,
+            "values": [[0.1]],
+            "east_values_m": [[0.08]],
+            "north_values_m": [[0.04]],
+            "min_x_m": 500000,
+            "max_y_m": 3100000,
+            "pixel_size_x_m": 80,
+            "pixel_size_y_m": 80,
+            "stride_cells": 1,
+            "aoi_ring_xy": [[499960, 3099960], [500040, 3099960], [500040, 3100040], [499960, 3100040]],
+        },
+    }
+    assert known_place._known_place_map_preview(valid) is not None
+    assert known_place._known_place_map_preview(valid | {"epsg": 4326}) is None
+    malformed = valid | {"map_preview": valid["map_preview"] | {"width": 73}}
+    assert known_place._known_place_map_preview(malformed) is None
+    bad_shape = valid | {"map_preview": valid["map_preview"] | {"east_values_m": [[0.1, 0.2]]}}
+    assert known_place._known_place_map_preview(bad_shape) is None
+
+
+def test_known_place_feature_join_keeps_same_date_pairs_in_separate_orbit_chains() -> None:
+    interval = ("2026-08-01", "2026-08-13")
+    rows = known_place._known_place_pair_rows({
+        "hazard_detection_status": "NOT_EVALUATED",
+        "pairs": [
+            {"reference_date": interval[0], "secondary_date": interval[1], "chain_id": "098-A-HH-P05023", "track": "098", "direction": "A", "epsg": 32645},
+            {"reference_date": interval[0], "secondary_date": interval[1], "chain_id": "048-D-HH-P05023", "track": "048", "direction": "D", "epsg": 32645},
+        ],
+        "motion_dynamics": {"pairs": [
+            {"reference_date": interval[0], "secondary_date": interval[1], "chain_id": "098-A-HH-P05023", "median_horizontal_displacement_rate_m_per_day": 0.1},
+            {"reference_date": interval[0], "secondary_date": interval[1], "chain_id": "048-D-HH-P05023", "median_horizontal_displacement_rate_m_per_day": 2.5},
+        ]},
+    })
+    assert rows[0]["median_horizontal_displacement_rate_m_per_day"] == 0.1
+    assert rows[1]["median_horizontal_displacement_rate_m_per_day"] == 2.5
