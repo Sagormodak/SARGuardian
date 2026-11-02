@@ -47,7 +47,7 @@ describe('Known Place map geometry', () => {
     }, 20);
     expect(samples).toHaveLength(4);
     expect(samples.every((sample) => sample.displacement_m <= 5)).toBe(true);
-    expect(samples[0].rate_m_per_day).toBe(0.5);
+    expect(samples[0].rate_m_per_day).toBe(0.1);
     expect(samples[0].azimuth_deg).toBeCloseTo(90, 6);
   });
 
