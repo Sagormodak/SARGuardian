@@ -235,8 +235,19 @@ def _github_request(
         except (UnicodeDecodeError, json.JSONDecodeError):
             payload = {}
         message = payload.get("message") if isinstance(payload, dict) else None
-        if exc.code in (401, 403):
-            raise KnownPlaceWorkflowError("GitHub Actions dispatch is not authorized; check the server's workflow token permissions.") from None
+        if exc.code == 401:
+            raise KnownPlaceWorkflowError("GitHub rejected the server's Actions token. Replace the production GITHUB_ACTIONS_TOKEN with a valid token.") from None
+        if exc.code == 403:
+            parts = path.strip("/").split("/")
+            target_repository = (
+                f"{parts[1]}/{parts[2]}"
+                if len(parts) >= 3 and parts[0] == "repos"
+                else "the configured repository"
+            )
+            raise KnownPlaceWorkflowError(
+                f"GitHub denied workflow dispatch to {target_repository}. "
+                "Grant the server token Actions: read and write on that repository."
+            ) from None
         if exc.code == 404:
             raise KnownPlaceWorkflowError("The Known Place Analysis workflow was not found on its configured branch.") from None
         detail = f" ({exc.code})"

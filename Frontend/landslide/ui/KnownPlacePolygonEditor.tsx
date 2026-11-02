@@ -137,10 +137,17 @@ function validatePolygonPair(
   if (!polygonInsideOuter(reference, outer)) {
     return { valid: false, message: 'Every part of the Reference Polygon must remain inside the outer AOI.' };
   }
-  if (polygonsOverlapOrTouch(measurement, reference)) {
-    return { valid: false, message: 'The Measurement and Reference Polygons must be separate: overlap or boundary-touch is not allowed.' };
+  const measurementInsideReference = polygonInsideOuter(measurement, reference);
+  if (polygonsOverlapOrTouch(measurement, reference) && !measurementInsideReference) {
+    return { valid: false, message: 'The polygons may be disjoint or the Reference Polygon may enclose the Measurement Polygon. Partial overlap, reverse containment, and boundary-touch are not allowed.' };
   }
-  return { valid: true, message: 'Both polygons are valid and separate. Reference-ground stability is not independently verified.' };
+  if (measurementInsideReference) {
+    return {
+      valid: true,
+      message: 'The Reference Polygon encloses the Measurement Polygon. Background statistics will exclude all Measurement Polygon cells; reference-ground stability is not independently verified.',
+    };
+  }
+  return { valid: true, message: 'The disjoint Measurement and Reference Polygons are valid. Reference-ground stability is not independently verified.' };
 }
 
 export function KnownPlacePolygonEditor({

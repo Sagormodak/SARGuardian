@@ -47,6 +47,31 @@ def test_known_place_request_rejects_bad_track_and_invalid_polygon() -> None:
         known_place.KnownPlaceAnalysisRequest(**(REQUEST | {"aoi_wkt": "POLYGON ((0 0, 1 0, 1 1))"}))
 
 
+@pytest.mark.parametrize(
+    "repository,workflow",
+    [
+        ("moshiour0/SARGuardian-backend", "know-place-aoi-dispatcher.yml"),
+        ("moshiour0/SARGuardian_Dynamic", "known-place-paper-reproduction.yml"),
+    ],
+)
+def test_github_dispatch_403_explains_target_repository_permission(
+    monkeypatch: pytest.MonkeyPatch, repository: str, workflow: str,
+) -> None:
+    from io import BytesIO
+    from urllib.error import HTTPError
+
+    def forbidden(*_args, **_kwargs):
+        raise HTTPError("https://api.github.com", 403, "Forbidden", {}, BytesIO(b""))
+
+    monkeypatch.setattr(known_place, "urlopen", forbidden)
+    owner, name = repository.split("/")
+    path = f"/repos/{owner}/{name}/actions/workflows/{workflow}/dispatches"
+    with pytest.raises(known_place.KnownPlaceWorkflowError, match="GitHub denied workflow dispatch to") as exc:
+        known_place._github_request(settings(), "POST", path, {"ref": "main", "inputs": {}})
+    assert repository in str(exc.value)
+    assert "Actions: read and write" in str(exc.value)
+
+
 def test_dry_run_dispatch_does_not_include_raw_download_consent(monkeypatch: pytest.MonkeyPatch) -> None:
     observed: dict = {}
 
