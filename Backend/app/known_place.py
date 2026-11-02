@@ -7,6 +7,7 @@ are embedded in the Actions run title so the browser can poll only its own known
 from __future__ import annotations
 
 from datetime import date
+import hashlib
 from io import BytesIO
 from pathlib import PurePosixPath
 from zipfile import BadZipFile, ZipFile
@@ -577,7 +578,14 @@ def _load_generic_known_place_artifact(
         raise KnownPlaceWorkflowError("KNOWN_PLACE_RESULTS_UNAVAILABLE: no unexpired result artifact exists for this run.")
     matches.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
     artifact = matches[0]
-    return normalized_id, run, _download_known_place_artifact(settings, artifact["id"])
+    expected_digest = artifact.get("digest")
+    if not isinstance(expected_digest, str) or not expected_digest.startswith("sha256:"):
+        raise KnownPlaceWorkflowError("GitHub did not provide a SHA-256 digest for the Known Place result artifact.")
+    archive_bytes = _download_known_place_artifact(settings, artifact["id"])
+    actual_digest = "sha256:" + hashlib.sha256(archive_bytes).hexdigest()
+    if not hmac.compare_digest(actual_digest, expected_digest):
+        raise KnownPlaceWorkflowError("The downloaded Known Place result artifact failed GitHub SHA-256 verification.")
+    return normalized_id, run, archive_bytes
 
 
 def _safe_known_place_archive(archive_bytes: bytes) -> tuple[ZipFile, BytesIO]:
