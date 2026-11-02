@@ -43,7 +43,6 @@ export function utmToLatLng(epsg: number, easting: number, northing: number): Ma
   if (!isNorth && !isSouth) return null;
 
   const zone = isNorth ? epsg - 32600 : epsg - 32700;
-  const e = Math.sqrt(WGS84_E2);
   const e1sq = WGS84_E2 / (1 - WGS84_E2);
   const x = easting - 500000;
   const y = isNorth ? northing : northing - 10000000;
