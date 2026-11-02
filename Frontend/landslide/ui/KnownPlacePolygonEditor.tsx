@@ -462,14 +462,9 @@ export function KnownPlacePolygonEditor({
         setReferenceClosed(true);
       }
     } catch (error) {
+      // Keep the user's pasted text intact so it can be edited and applied again.
+      // An invalid WKT draft must not erase the last valid polygon already on the map.
       setGeometryError(error instanceof Error ? error.message : 'Invalid polygon WKT.');
-      if (role === 'measurement') {
-        setMeasurement([]);
-        setMeasurementClosed(false);
-      } else {
-        setReference([]);
-        setReferenceClosed(false);
-      }
     }
   };
 
@@ -514,11 +509,13 @@ export function KnownPlacePolygonEditor({
       <div className="known-place-geometry-fields">
         <label className="aoi-job-label">
           <span>Measurement Polygon WKT</span>
-          <textarea rows={2} value={measurementText} onChange={(event) => { setMeasurementText(event.target.value); readWkt('measurement', event.target.value); }} spellCheck={false} placeholder="Draw on the map or paste a closed WGS84 POLYGON WKT" />
+          <textarea rows={2} value={measurementText} onChange={(event) => setMeasurementText(event.target.value)} spellCheck={false} placeholder="Draw on the map or paste a closed WGS84 POLYGON WKT" />
+          <button type="button" className="known-place-apply-wkt" onClick={() => readWkt('measurement', measurementText)}>Apply measurement WKT</button>
         </label>
         <label className="aoi-job-label">
           <span>Reference Polygon WKT</span>
-          <textarea rows={2} value={referenceText} onChange={(event) => { setReferenceText(event.target.value); readWkt('reference', event.target.value); }} spellCheck={false} placeholder="Draw on the map or paste a separate closed WGS84 POLYGON WKT" />
+          <textarea rows={2} value={referenceText} onChange={(event) => setReferenceText(event.target.value)} spellCheck={false} placeholder="Draw on the map or paste a separate closed WGS84 POLYGON WKT" />
+          <button type="button" className="known-place-apply-wkt" onClick={() => readWkt('reference', referenceText)}>Apply reference WKT</button>
         </label>
       </div>
       {geometryError && <p className="catalog-error" role="alert">{geometryError}</p>}
