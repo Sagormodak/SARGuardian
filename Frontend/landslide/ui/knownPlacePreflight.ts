@@ -7,7 +7,7 @@ export type StoredKnownPlaceRun = KnownPlaceAnalysisRun & {
 
 /** Stable client-side identity for the exact catalog request a preflight checked. */
 export function knownPlaceRequestFingerprint(input: KnownPlaceAnalysisInput): string {
-  const scienceRequest = { ...input };
+  const scienceRequest: Partial<KnownPlaceAnalysisInput> = { ...input };
   delete scienceRequest.execute_downloads;
   delete scienceRequest.confirm_raw_downloads;
   return JSON.stringify(scienceRequest);
