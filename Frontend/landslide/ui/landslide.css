@@ -1075,3 +1075,79 @@
 
 .known-place-apply-wkt { align-self: flex-start; margin-top: 6px; padding: 6px 9px; border: 1px solid rgba(220, 248, 255, .3); border-radius: 5px; background: rgba(73, 184, 242, .12); color: #eaf7ff; cursor: pointer; font-size: 9px; font-weight: 700; }
 .known-place-apply-wkt:hover { border-color: rgba(158, 216, 255, .85); background: rgba(73, 184, 242, .2); }
+
+
+/* Separate fixed author-exact research replay from generic two-polygon measurement. */
+.known-place-paper-reproduction,
+.known-place-custom-measurement {
+  margin-top: 22px;
+  padding: 18px;
+  border: 1px solid rgba(130, 177, 202, .24);
+  border-radius: 12px;
+  background: rgba(10, 24, 35, .52);
+}
+.known-place-paper-reproduction { border-color: rgba(238, 191, 104, .34); }
+.known-place-paper-heading h2,
+.known-place-custom-measurement h2 { margin: 6px 0 8px; }
+.known-place-paper-heading p,
+.known-place-custom-measurement > p {
+  max-width: 900px;
+  color: #a9bdc8;
+  font-size: 12px;
+  line-height: 1.65;
+}
+.known-place-paper-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 14px 0;
+}
+.known-place-paper-facts > div {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(130, 177, 202, .16);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .025);
+}
+.known-place-paper-facts span {
+  display: block;
+  color: #8099a7;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.known-place-paper-facts strong {
+  display: block;
+  margin-top: 5px;
+  color: #e6f0f4;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.known-place-paper-consent {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+.known-place-paper-consent label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: #b5c7d0;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.known-place-paper-consent input { flex: 0 0 auto; margin-top: 3px; }
+.known-place-paper-consent b { color: #f2d39a; }
+.known-place-paper-run {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(130, 177, 202, .18);
+}
+.known-place-custom-measurement {
+  border-color: rgba(102, 226, 211, .25);
+}
+@media (max-width: 760px) {
+  .known-place-paper-reproduction,
+  .known-place-custom-measurement { padding: 13px; }
+  .known-place-paper-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
