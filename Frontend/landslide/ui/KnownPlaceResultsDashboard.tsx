@@ -210,11 +210,13 @@ export function KnownPlaceResultsDashboard({
               <div className="known-place-answer">
                 <div>
                   <span className="result-kicker">DIRECT ANSWER</span>
-                  <h3>Pairwise horizontal-displacement metrics were computed for every selected GOFF interval.</h3>
+                  <h3>Measurements were computed, but this run does not yet establish a reliable site-wide movement rate.</h3>
                   <p>
-                    The selected area has {result.pairwise_series_plan.chain_count} separate observation chain(s):
-                    {' '}{chainLabels.map((chain) => chain.label).join('; ')}. Their measurements are kept
-                    as separate series, not added into one cumulative movement figure.
+                    All {allPairs.length} intervals have pairwise GOFF metrics, but none has enough spatially independent
+                    blocks for a valid bootstrap uncertainty interval. The largest reported pair rate is shown below
+                    with its valid-pixel coverage and outlier flags so it is not mistaken for a confirmed site velocity.
+                    There are {result.pairwise_series_plan.chain_count} separate observation chain(s):
+                    {' '}{chainLabels.map((chain) => chain.label).join('; ')}. They are not combined into one cumulative series.
                   </p>
                 </div>
                 <div className="known-place-answer-status">
