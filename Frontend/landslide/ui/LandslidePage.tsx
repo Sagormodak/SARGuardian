@@ -1072,7 +1072,7 @@ function loadSubmittedHarmonyJobs(): SubmittedHarmonyLayerJob[] {
   }
 }
 
-export function LandslidePage({ user, onHome, onResults, onDisplacements, onKnownPlaceAnalysis, onBackToMap, onDisplacementTaskActivityChange, isResultsPage, isDisplacementPage, isKnownPlaceAnalysisPage, onSignOut }: {
+export function LandslidePage({ user, onHome, onResults, onDisplacements, onKnownPlaceAnalysis, onBackToMap, onDisplacementTaskActivityChange, isResultsPage, isDisplacementPage, isKnownPlaceAnalysisPage, isKnownPlaceSetupPage, onSignOut }: {
   user: User;
   onHome: () => void;
   onResults: () => void;
@@ -1081,6 +1081,7 @@ export function LandslidePage({ user, onHome, onResults, onDisplacements, onKnow
   isResultsPage: boolean;
   isDisplacementPage: boolean;
   isKnownPlaceAnalysisPage: boolean;
+  isKnownPlaceSetupPage: boolean;
   onDisplacements: () => void;
   onKnownPlaceAnalysis: () => void;
   onSignOut: () => void;
@@ -2159,7 +2160,11 @@ export function LandslidePage({ user, onHome, onResults, onDisplacements, onKnow
 
   const renderMapPage = () => (
     <div className="landslide-page">
-      {renderWorkspaceHeader('FIND DISPLACEMENTS', 'AOI-wide surface-change screening', 'Home', onHome)}
+      {renderWorkspaceHeader(
+        isKnownPlaceSetupPage ? 'KNOWN PLACE ANALYSIS' : 'FIND DISPLACEMENTS',
+        isKnownPlaceSetupPage ? 'Select an outer AOI and date window before defining the two polygons' : 'AOI-wide surface-change screening',
+        'Home', onHome
+      )}
 
       <main className="map-main">
         <MapCanvas
@@ -2266,23 +2271,36 @@ export function LandslidePage({ user, onHome, onResults, onDisplacements, onKnow
               </div>
 
               <section className="investigation-modes" aria-labelledby="investigation-mode-title">
-                <h2 id="investigation-mode-title">Choose Investigation Mode</h2>
+                <h2 id="investigation-mode-title">{isKnownPlaceSetupPage ? 'Known Place Analysis · AOI setup' : 'Choose Investigation Mode'}</h2>
                 <div className="investigation-mode-cards">
-                  <article className="investigation-mode-card archive-mode">
-                    <span className="mode-icon" aria-hidden="true"><Icon name="layers" /></span>
-                    <h3>Single Product Investigation</h3>
-                    <button className="investigate-button" type="button" disabled={!canSubmitCatalogPreflight(catalogValidation, isCatalogLoading)} onClick={() => void runCatalogPreflight()}>{isCatalogLoading ? 'Checking ASF...' : 'Explore NISAR Archive'}</button>
-                  </article>
-                  <article className="investigation-mode-card displacement-mode">
-                    <span className="mode-icon" aria-hidden="true"><Icon name="locate" /></span>
-                    <h3>Find Displacements</h3>
-                    <button className="investigate-button" type="button" disabled={!canSubmitCatalogPreflight(catalogValidation, isCatalogLoading) || isDisplacementSubmitting} onClick={() => void openDisplacements()}>{isDisplacementSubmitting ? 'Starting processing…' : 'Find Displacements'}</button>
-                  </article>
-                  <article className="investigation-mode-card known-place-mode">
-                    <span className="mode-icon" aria-hidden="true"><Icon name="locate" /></span>
-                    <h3>Known Place Analysis</h3>
-                    <button className="investigate-button" type="button" disabled={!canSubmitCatalogPreflight(catalogValidation, isCatalogLoading)} onClick={onKnownPlaceAnalysis}>Known Place Analysis</button>
-                  </article>
+                  {isKnownPlaceSetupPage ? (
+                    <article className="investigation-mode-card known-place-mode">
+                      <span className="mode-icon" aria-hidden="true"><Icon name="locate" /></span>
+                      <h3>Measurement + Reference polygons</h3>
+                      <p>First set the outer AOI and observation dates above. The next step lets you draw or paste two separate polygons inside this AOI.</p>
+                      <button className="investigate-button" type="button" disabled={!canSubmitCatalogPreflight(catalogValidation, isCatalogLoading)} onClick={onKnownPlaceAnalysis}>
+                        {isCatalogLoading ? 'Checking AOI and date window…' : 'Continue to polygon inputs'}
+                      </button>
+                    </article>
+                  ) : (
+                    <>
+                      <article className="investigation-mode-card archive-mode">
+                        <span className="mode-icon" aria-hidden="true"><Icon name="layers" /></span>
+                        <h3>Single Product Investigation</h3>
+                        <button className="investigate-button" type="button" disabled={!canSubmitCatalogPreflight(catalogValidation, isCatalogLoading)} onClick={() => void runCatalogPreflight()}>{isCatalogLoading ? 'Checking ASF...' : 'Explore NISAR Archive'}</button>
+                      </article>
+                      <article className="investigation-mode-card displacement-mode">
+                        <span className="mode-icon" aria-hidden="true"><Icon name="locate" /></span>
+                        <h3>Find Displacements</h3>
+                        <button className="investigate-button" type="button" disabled={!canSubmitCatalogPreflight(catalogValidation, isCatalogLoading) || isDisplacementSubmitting} onClick={() => void openDisplacements()}>{isDisplacementSubmitting ? 'Starting processing…' : 'Find Displacements'}</button>
+                      </article>
+                      <article className="investigation-mode-card known-place-mode">
+                        <span className="mode-icon" aria-hidden="true"><Icon name="locate" /></span>
+                        <h3>Known Place Analysis</h3>
+                        <button className="investigate-button" type="button" disabled={!canSubmitCatalogPreflight(catalogValidation, isCatalogLoading)} onClick={onKnownPlaceAnalysis}>Known Place Analysis</button>
+                      </article>
+                    </>
+                  )}
                 </div>
               </section>
             </>
