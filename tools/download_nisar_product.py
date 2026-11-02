@@ -223,7 +223,14 @@ def build_authenticated_session_with_retry(
 
 
 def probe_url_content_length(session: Any, url: str, attempts: int = 3) -> int | None:
-    """Probe an exact HTTPS object with bounded retries for transient network/HTTP errors."""
+    """Probe an exact HTTPS object with bounded retries and no payload download.
+
+    Some ASF/NISAR object endpoints answer authenticated HEAD requests with
+    HTTP 400 instead of 405/501. For those method-rejection responses, retry
+    only as a streamed one-byte Range request. The response is never iterated
+    or written to disk; a successful fallback must prove the server honored
+    bytes=0-0 via an exact Content-Range header.
+    """
     if not trusted_asf_url(url):
         raise ValueError("DIRECT_PRODUCT_URL_NOT_TRUSTED")
 
@@ -231,8 +238,11 @@ def probe_url_content_length(session: Any, url: str, attempts: int = 3) -> int |
         response = None
         try:
             response = session.head(url, allow_redirects=True, timeout=60)
-            if response.status_code in {405, 501}:
+            range_probe = False
+            if response.status_code in {400, 405, 501}:
                 response.close()
+                response = None
+                range_probe = True
                 response = session.get(
                     url,
                     headers={"Range": "bytes=0-0"},
@@ -252,6 +262,12 @@ def probe_url_content_length(session: Any, url: str, attempts: int = 3) -> int |
                     f"DIRECT_PRODUCT_HTTP_STATUS_{status} {response.reason or ''}".strip()
                 )
             content_range = response.headers.get("Content-Range", "")
+            if range_probe:
+                match = re.fullmatch(r"bytes\s+0-0/(\d+)", content_range.strip(), flags=re.IGNORECASE)
+                if status != 206 or match is None:
+                    raise RuntimeError("DIRECT_PRODUCT_RANGE_PROBE_NOT_HONOURED")
+                return int(match.group(1))
+
             match = re.search(r"/(\d+)\s*$", content_range)
             if match:
                 remote_bytes = int(match.group(1))
@@ -270,7 +286,6 @@ def probe_url_content_length(session: Any, url: str, attempts: int = 3) -> int |
             if response is not None:
                 response.close()
     raise RuntimeError("DIRECT_PRODUCT_PROBE_RETRIES_EXHAUSTED")
-
 
 def probe_direct_product(
     acquisition: Any, wanted: str, product_type: str, maturity: str, *, force_credentials: bool = False
