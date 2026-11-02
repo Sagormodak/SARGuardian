@@ -1072,7 +1072,7 @@ function loadSubmittedHarmonyJobs(): SubmittedHarmonyLayerJob[] {
   }
 }
 
-export function LandslidePage({ user, onHome, onResults, onDisplacements, onKnownPlaceAnalysis, onBackToMap, onDisplacementTaskActivityChange, isResultsPage, isDisplacementPage, isKnownPlaceAnalysisPage, isKnownPlaceSetupPage, onSignOut }: {
+export function LandslidePage({ user, onHome, onResults, onDisplacements, onKnownPlaceAnalysis, onBackToMap, onDisplacementTaskActivityChange, isResultsPage, isDisplacementPage, isKnownPlaceAnalysisPage, isKnownPlaceSetupPage = false, onSignOut }: {
   user: User;
   onHome: () => void;
   onResults: () => void;
@@ -1081,7 +1081,7 @@ export function LandslidePage({ user, onHome, onResults, onDisplacements, onKnow
   isResultsPage: boolean;
   isDisplacementPage: boolean;
   isKnownPlaceAnalysisPage: boolean;
-  isKnownPlaceSetupPage: boolean;
+  isKnownPlaceSetupPage?: boolean;
   onDisplacements: () => void;
   onKnownPlaceAnalysis: () => void;
   onSignOut: () => void;
