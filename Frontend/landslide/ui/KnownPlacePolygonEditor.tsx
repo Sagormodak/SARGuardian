@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { importLibrary } from '@googlemaps/js-api-loader';
+import { configureGoogleMaps } from '../../src/googleMapsLoader';
 import { calculateGeodesicAreaKm2 } from '../engine/validation';
 import { isPointInsidePolygon, parsePolygonWkt, polygonToWkt } from '../engine/investigation';
 import type { Coordinate } from '../engine/types';
@@ -234,8 +235,15 @@ export function KnownPlacePolygonEditor({
       setMapError('Return to the AOI map and create a valid closed outer polygon.');
       return undefined;
     }
-    if (!(import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined)?.trim()) {
+    const apiKey = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined)?.trim();
+    if (!apiKey) {
       setMapError('Google Maps is not configured. Use the WKT fields below or configure VITE_GOOGLE_MAPS_API_KEY.');
+      return undefined;
+    }
+    try {
+      configureGoogleMaps(apiKey);
+    } catch {
+      setMapError('Google Maps was already initialized with a different API key. Use the WKT fields below or check the application configuration.');
       return undefined;
     }
     void importLibrary('maps')
