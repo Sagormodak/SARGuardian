@@ -154,6 +154,11 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
   const [polygonValidation, setPolygonValidation] = useState({ valid: false, message: 'Draw and close both analysis polygons.' });
   const [geometryHeight, setGeometryHeight] = useState('');
   const [confirmRawDownloads, setConfirmRawDownloads] = useState(false);
+  const [paperRawConsent, setPaperRawConsent] = useState(false);
+  const [paperPending, setPaperPending] = useState(false);
+  const [paperRun, setPaperRun] = useState<StoredRun | null>(() => loadPaperReproductionRun(user.uid));
+  const [paperError, setPaperError] = useState('');
+  const [paperPollError, setPaperPollError] = useState('');
   const [pendingAction, setPendingAction] = useState<'dry-run' | 'analysis' | null>(null);
   const [run, setRun] = useState<StoredRun | null>(() => loadStoredRun(user.uid));
   const [error, setError] = useState('');
@@ -180,6 +185,44 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
     }
     try { sessionStorage.setItem(storageKey(user.uid), JSON.stringify(run)); } catch { /* session storage is optional */ }
   }, [run, user.uid]);
+
+  useEffect(() => {
+    if (!paperRun) {
+      try { sessionStorage.removeItem(paperReproductionStorageKey(user.uid)); } catch { /* session storage is optional */ }
+      return;
+    }
+    try { sessionStorage.setItem(paperReproductionStorageKey(user.uid), JSON.stringify(paperRun)); } catch { /* session storage is optional */ }
+  }, [paperRun, user.uid]);
+
+  const paperRunRequestId = paperRun?.request_id ?? null;
+  const paperRunStatus = paperRun?.status ?? null;
+
+  useEffect(() => {
+    const requestId = paperRunRequestId;
+    if (!requestId || paperRunStatus === 'completed') return undefined;
+    let active = true;
+    let timeoutId: number | undefined;
+    const poll = async () => {
+      try {
+        const next = await getKnownPlacePaperReproductionStatus(requestId, user);
+        if (!active) return;
+        setPaperPollError('');
+        setPaperRun((current) => current && current.request_id === next.request_id
+          ? { ...current, ...next, execute_downloads: true }
+          : current);
+        if (next.status !== 'completed' && active) timeoutId = window.setTimeout(poll, 3500);
+      } catch (statusError) {
+        if (!active) return;
+        setPaperPollError(statusError instanceof Error ? statusError.message : 'Could not refresh paper-reproduction status yet.');
+        timeoutId = window.setTimeout(poll, 8000);
+      }
+    };
+    timeoutId = window.setTimeout(poll, 1200);
+    return () => {
+      active = false;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
+  }, [paperRunRequestId, paperRunStatus, user]);
 
   const runRequestId = run?.request_id ?? null;
   const runStatus = run?.status ?? null;
