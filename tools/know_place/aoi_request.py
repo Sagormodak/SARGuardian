@@ -146,6 +146,8 @@ def _validate_candidate_context(value: Any) -> dict[str, Any] | None:
         raise AOIRequestError("CANDIDATE_CONTEXT_AREA_INVALID")
     if not isinstance(value.get("geometry_simplified"), bool):
         raise AOIRequestError("CANDIDATE_CONTEXT_SIMPLIFICATION_FLAG_INVALID")
+    if not isinstance(value.get("geometry_edited"), bool):
+        raise AOIRequestError("CANDIDATE_CONTEXT_EDIT_FLAG_INVALID")
     product_ids = value.get("product_ids", [])
     intervals = value.get("pair_intervals", [])
     if not isinstance(product_ids, list) or len(product_ids) > 30 or any(not isinstance(item, str) or len(item) > 512 for item in product_ids):
