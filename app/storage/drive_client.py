@@ -15,10 +15,19 @@ REQUIRED_SCOPE = "https://www.googleapis.com/auth/drive"
 
 
 class DriveClientError(RuntimeError):
-    def __init__(self, code: str, status: int | None = None):
+    def __init__(
+        self,
+        code: str,
+        status: int | None = None,
+        api_reason: str | None = None,
+    ):
         super().__init__(code)
         self.code = code
         self.status = status
+        # Google API reason is a short machine-readable token (for example
+        # "notFound"). Never retain or log the raw response message, which can
+        # contain resource identifiers.
+        self.api_reason = api_reason
 
 
 class DriveClient:
@@ -101,7 +110,17 @@ class DriveClient:
                 return document
             except HTTPError as exc:
                 if attempt == retries:
-                    raise DriveClientError(error_code, exc.code) from None
+                    api_reason = None
+                    try:
+                        error_document = json.loads(exc.read())
+                        error = error_document.get("error", {}) if isinstance(error_document, dict) else {}
+                        errors = error.get("errors", []) if isinstance(error, dict) else []
+                        candidate = errors[0].get("reason") if errors and isinstance(errors[0], dict) else None
+                        if isinstance(candidate, str) and candidate.replace("_", "").replace("-", "").isalnum():
+                            api_reason = candidate[:80]
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        pass
+                    raise DriveClientError(error_code, exc.code, api_reason) from None
             except (URLError, OSError, TimeoutError, json.JSONDecodeError):
                 if attempt == retries:
                     raise DriveClientError(error_code) from None
