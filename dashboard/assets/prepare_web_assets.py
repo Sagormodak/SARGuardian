@@ -944,6 +944,7 @@ function candidateFeatureMeasurementGeometry(feature){
  const first=ring[0],last=ring[ring.length-1];
  if(Math.abs(first[0]-last[0])>1e-10||Math.abs(first[1]-last[1])>1e-10)ring.push([...first]);
  const originalVertices=ring.length;let simplified=false;
+ if(originalVertices>20000)return null;
  if(ring.length>500){ring=simplifyCandidateClosedRing(ring,500);if(!ring)return null;simplified=true;}
  if(ring.length<4||ring.length>500)return null;
  return {wkt:'POLYGON (('+ring.map(point=>point[0].toFixed(8)+' '+point[1].toFixed(8)).join(', ')+'))',simplified,originalVertices,vertices:ring.length};
