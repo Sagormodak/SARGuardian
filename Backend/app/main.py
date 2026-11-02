@@ -30,9 +30,12 @@ from .jobs import CreateJobRequest, JobResponse, JobState
 from .known_place import (
     KnownPlaceAnalysisRequest,
     KnownPlaceAnalysisSubmission,
+    KnownPlacePaperReproductionRequest,
     KnownPlaceWorkflowError,
     dispatch_known_place_analysis,
+    dispatch_known_place_paper_reproduction,
     get_known_place_analysis_status,
+    get_known_place_paper_reproduction_status,
 )
 from .displacements import (
     ACCOUNT_PROCESSING_OPTIONS,
@@ -198,6 +201,31 @@ def read_known_place_analysis_status(
         return get_known_place_analysis_status(get_settings(), request_id)
     except KnownPlaceWorkflowError as exc:
         code = 422 if "Invalid Known Place request ID" in str(exc) else 503
+        raise HTTPException(status_code=code, detail=str(exc)) from None
+
+
+@app.post("/api/known-place-paper-reproduction", response_model=KnownPlaceAnalysisSubmission)
+def submit_known_place_paper_reproduction(
+    request: KnownPlacePaperReproductionRequest,
+    _user: dict = Depends(get_current_user),
+) -> KnownPlaceAnalysisSubmission:
+    """Dispatch the fixed author-exact Bhote Koshi P05023 paper workflow."""
+    try:
+        return dispatch_known_place_paper_reproduction(get_settings(), request)
+    except KnownPlaceWorkflowError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+
+
+@app.get("/api/known-place-paper-reproduction/requests/{request_id}", response_model=KnownPlaceAnalysisSubmission)
+def read_known_place_paper_reproduction_status(
+    request_id: str,
+    _user: dict = Depends(get_current_user),
+) -> KnownPlaceAnalysisSubmission:
+    """Read the author-exact GitHub run without exposing the server-side Actions token."""
+    try:
+        return get_known_place_paper_reproduction_status(get_settings(), request_id)
+    except KnownPlaceWorkflowError as exc:
+        code = 422 if "Invalid Known Place paper-reproduction request ID" in str(exc) else 503
         raise HTTPException(status_code=code, detail=str(exc)) from None
 
 
