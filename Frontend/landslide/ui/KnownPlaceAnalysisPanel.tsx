@@ -4,7 +4,9 @@ import { parsePolygonWkt } from '../engine/investigation';
 import type { User } from 'firebase/auth';
 import {
   getKnownPlaceAnalysisStatus,
+  getKnownPlacePaperReproductionStatus,
   startKnownPlaceAnalysis,
+  startKnownPlacePaperReproduction,
   type KnownPlaceAnalysisMode,
   type KnownPlaceAnalysisRun,
   type KnownPlaceHazardMode,
@@ -60,6 +62,24 @@ const analysisModes: { value: KnownPlaceAnalysisMode; label: string }[] = [
 
 function storageKey(uid: string): string {
   return `sarguardian.knownPlaceAnalysis.v1:${uid}`;
+}
+
+function paperReproductionStorageKey(uid: string): string {
+  return `sarguardian.knownPlacePaperReproduction.v1:${uid}`;
+}
+
+function loadPaperReproductionRun(uid: string): StoredRun | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(paperReproductionStorageKey(uid));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredRun>;
+    if (typeof parsed.request_id !== 'string' || !/^[0-9a-f-]{36}$/i.test(parsed.request_id)) return null;
+    if (!['dispatching', 'queued', 'in_progress', 'completed'].includes(String(parsed.status))) return null;
+    return { ...parsed, execute_downloads: true } as StoredRun;
+  } catch {
+    return null;
+  }
 }
 
 function geometryDraftKey(uid: string): string {
