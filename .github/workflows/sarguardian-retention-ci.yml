@@ -53,7 +53,8 @@ jobs:
             .github/workflows/sarguardian-retention-ci.yml \
             .github/workflows/sarguardian-aoi-wkt-dashboard.yml \
             .github/workflows/sarguardian-aoi-product-worker.yml \
-            .github/workflows/know-place-aoi-dispatcher.yml
+            .github/workflows/know-place-aoi-dispatcher.yml \
+            .github/workflows/know-place-paper-reproduction-dispatcher.yml
 
   pinned-science-regression:
     name: Test the maintained SARGuardian science engine
