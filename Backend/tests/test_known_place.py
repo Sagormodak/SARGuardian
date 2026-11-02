@@ -523,8 +523,10 @@ def test_known_place_result_lookup_requires_exact_generic_workflow_identity(monk
                 },
             ]}
         assert "/actions/runs/77/artifacts" in path
+        archive_bytes = _known_place_test_artifact()
+        digest = "sha256:" + __import__("hashlib").sha256(archive_bytes).hexdigest()
         return 200, {"artifacts": [
-            {"id": 100, "name": "know-place-aoi-77-1", "expired": False, "created_at": "2026-11-02T14:30:00Z"},
+            {"id": 100, "name": "know-place-aoi-77-1", "digest": digest, "expired": False, "created_at": "2026-11-02T14:30:00Z"},
         ]}
 
     monkeypatch.setattr(known_place, "_github_request", fake_request)
@@ -546,3 +548,30 @@ def test_known_place_result_archive_rejects_path_traversal() -> None:
         archive.writestr("../result.json", "{}")
     with pytest.raises(known_place.KnownPlaceWorkflowError, match="unsafe path"):
         known_place._safe_known_place_archive(buffer.getvalue())
+
+
+def test_known_place_result_lookup_rejects_artifact_digest_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    request_id = "c19a7630-9f19-4b38-ae0e-88d53ad7c8f2"
+
+    def fake_request(_settings, method, path, body=None):
+        if "know-place-aoi-dispatcher.yml/runs" in path:
+            return 200, {"workflow_runs": [{
+                "id": 78,
+                "display_title": f"Known Place Analysis {request_id}",
+                "path": ".github/workflows/know-place-aoi-dispatcher.yml",
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "status": "completed",
+                "conclusion": "success",
+            }]}
+        return 200, {"artifacts": [{
+            "id": 101,
+            "name": "know-place-aoi-78-1",
+            "digest": "sha256:" + "0" * 64,
+            "expired": False,
+        }]}
+
+    monkeypatch.setattr(known_place, "_github_request", fake_request)
+    monkeypatch.setattr(known_place, "_download_known_place_artifact", lambda _settings, _artifact_id: _known_place_test_artifact())
+    with pytest.raises(known_place.KnownPlaceWorkflowError, match="SHA-256 verification"):
+        known_place.get_known_place_analysis_results(settings(), request_id)
