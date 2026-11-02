@@ -66,7 +66,7 @@ def test_release_variants_are_not_silently_substituted():
     assert pair["direction"] == "A"
     assert pair["polarization"] == "HH"
     assert set(pair["candidate_granules"]) == {PAIR_NAMES[0], duplicate}
-    assert "never substitute a release automatically" in exc_info.value.details["required_action"]
+    assert "Do not substitute a release automatically" in exc_info.value.details["required_action"]
 
 
 def test_user_can_pin_exact_granule_variant():
