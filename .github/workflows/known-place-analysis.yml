@@ -10,9 +10,14 @@ on:
         required: true
         type: string
       aoi_wkt:
-        description: "Closed single-ring WGS84 polygon WKT (longitude latitude)"
+        description: "Measurement polygon: closed single-ring WGS84 polygon WKT (longitude latitude)"
         required: true
         type: string
+      scope_aoi_wkt:
+        description: "Outer AOI boundary from the map; kept separate from the measurement and reference polygons"
+        required: false
+        type: string
+        default: ""
       start_date:
         description: "Inclusive UTC start date (YYYY-MM-DD)"
         required: true
@@ -62,7 +67,12 @@ on:
         type: string
         default: ""
       reference_wkt:
-        description: "Optional explicit background/reference polygon WKT"
+        description: "Optional explicit independent background/reference polygon WKT"
+        required: false
+        type: string
+        default: ""
+      candidate_context_json:
+        description: "Metadata-only provenance for a GOFF candidate transferred from Find Displacements"
         required: false
         type: string
         default: ""
@@ -92,9 +102,11 @@ concurrency:
 jobs:
   analyze-known-place:
     name: Run isolated Known Place scientific analysis
-    uses: moshiour0/SARGuardian-backend/.github/workflows/know-place-aoi-analysis.yml@bd7a59c54ddae7c19fd88896e877c3a530b43d9e
+    uses: moshiour0/SARGuardian-backend/.github/workflows/know-place-aoi-analysis.yml@5edf41a61d5b10b0f3d4bd8f67619d512cb1c204
     with:
+      backend_science_ref: "5edf41a61d5b10b0f3d4bd8f67619d512cb1c204"
       aoi_wkt: ${{ inputs.aoi_wkt }}
+      scope_aoi_wkt: ${{ inputs.scope_aoi_wkt }}
       start_date: ${{ inputs.start_date }}
       end_date: ${{ inputs.end_date }}
       hazard_mode: ${{ inputs.hazard_mode }}
@@ -105,6 +117,7 @@ jobs:
       coherence_neighbours: ${{ inputs.coherence_neighbours }}
       allowed_release_ids: ${{ inputs.allowed_release_ids }}
       reference_wkt: ${{ inputs.reference_wkt }}
+      candidate_context_json: ${{ inputs.candidate_context_json }}
       geometry_height_m: ${{ inputs.geometry_height_m }}
       consent_marker: ${{ inputs.consent_marker }}
       execute_downloads: ${{ inputs.execute_downloads }}

@@ -4,6 +4,8 @@ export const LANDSLIDE_PATH = '/landslide';
 export const LANDSLIDE_RESULTS_PATH = '/landslide/results';
 export const LANDSLIDE_DISPLACEMENT_PATH = '/landslide/displacements';
 export const LANDSLIDE_KNOWN_PLACE_PATH = '/landslide/known-place-analysis';
+export const LANDSLIDE_KNOWN_PLACE_SETUP_PATH = '/landslide/known-place-setup';
+export const LANDSLIDE_KNOWN_PLACE_SETUP_ANALYSIS_PATH = '/landslide/known-place-setup/analysis';
 
 export function isDashboardRoute(pathname: string): boolean {
   return normalizePathname(pathname) === DASHBOARD_PATH;
@@ -17,8 +19,18 @@ export function isLandslideDisplacementRoute(pathname: string): boolean {
   return normalizePathname(pathname) === LANDSLIDE_DISPLACEMENT_PATH;
 }
 
+export function isLandslideKnownPlaceSetupRoute(pathname: string): boolean {
+  return normalizePathname(pathname) === LANDSLIDE_KNOWN_PLACE_SETUP_PATH;
+}
+
+export function isLandslideKnownPlaceSetupAnalysisRoute(pathname: string): boolean {
+  return normalizePathname(pathname) === LANDSLIDE_KNOWN_PLACE_SETUP_ANALYSIS_PATH;
+}
+
 export function isLandslideKnownPlaceAnalysisRoute(pathname: string): boolean {
-  return normalizePathname(pathname) === LANDSLIDE_KNOWN_PLACE_PATH;
+  const normalizedPath = normalizePathname(pathname);
+  return normalizedPath === LANDSLIDE_KNOWN_PLACE_PATH
+    || normalizedPath === LANDSLIDE_KNOWN_PLACE_SETUP_ANALYSIS_PATH;
 }
 
 export function normalizePathname(pathname: string): string {

@@ -4,8 +4,30 @@ export type KnownPlaceHazardMode = 'landslide' | 'glacier_collapse' | 'ice_rock_
 export type KnownPlaceAnalysisMode = 'exploratory' | 'retrospective_validation';
 export type KnownPlaceRunState = 'dispatching' | 'queued' | 'in_progress' | 'completed';
 
+export type KnownPlaceCandidateContext = {
+  source: 'FIND_DISPLACEMENTS';
+  candidate_id: string;
+  product_type: 'GOFF';
+  metric: string;
+  evidence_class: string;
+  status: string;
+  support_pairs: number;
+  pixel_count: number;
+  approx_area_m2: number;
+  product_ids: string[];
+  pair_intervals: Array<Record<string, unknown>>;
+  geometry_original_vertices: number;
+  geometry_suggested_vertices: number;
+  geometry_simplified: boolean;
+  geometry_edited: boolean;
+  interpretation: string;
+};
+
 export type KnownPlaceAnalysisInput = {
+  candidate_context?: KnownPlaceCandidateContext | null;
+  /** Inner Measurement Polygon; the original map AOI is carried separately. */
   aoi_wkt: string;
+  scope_aoi_wkt: string;
   start_date: string;
   end_date: string;
   hazard_mode: KnownPlaceHazardMode;
@@ -18,6 +40,10 @@ export type KnownPlaceAnalysisInput = {
   reference_wkt: string;
   geometry_height_m: number | null;
   execute_downloads: boolean;
+  confirm_raw_downloads: boolean;
+};
+
+export type KnownPlacePaperReproductionInput = {
   confirm_raw_downloads: boolean;
 };
 
@@ -72,6 +98,43 @@ export async function startKnownPlaceAnalysis(
     throw new Error('Could not reach the processing service. Check your connection and retry.');
   }
   return readPayload<KnownPlaceAnalysisRun>(response, 'Could not submit Known Place Analysis');
+}
+
+export async function startKnownPlacePaperReproduction(
+  input: KnownPlacePaperReproductionInput,
+  user: Pick<User, 'getIdToken'> | null,
+): Promise<KnownPlaceAnalysisRun> {
+  const token = await firebaseToken(user);
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/known-place-paper-reproduction`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(input),
+      cache: 'no-store',
+    });
+  } catch {
+    throw new Error('Could not reach the processing service. Check your connection and retry.');
+  }
+  return readPayload<KnownPlaceAnalysisRun>(response, 'Could not submit the author-exact paper reproduction');
+}
+
+export async function getKnownPlacePaperReproductionStatus(
+  requestId: string,
+  user: Pick<User, 'getIdToken'> | null,
+): Promise<KnownPlaceAnalysisRun> {
+  if (!/^[0-9a-f-]{36}$/i.test(requestId)) throw new Error('Invalid paper-reproduction request ID.');
+  const token = await firebaseToken(user);
+  let response: Response;
+  try {
+    response = await fetch(
+      `${API_BASE}/api/known-place-paper-reproduction/requests/${encodeURIComponent(requestId)}`,
+      { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' },
+    );
+  } catch {
+    throw new Error('Could not reach the processing service to refresh paper-reproduction status.');
+  }
+  return readPayload<KnownPlaceAnalysisRun>(response, 'Could not refresh paper-reproduction status');
 }
 
 export async function getKnownPlaceAnalysisStatus(

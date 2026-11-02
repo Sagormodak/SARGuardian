@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { Engine } from './data/engineData';
 import { onAuthStateChanged, signInWithPopup, signOut, type User } from 'firebase/auth';
 import { listDisplacementJobs } from './api/catalog';
 import { Home } from './pages/Home';
@@ -7,7 +8,7 @@ import { DashboardPage } from './pages/DashboardPage';
 import { parseDashboardView } from './dashboardDocument';
 import { LandslidePage } from '../landslide/ui/LandslidePage';
 import { auth, firebaseConfigured, googleProvider, missingFirebaseConfig } from './firebase';
-import { isArchiveRoute, isDashboardRoute, isLandslideDisplacementRoute, isLandslideKnownPlaceAnalysisRoute, isLandslideResultsRoute, isLandslideRoute, LANDSLIDE_DISPLACEMENT_PATH, LANDSLIDE_KNOWN_PLACE_PATH, LANDSLIDE_PATH, LANDSLIDE_RESULTS_PATH, navigatePath, normalizePathname } from './routing';
+import { isArchiveRoute, isDashboardRoute, isLandslideDisplacementRoute, isLandslideKnownPlaceAnalysisRoute, isLandslideKnownPlaceSetupAnalysisRoute, isLandslideKnownPlaceSetupRoute, isLandslideResultsRoute, isLandslideRoute, LANDSLIDE_DISPLACEMENT_PATH, LANDSLIDE_KNOWN_PLACE_PATH, LANDSLIDE_KNOWN_PLACE_SETUP_ANALYSIS_PATH, LANDSLIDE_KNOWN_PLACE_SETUP_PATH, LANDSLIDE_PATH, LANDSLIDE_RESULTS_PATH, navigatePath, normalizePathname } from './routing';
 
 function App() {
   const [pathname, setPathname] = useState(() => normalizePathname(window.location.pathname));
@@ -123,10 +124,11 @@ function App() {
     }
   };
 
-  const handleSelectEngine = () => {
-    // These workflows begin in the real AOI workspace. Known Place Analysis
-    // remains a separate action inside it, not part of AOI-wide discovery.
-    const targetRoute = LANDSLIDE_PATH;
+  const handleSelectEngine = (engine: Engine) => {
+    // Known Place starts in its own AOI/date-window setup, then proceeds to
+    // the existing two-polygon analysis page. Landslide and Glacier retain
+    // the target-free AOI workspace.
+    const targetRoute = engine.id === 'known-place' ? LANDSLIDE_KNOWN_PLACE_SETUP_PATH : LANDSLIDE_PATH;
     if (!user) {
       setPendingRoute(targetRoute);
       setAuthModalOpen(true);
@@ -200,10 +202,19 @@ function App() {
         isResultsPage={isLandslideResultsRoute(pathname)}
         isDisplacementPage={isLandslideDisplacementRoute(pathname)}
         isKnownPlaceAnalysisPage={isLandslideKnownPlaceAnalysisRoute(pathname)}
+        isKnownPlaceSetupPage={isLandslideKnownPlaceSetupRoute(pathname)}
         onDisplacements={() => navigateTo(LANDSLIDE_DISPLACEMENT_PATH)}
-        onKnownPlaceAnalysis={() => navigateTo(LANDSLIDE_KNOWN_PLACE_PATH)}
+        onKnownPlaceAnalysis={() => navigateTo(
+          isLandslideKnownPlaceSetupRoute(pathname)
+            ? LANDSLIDE_KNOWN_PLACE_SETUP_ANALYSIS_PATH
+            : LANDSLIDE_KNOWN_PLACE_PATH
+        )}
         onResults={() => navigateTo(LANDSLIDE_RESULTS_PATH)}
-        onBackToMap={() => navigateTo(LANDSLIDE_PATH)}
+        onBackToMap={() => navigateTo(
+          isLandslideKnownPlaceSetupAnalysisRoute(pathname)
+            ? LANDSLIDE_KNOWN_PLACE_SETUP_PATH
+            : LANDSLIDE_PATH
+        )}
         onDisplacementTaskActivityChange={setHasActiveDisplacementTask}
         onSignOut={handleSignOut}
       />

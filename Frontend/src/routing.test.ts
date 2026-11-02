@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ARCHIVE_PATH, isArchiveRoute, isLandslideKnownPlaceAnalysisRoute, isLandslideResultsRoute, isLandslideRoute, navigatePath, normalizePathname } from './routing';
+import { ARCHIVE_PATH, LANDSLIDE_KNOWN_PLACE_SETUP_ANALYSIS_PATH, LANDSLIDE_KNOWN_PLACE_SETUP_PATH, isArchiveRoute, isLandslideKnownPlaceAnalysisRoute, isLandslideKnownPlaceSetupAnalysisRoute, isLandslideKnownPlaceSetupRoute, isLandslideResultsRoute, isLandslideRoute, navigatePath, normalizePathname } from './routing';
 
 describe('client-side route recognition', () => {
   it('recognizes Archive as its own page route, not a Home anchor', () => {
@@ -15,10 +15,17 @@ describe('client-side route recognition', () => {
     expect(normalizePathname('')).toBe('/');
   });
 
-  it('recognizes the separate Known Place Analysis route', () => {
+  it('recognizes the dedicated home-launched Known Place setup and two-polygon analysis routes', () => {
+    expect(LANDSLIDE_KNOWN_PLACE_SETUP_PATH).toBe('/landslide/known-place-setup');
+    expect(LANDSLIDE_KNOWN_PLACE_SETUP_ANALYSIS_PATH).toBe('/landslide/known-place-setup/analysis');
+    expect(isLandslideKnownPlaceSetupRoute('/landslide/known-place-setup')).toBe(true);
+    expect(isLandslideKnownPlaceSetupRoute('/landslide/known-place-setup?source=home')).toBe(true);
+    expect(isLandslideKnownPlaceSetupAnalysisRoute('/landslide/known-place-setup/analysis')).toBe(true);
+    expect(isLandslideKnownPlaceAnalysisRoute('/landslide/known-place-setup/analysis')).toBe(true);
     expect(isLandslideKnownPlaceAnalysisRoute('/landslide/known-place-analysis')).toBe(true);
-    expect(isLandslideKnownPlaceAnalysisRoute('/landslide/known-place-analysis?run=1')).toBe(true);
     expect(isLandslideKnownPlaceAnalysisRoute('/landslide/displacements')).toBe(false);
+    expect(isLandslideRoute('/landslide/known-place-setup')).toBe(true);
+    expect(isLandslideRoute('/landslide/known-place-setup/analysis')).toBe(true);
   });
 
   it('recognizes the map and results routes', () => {
