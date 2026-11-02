@@ -216,7 +216,7 @@ def read_known_place_analysis_results(
         return get_known_place_analysis_results(get_settings(), request_id)
     except KnownPlaceWorkflowError as exc:
         message = str(exc)
-        code = 409 if "NOT_READY" in message else 404 if "NOT_FOUND" in message else 503
+        code = 422 if "Invalid Known Place request ID" in message else 409 if "NOT_READY" in message else 404 if "NOT_FOUND" in message else 503
         raise HTTPException(status_code=code, detail=message) from None
 
 
