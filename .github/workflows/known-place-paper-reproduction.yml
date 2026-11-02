@@ -1,0 +1,60 @@
+name: SARGuardian · Known Place Author-Exact Paper Reproduction
+
+run-name: Known Place Paper Reproduction ${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: "API-generated request ID used for status tracking"
+        required: true
+        type: string
+      consent_marker:
+        description: "Exact marker is supplied by the authenticated API only after explicit user consent"
+        required: true
+        type: string
+      backend_code_ref:
+        description: "Immutable 40-character backend commit containing the author-exact workflow and science code"
+        required: true
+        type: string
+      geometry_height_m:
+        description: "Pinned exploratory height parameter used by the benchmark workflow"
+        required: true
+        default: "5151"
+        type: string
+      control_draws:
+        description: "Deterministic control draws"
+        required: true
+        default: "1000"
+        type: string
+      seed:
+        description: "Deterministic control seed"
+        required: true
+        default: "260826"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: known-place-paper-reproduction-${{ inputs.request_id }}
+  cancel-in-progress: false
+
+jobs:
+  author-exact-p05023-replay:
+    name: Run exact-author Bhote Koshi P05023 replay
+    uses: moshiour0/SARGuardian-backend/.github/workflows/know-place-author-exact-replay.yml@d847b0461a2fec1bdf2abcce0a6b1d2f9dddabc9
+    with:
+      backend_code_ref: "d847b0461a2fec1bdf2abcce0a6b1d2f9dddabc9"
+      consent_marker: ${{ inputs.consent_marker }}
+      bridge_authorized: false
+      geometry_height_m: ${{ inputs.geometry_height_m }}
+      control_draws: ${{ inputs.control_draws }}
+      seed: ${{ inputs.seed }}
+    secrets:
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID || secrets.GOOGLE_DRIVE_FOLDER_ID }}
