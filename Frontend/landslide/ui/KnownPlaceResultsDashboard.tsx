@@ -312,7 +312,7 @@ export function KnownPlaceResultsDashboard({
                 <div>
                   <span className="result-kicker">INTERACTIVE SPATIAL EVIDENCE</span>
                   <h3>Explore the measured area</h3>
-                  <p>Use the pair selector and layer controls in the generated map. The result map visualizes the archived per-pair raster outputs.</p>
+                  <p>Use the pair selector and layer controls in the generated map. This archived view uses a Leaflet / OpenStreetMap basemap and a downsampled raster preview warped to a geographic rectangle; its block readouts are not native-grid pixel measurements. The original per-pair GeoTIFFs in the downloaded result package are authoritative.</p>
                 </div>
               </div>
               <div className="known-place-map-frame">
