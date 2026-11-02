@@ -1151,3 +1151,12 @@
   .known-place-custom-measurement { padding: 13px; }
   .known-place-paper-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+
+.known-place-custom-measurement .catalog-field-hint {
+  display: block;
+  margin-top: 5px;
+  color: #9db4c4;
+  font-size: 12px;
+  line-height: 1.5;
+}
