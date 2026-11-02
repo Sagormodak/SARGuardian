@@ -8,7 +8,7 @@ def test_default_branch_dispatcher_pins_validated_backend_two_polygon_workflow()
     workflow_path = repository_root / ".github" / "workflows" / "know-place-aoi-dispatcher.yml"
     text = workflow_path.read_text(encoding="utf-8")
 
-    science_sha = "7fe6a767d808c1510e63c8463f79f21c1a1ef1e4"
+    science_sha = "0e0611c12913044787ee84a39fa60a81d30ae516"
     assert "workflow_dispatch:" in text
     assert "run-name: Known Place Analysis ${{ inputs.request_id }}" in text
     assert f".github/workflows/know-place-aoi-analysis.yml@{science_sha}" in text
