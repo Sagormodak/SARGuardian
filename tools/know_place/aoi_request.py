@@ -87,7 +87,7 @@ class AOIRequest:
                     if self.background_correction_policy == "local_context_component_median"
                     else "Background correction is not applied."
                     if self.background_correction_policy == "none"
-                    else "Independent user-drawn background polygon; geometry and grid support are checked, but stability is not independently verified."
+                    else "User-drawn reference region; if it encloses the measurement polygon, the measurement mask is excluded from background statistics. Reference-ground stability is not independently verified."
                 ),
             },
             "geometry_policy": {
