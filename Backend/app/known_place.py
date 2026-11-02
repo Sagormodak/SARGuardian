@@ -32,7 +32,7 @@ KNOWN_PLACE_PAPER_WORKFLOW_PAGE = (
     f"https://github.com/{KNOWN_PLACE_REPOSITORY}/actions/workflows/{KNOWN_PLACE_PAPER_WORKFLOW}"
 )
 # Immutable backend commit containing the author-exact workflow and science code.
-KNOWN_PLACE_AUTHOR_BACKEND_REF = "f3f93509dbc04e4b24f7495fba73f0a3028946c0"
+KNOWN_PLACE_AUTHOR_BACKEND_REF = "d847b0461a2fec1bdf2abcce0a6b1d2f9dddabc9"
 KNOWN_PLACE_MAX_DATE_WINDOW_DAYS = 90
 
 
