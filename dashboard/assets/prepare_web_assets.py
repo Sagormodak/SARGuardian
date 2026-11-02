@@ -929,7 +929,10 @@ function simplifyCandidateClosedRing(closedRing,maxClosedVertices=500){
   const tolerance=(lo+hi)/2;
   const a=simplifyCandidateOpenPath(firstPath,tolerance),b=simplifyCandidateOpenPath(secondPath,tolerance);
   const open=[...a.slice(0,-1),...b.slice(0,-1)];
-  if(open.length+1<=maxClosedVertices&&open.length>=3){best=[...open,open[0]];hi=tolerance;}else lo=tolerance;
+  const closedVertexCount=open.length+1;
+  if(closedVertexCount>maxClosedVertices){lo=tolerance;}
+  else if(closedVertexCount>=4){best=[...open,open[0]];hi=tolerance;}
+  else {hi=tolerance;}
  }
  return best;
 }
