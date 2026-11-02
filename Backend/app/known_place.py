@@ -15,8 +15,8 @@ import math
 import re
 from typing import Any, Literal
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.parse import urlencode, urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -514,10 +514,24 @@ def _download_known_place_artifact(settings: RuntimeSettings, artifact_id: int) 
         },
     )
     try:
-        # urllib follows GitHub's short-lived archive redirect. Its redirect handler
-        # strips Authorization when the host changes, so the browser never receives
-        # or handles a GitHub token or a private artifact URL.
-        with urlopen(request, timeout=35) as response:
+        class _DoNotForwardGithubToken(HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, new_url):
+                return None
+
+        opener = build_opener(_DoNotForwardGithubToken)
+        try:
+            response = opener.open(request, timeout=35)
+        except HTTPError as redirect:
+            if redirect.code not in {301, 302, 303, 307, 308}:
+                raise
+            location = redirect.headers.get("Location", "")
+            target = urlsplit(location)
+            if target.scheme != "https" or not target.netloc or target.username or target.password:
+                raise KnownPlaceWorkflowError("GitHub returned an unsafe artifact download redirect.") from None
+            # GitHub's short-lived object-storage URL is followed without the
+            # GitHub Authorization header. The signed URL never reaches the browser.
+            response = urlopen(Request(location, headers={"Accept": "application/zip"}), timeout=35)
+        with response:
             archive_bytes = response.read(MAX_KNOWN_PLACE_ARTIFACT_BYTES + 1)
         if len(archive_bytes) > MAX_KNOWN_PLACE_ARTIFACT_BYTES:
             raise KnownPlaceWorkflowError("The Known Place result archive exceeds the safe download limit.")
