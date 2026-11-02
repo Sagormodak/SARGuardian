@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { KnownPlacePolygonEditor } from './KnownPlacePolygonEditor';
+import { KnownPlaceResultsDashboard } from './KnownPlaceResultsDashboard';
 import { parsePolygonWkt } from '../engine/investigation';
 import type { User } from 'firebase/auth';
 import {
@@ -539,6 +540,9 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
               ? <p className="catalog-error">Raw GOFF workflow ended with {run.conclusion || 'an error'}. Open the run link above to inspect the failing stage.</p>
               : <p className="catalog-error">Catalog-only preflight failed; no raw download was requested. Open the run summary and artifact for the exact failing pair and candidate release IDs. Enter the intended release filter, then rerun the catalog-only preflight before authorizing downloads.</p>)}
           </section>
+        )}
+        {runSucceeded && run.execute_downloads && (
+          <KnownPlaceResultsDashboard requestId={run.request_id} user={user} />
         )}
         </section>
         <button type="button" className="workspace-nav-link known-place-back" onClick={onBack}>← Back to AOI map</button>
