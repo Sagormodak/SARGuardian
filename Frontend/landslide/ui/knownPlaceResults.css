@@ -181,3 +181,143 @@
   .known-place-science-columns dd { margin-bottom: 6px; }
   .known-place-generated-report iframe { height: 600px; min-height: 450px; }
 }
+
+
+/* Public + Deep Dive: a single native Google Maps surface for every Known Place audience. */
+.known-place-public-map-card {
+  margin-top: 14px;
+  padding: 15px;
+  border: 1px solid rgba(133, 207, 225, .22);
+  border-radius: 10px;
+  background: linear-gradient(145deg, rgba(22, 61, 79, .44), rgba(9, 27, 42, .82));
+}
+.known-place-map-heading { align-items: end; gap: 14px; margin-bottom: 12px; }
+.known-place-map-heading > label {
+  display: grid;
+  gap: 5px;
+  min-width: min(310px, 100%);
+  color: rgba(207, 231, 241, .7);
+  font-size: 9px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.known-place-map-heading select {
+  min-height: 36px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid rgba(166, 210, 229, .25);
+  border-radius: 7px;
+  background: #10293a;
+  color: #edf9ff;
+  font-size: 10px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.known-place-google-map-shell {
+  overflow: hidden;
+  border: 1px solid rgba(159, 210, 231, .22);
+  border-radius: 9px;
+  background: #0b1e2d;
+}
+.known-place-google-map-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 11px 13px;
+  background: rgba(3, 18, 30, .76);
+  border-bottom: 1px solid rgba(165, 211, 230, .13);
+}
+.known-place-google-map-toolbar > div:first-child { display: grid; gap: 4px; }
+.known-place-google-map-toolbar strong { color: #f2fbff; font: 750 12px 'Manrope', sans-serif; }
+.known-place-google-map-toolbar span { color: rgba(204, 230, 241, .62); font-size: 9px; }
+.known-place-map-basemap-status {
+  padding: 5px 8px;
+  border: 1px solid rgba(111, 211, 202, .25);
+  border-radius: 20px;
+  color: #a4e8dc;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.known-place-google-map {
+  width: 100%;
+  height: min(66vh, 640px);
+  min-height: 390px;
+  background: #1b3443;
+}
+.known-place-google-map-message {
+  padding: 8px 12px;
+  border-top: 1px solid rgba(165, 211, 230, .12);
+  color: rgba(207, 229, 239, .65);
+  font-size: 9px;
+  line-height: 1.45;
+}
+.known-place-google-map-message.is-error {
+  color: #ffb5a6;
+  background: rgba(112, 38, 33, .16);
+}
+.known-place-map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 9px 12px;
+  background: rgba(8, 25, 39, .8);
+  border-top: 1px solid rgba(165, 211, 230, .12);
+}
+.known-place-map-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(220, 238, 246, .76);
+  font-size: 9px;
+}
+.known-place-map-legend i {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 1px solid rgba(236, 250, 255, .7);
+  border-radius: 3px;
+}
+.known-place-map-legend i.is-magnitude { background: linear-gradient(135deg, #1ebfe2, #a4c94e, #fa6d36); }
+.known-place-map-legend i.is-arrow {
+  width: 0;
+  height: 0;
+  border: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 12px solid #48e1d4;
+  border-radius: 0;
+}
+.known-place-map-legend i.is-reference {
+  background: transparent;
+  border: 2px dashed #f7c56d;
+}
+.known-place-map-legend i.is-flag { background: #ff8d54; }
+.known-place-map-science-note {
+  margin: 0;
+  padding: 10px 12px 11px;
+  color: rgba(200, 225, 237, .6);
+  font-size: 9px;
+  line-height: 1.55;
+  border-top: 1px solid rgba(165, 211, 230, .1);
+}
+.known-place-map-unavailable-note {
+  margin: 0;
+  padding: 16px;
+  border: 1px dashed rgba(168, 210, 229, .2);
+  border-radius: 8px;
+  color: rgba(218, 236, 244, .65);
+  font-size: 10px;
+}
+.known-place-deep-view .known-place-google-map { height: min(72vh, 720px); }
+@media (max-width: 760px) {
+  .known-place-map-heading { align-items: stretch; flex-direction: column; }
+  .known-place-map-heading > label { min-width: 0; }
+  .known-place-google-map { height: 540px; min-height: 420px; }
+  .known-place-google-map-toolbar { align-items: flex-start; flex-direction: column; }
+  .known-place-map-legend { gap: 8px 10px; }
+}

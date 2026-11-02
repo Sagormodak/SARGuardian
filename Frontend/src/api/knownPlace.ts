@@ -156,6 +156,22 @@ export async function getKnownPlaceAnalysisStatus(
 }
 
 
+export type KnownPlaceMapPreview = {
+  width: number;
+  height: number;
+  epsg: number;
+  values: Array<Array<number | null>>;
+  east_values_m: Array<Array<number | null>>;
+  north_values_m: Array<Array<number | null>>;
+  min_x_m: number;
+  max_y_m: number;
+  pixel_size_x_m: number;
+  pixel_size_y_m: number;
+  stride_cells: number;
+  aoi_ring_xy: Array<[number, number]>;
+  reference_ring_xy: Array<[number, number]> | null;
+};
+
 export type KnownPlacePairResult = {
   reference_date: string;
   secondary_date: string;
@@ -191,6 +207,7 @@ export type KnownPlacePairResult = {
   detection_status: string;
   quality_gate_counts: Record<string, number> | null;
   interval_coverage_warning: string | null;
+  map_preview: KnownPlaceMapPreview | null;
 };
 
 export type KnownPlaceChain = {

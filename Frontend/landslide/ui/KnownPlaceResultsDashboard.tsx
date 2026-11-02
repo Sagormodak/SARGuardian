@@ -6,6 +6,7 @@ import {
   type KnownPlaceAnalysisResults,
   type KnownPlacePairResult,
 } from '../../src/api/knownPlace';
+import { KnownPlaceGoogleMap } from './KnownPlaceGoogleMap';
 import './knownPlaceResults.css';
 
 type AudienceView = 'public' | 'deep-dive' | 'scientific';
@@ -89,6 +90,7 @@ export function KnownPlaceResultsDashboard({
   const [attempt, setAttempt] = useState(0);
   const [view, setView] = useState<AudienceView>('public');
   const [trackFilter, setTrackFilter] = useState<TrackFilter>('all');
+  const [selectedMapPairKey, setSelectedMapPairKey] = useState('');
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState('');
 
@@ -131,6 +133,17 @@ export function KnownPlaceResultsDashboard({
   const weakSupportPairs = allPairs.filter((pair) => typeof pair.valid_aoi_fraction === 'number' && pair.valid_aoi_fraction < 0.3);
   const flaggedPairs = allPairs.filter((pair) => (pair.high_magnitude_flagged_pixels ?? 0) > 0);
   const insufficientUncertaintyPairs = allPairs.filter((pair) => pair.spatial_uncertainty_status === 'INSUFFICIENT_SPATIAL_BLOCKS');
+  const mapPairs = useMemo(
+    () => allPairs.filter((pair) => pair.status === 'METRICS_COMPUTED' && pair.map_preview !== null),
+    [allPairs],
+  );
+  const selectedMapPair = useMemo(
+    () => allPairs.find((pair) => `${pair.chain_id}|${pair.reference_date}|${pair.secondary_date}` === selectedMapPairKey)
+      ?? mapPairs[0]
+      ?? allPairs[0]
+      ?? null,
+    [allPairs, mapPairs, selectedMapPairKey],
+  );
   const rawRunUrl = results?.run.html_url;
 
   async function handleDownload(): Promise<void> {
@@ -249,6 +262,38 @@ export function KnownPlaceResultsDashboard({
                 </article>
               </div>
 
+              <section className="known-place-public-map-card" aria-label="Public displacement map">
+                <div className="known-place-section-heading known-place-map-heading">
+                  <div>
+                    <span className="result-kicker">SPATIAL MOVEMENT EVIDENCE</span>
+                    <h3>Where is displacement measured?</h3>
+                    <p>Select an acquisition pair to view its georeferenced magnitude raster and local movement vectors on Google Maps. Ascending and descending observations remain separate.</p>
+                  </div>
+                  <label>
+                    <span>Acquisition pair</span>
+                    <select
+                      value={selectedMapPair ? `${selectedMapPair.chain_id}|${selectedMapPair.reference_date}|${selectedMapPair.secondary_date}` : ''}
+                      onChange={(event) => setSelectedMapPairKey(event.target.value)}
+                      disabled={!mapPairs.length}
+                    >
+                      {allPairs.map((pair) => (
+                        <option
+                          value={`${pair.chain_id}|${pair.reference_date}|${pair.secondary_date}`}
+                          key={`${pair.chain_id}|${pair.reference_date}|${pair.secondary_date}`}
+                        >
+                          {pairTitle(pair)} · {trackLabel(pair)}{pair.map_preview ? '' : ' · no map preview'}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                {selectedMapPair ? (
+                  <KnownPlaceGoogleMap pair={selectedMapPair} />
+                ) : (
+                  <p className="known-place-map-unavailable-note">No pair measurements are available to plot for this request.</p>
+                )}
+              </section>
+
               <div className="known-place-chart-card">
                 <div className="known-place-section-heading">
                   <div>
@@ -310,22 +355,35 @@ export function KnownPlaceResultsDashboard({
 
           {view === 'deep-dive' && (
             <div className="known-place-deep-view">
-              <div className="known-place-section-heading">
+              <div className="known-place-section-heading known-place-map-heading">
                 <div>
                   <span className="result-kicker">INTERACTIVE SPATIAL EVIDENCE</span>
-                  <h3>Explore the measured area</h3>
-                  <p>Use the pair selector and layer controls in the generated map. This archived view uses a Leaflet / OpenStreetMap basemap and a downsampled raster preview warped to a geographic rectangle; its block readouts are not native-grid pixel measurements. The original per-pair GeoTIFFs in the downloaded result package are authoritative.</p>
+                  <h3>Explore measured vectors and raster</h3>
+                  <p>Google Maps uses the pair's EPSG-referenced GOFF preview, with separate measurement/reference outlines and independently selectable orbit chains.</p>
                 </div>
+                <label>
+                  <span>Map observation pair</span>
+                  <select
+                    value={selectedMapPair ? `${selectedMapPair.chain_id}|${selectedMapPair.reference_date}|${selectedMapPair.secondary_date}` : ''}
+                    onChange={(event) => setSelectedMapPairKey(event.target.value)}
+                    disabled={!mapPairs.length}
+                  >
+                    {allPairs.map((pair) => (
+                      <option
+                        value={`${pair.chain_id}|${pair.reference_date}|${pair.secondary_date}`}
+                        key={`${pair.chain_id}|${pair.reference_date}|${pair.secondary_date}`}
+                      >
+                        {pairTitle(pair)} · {trackLabel(pair)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </div>
-              <div className="known-place-map-frame">
-                <iframe
-                  title="Interactive Known Place per-pair displacement map"
-                  srcDoc={results.interactive_map_html}
-                  sandbox="allow-scripts"
-                  loading="lazy"
-                  referrerPolicy="no-referrer"
-                />
-              </div>
+              {selectedMapPair ? (
+                <KnownPlaceGoogleMap pair={selectedMapPair} />
+              ) : (
+                <p className="known-place-map-unavailable-note">No georeferenced pair preview is available. Use the native GeoTIFF in the result package.</p>
+              )}
               <div className="known-place-chain-grid">
                 {result.pairwise_series_plan.chains.map((chain) => (
                   <article key={chain.chain_id}>

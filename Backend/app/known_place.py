@@ -635,23 +635,138 @@ def _read_known_place_member(archive: ZipFile, suffix: str, max_bytes: int) -> b
         raise KnownPlaceWorkflowError(f"The Known Place {suffix} file could not be read.") from None
 
 
+def _known_place_map_preview(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """Project only the bounded, georeferenced preview; the native GeoTIFF remains authoritative."""
+    preview = raw.get("map_preview")
+    if not isinstance(preview, dict):
+        return None
+
+    width = preview.get("width")
+    height = preview.get("height")
+    epsg = raw.get("epsg")
+    if (
+        isinstance(width, bool) or not isinstance(width, int) or not 1 <= width <= 72
+        or isinstance(height, bool) or not isinstance(height, int) or not 1 <= height <= 72
+        or isinstance(epsg, bool) or not isinstance(epsg, int)
+        or not (32601 <= epsg <= 32660 or 32701 <= epsg <= 32760)
+    ):
+        return None
+
+    def finite_number(value: Any) -> float | None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else None
+
+    def matrix(name: str) -> list[list[float | None]] | None:
+        rows = preview.get(name)
+        if not isinstance(rows, list) or len(rows) != height:
+            return None
+        output: list[list[float | None]] = []
+        for row in rows:
+            if not isinstance(row, list) or len(row) != width:
+                return None
+            projected_row: list[float | None] = []
+            for cell in row:
+                if cell is None:
+                    projected_row.append(None)
+                    continue
+                number = finite_number(cell)
+                if number is None:
+                    return None
+                projected_row.append(number)
+            output.append(projected_row)
+        return output
+
+    values = matrix("values")
+    east = matrix("east_values_m")
+    north = matrix("north_values_m")
+    if values is None or east is None or north is None:
+        return None
+
+    def ring(name: str, *, required: bool) -> list[list[float]] | None:
+        points = preview.get(name)
+        if points is None and not required:
+            return None
+        if not isinstance(points, list) or not 4 <= len(points) <= 256:
+            return None
+        output: list[list[float]] = []
+        for point in points:
+            if not isinstance(point, list) or len(point) != 2:
+                return None
+            x = finite_number(point[0])
+            y = finite_number(point[1])
+            if x is None or y is None:
+                return None
+            output.append([x, y])
+        return output
+
+    aoi_ring = ring("aoi_ring_xy", required=True)
+    reference_ring = ring("reference_ring_xy", required=False)
+    if aoi_ring is None:
+        return None
+    if preview.get("reference_ring_xy") is not None and reference_ring is None:
+        return None
+
+    min_x = finite_number(preview.get("min_x_m"))
+    max_y = finite_number(preview.get("max_y_m"))
+    pixel_x = finite_number(preview.get("pixel_size_x_m"))
+    pixel_y = finite_number(preview.get("pixel_size_y_m"))
+    stride = preview.get("stride_cells")
+    if (
+        min_x is None or max_y is None
+        or pixel_x is None or pixel_y is None or pixel_x <= 0 or pixel_y <= 0
+        or isinstance(stride, bool) or not isinstance(stride, int) or not 1 <= stride <= 1000
+    ):
+        return None
+
+    return {
+        "width": width,
+        "height": height,
+        "epsg": epsg,
+        "values": values,
+        "east_values_m": east,
+        "north_values_m": north,
+        "min_x_m": min_x,
+        "max_y_m": max_y,
+        "pixel_size_x_m": pixel_x,
+        "pixel_size_y_m": pixel_y,
+        "stride_cells": stride,
+        "aoi_ring_xy": aoi_ring,
+        "reference_ring_xy": reference_ring,
+    }
+
+
 def _known_place_pair_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
     raw_pairs = result.get("pairs")
     dynamics = result.get("motion_dynamics")
     feature_pairs = dynamics.get("pairs") if isinstance(dynamics, dict) else None
     if not isinstance(raw_pairs, list) or not isinstance(feature_pairs, list):
         raise KnownPlaceWorkflowError("The Known Place result is missing its pairwise measurement contract.")
-    by_interval = {
-        (item.get("reference_date"), item.get("secondary_date")): item
-        for item in feature_pairs if isinstance(item, dict)
-    }
+
+    by_chain_interval: dict[tuple[Any, Any, Any], dict[str, Any]] = {}
+    by_interval: dict[tuple[Any, Any], list[dict[str, Any]]] = {}
+    for item in feature_pairs:
+        if not isinstance(item, dict):
+            continue
+        interval = (item.get("reference_date"), item.get("secondary_date"))
+        chain_key = (item.get("chain_id"), *interval)
+        by_chain_interval[chain_key] = item
+        by_interval.setdefault(interval, []).append(item)
+
     rows: list[dict[str, Any]] = []
     for raw in raw_pairs:
         if not isinstance(raw, dict):
             continue
-        key = (raw.get("reference_date"), raw.get("secondary_date"))
-        feature = by_interval.get(key, {})
-        chain_id = str(feature.get("chain_id") or raw.get("chain_id") or "")
+        interval = (raw.get("reference_date"), raw.get("secondary_date"))
+        raw_chain_id = raw.get("chain_id")
+        feature = by_chain_interval.get((raw_chain_id, *interval), {}) if raw_chain_id else {}
+        # Backward compatibility is deliberately limited to unambiguous intervals.
+        if not feature and not raw_chain_id:
+            candidates = by_interval.get(interval, [])
+            if len(candidates) == 1:
+                feature = candidates[0]
+        chain_id = str(raw_chain_id or feature.get("chain_id") or "")
         chain_parts = chain_id.split("-")
         rows.append({
             "reference_date": raw.get("reference_date"),
@@ -688,9 +803,9 @@ def _known_place_pair_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
             "detection_status": feature.get("detection_status", result.get("hazard_detection_status", "NOT_EVALUATED")),
             "quality_gate_counts": raw.get("quality_gate_counts"),
             "interval_coverage_warning": raw.get("interval_coverage_warning"),
+            "map_preview": _known_place_map_preview(raw),
         })
     return rows
-
 
 def _known_place_result_summary(result: dict[str, Any]) -> dict[str, Any]:
     plan = result.get("pairwise_series_plan")
