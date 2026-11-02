@@ -17,6 +17,17 @@ from .goff_io import GoffReadError, parse_granule_identity
 class SeriesPlanError(ValueError):
     """The catalog candidate set cannot define one reproducible measurement series."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code or message.split(":", 1)[0]
+        self.details = details or {}
+
 
 # Publicly documented mission availability gap. This registry is versioned with
 # the processing code because it changes how interval results can be interpreted.
@@ -190,18 +201,52 @@ def build_pairwise_series_plan(
     variants: dict[tuple[tuple[str, str, str], tuple[datetime, datetime]], list[PairCandidate]] = {}
     for candidate in candidates:
         variants.setdefault((candidate.geometry_key, candidate.pair_key), []).append(candidate)
-    ambiguous = {
-        (geometry, pair): sorted(item.granule_name for item in group)
+    ambiguous_groups = {
+        (geometry, pair): group
         for (geometry, pair), group in variants.items() if len(group) > 1
     }
-    if ambiguous:
-        raise SeriesPlanError(
-            "AMBIGUOUS_PRODUCT_RELEASE_VARIANTS:"
-            + str({
+    if ambiguous_groups:
+        ambiguous_pairs = []
+        legacy_summary = {}
+        for (geometry, pair), group in sorted(
+            ambiguous_groups.items(),
+            key=lambda item: (item[0][0], item[0][1][0], item[0][1][1]),
+        ):
+            names = sorted(item.granule_name for item in group)
+            releases = sorted({item.release_id for item in group})
+            pair_label = (
                 f"{geometry[0]}-{geometry[1]}-{geometry[2]}:"
-                f"{pair[0].isoformat()}__{pair[1].isoformat()}": names
-                for (geometry, pair), names in ambiguous.items()
+                f"{pair[0].isoformat()}__{pair[1].isoformat()}"
+            )
+            legacy_summary[pair_label] = names
+            ambiguous_pairs.append({
+                "pair": pair_label,
+                "track": geometry[0],
+                "direction": geometry[1],
+                "polarization": geometry[2],
+                "reference_start_utc": pair[0].isoformat(),
+                "secondary_start_utc": pair[1].isoformat(),
+                "candidate_release_ids": releases,
+                "candidate_granules": names,
             })
+        details = {
+            "ambiguous_pair_count": len(ambiguous_pairs),
+            "candidate_release_ids": sorted({
+                release
+                for item in ambiguous_pairs
+                for release in item["candidate_release_ids"]
+            }),
+            "ambiguous_pairs": ambiguous_pairs,
+            "required_action": (
+                "Set an explicit allowed_release_ids filter or preferred_granules "
+                "for the intended source series, then rerun catalog-only preflight. "
+                "Do not substitute a release automatically."
+            ),
+        }
+        raise SeriesPlanError(
+            "AMBIGUOUS_PRODUCT_RELEASE_VARIANTS:" + str(legacy_summary),
+            code="AMBIGUOUS_PRODUCT_RELEASE_VARIANTS",
+            details=details,
         )
 
     # Same sensor geometry is not enough to make products temporally comparable.
