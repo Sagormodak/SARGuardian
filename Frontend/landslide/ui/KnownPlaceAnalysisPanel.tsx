@@ -327,6 +327,28 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
     }
   };
 
+  const submitPaperReproduction = async () => {
+    if (!paperRawConsent) {
+      setPaperError('Explicitly authorize the fixed five-pair P05023 raw-source replay before continuing.');
+      return;
+    }
+    setPaperPending(true);
+    setPaperError('');
+    setPaperPollError('');
+    try {
+      const submitted = await startKnownPlacePaperReproduction({ confirm_raw_downloads: true }, user);
+      setPaperRun({ ...submitted, execute_downloads: true });
+    } catch (submitError) {
+      setPaperError(submitError instanceof Error ? submitError.message : 'Could not submit the author-exact paper reproduction.');
+    } finally {
+      setPaperPending(false);
+    }
+  };
+
+  const paperRunTerminal = paperRun?.status === 'completed';
+  const paperRunSucceeded = paperRunTerminal && paperRun?.conclusion === 'success';
+  const paperRunFailed = paperRunTerminal && !paperRunSucceeded;
+
   const runTerminal = run?.status === 'completed';
   const runSucceeded = runTerminal && run?.conclusion === 'success';
   const runFailed = runTerminal && !runSucceeded;
