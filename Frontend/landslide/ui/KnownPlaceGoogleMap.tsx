@@ -232,7 +232,7 @@ export function KnownPlaceGoogleMap({ pair }: { pair: KnownPlacePairResult }) {
           'Horizontal displacement: <b>' + sample.displacement_m.toFixed(3) + ' m</b><br>' +
           'Interval-average rate: <b>' + sample.rate_m_per_day.toFixed(4) + ' m/day</b><br>' +
           'Mean vector direction: <b>' + direction + '</b><br>' +
-          (sample.flagged ? '<span style="color:#a34b22"><b>High-magnitude review flag</b></span><br>' : '') +
+          (sample.flagged ? '<span style="color:#a34b22"><b>Preview-cell median exceeds the configured magnitude threshold (review cue only)</b></span><br>' : '') +
           '<small>Arrow orientation uses the block mean east/north vector. Arrow length is symbolic.</small></div>',
         );
         info.open({ map, anchor: marker });
@@ -278,7 +278,7 @@ export function KnownPlaceGoogleMap({ pair }: { pair: KnownPlacePairResult }) {
             <span><i className="is-magnitude" /> Horizontal displacement magnitude</span>
             <span><i className="is-arrow" /> Mean direction arrow</span>
             <span><i className="is-reference" /> Reference polygon</span>
-            <span><i className="is-flag" /> High-magnitude review flag</span>
+            <span><i className="is-flag" /> Preview median above threshold</span>
           </div>
           <div className="known-place-google-map-message" role="status">{layerStatus}</div>
         </>
