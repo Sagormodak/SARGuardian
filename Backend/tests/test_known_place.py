@@ -153,6 +153,79 @@ def test_known_place_request_rejects_invalid_outer_scope_polygon() -> None:
     with pytest.raises(ValidationError, match="SCOPE_AOI_WKT_INVALID"):
         known_place.KnownPlaceAnalysisRequest(**(REQUEST | {"scope_aoi_wkt": "POLYGON ((0 0, 1 0, 1 1))"}))
 
+def test_author_exact_paper_reproduction_requires_explicit_raw_download_consent() -> None:
+    with pytest.raises(ValidationError, match="EXPLICIT_AUTHOR_EXACT_RAW_DOWNLOAD_CONSENT_REQUIRED"):
+        known_place.KnownPlacePaperReproductionRequest()
+    request = known_place.KnownPlacePaperReproductionRequest(confirm_raw_downloads=True)
+    assert request.confirm_raw_downloads is True
+
+
+def test_author_exact_paper_reproduction_dispatches_immutable_backend_pin_and_exact_consent(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: dict = {}
+
+    def fake_request(_settings, method, path, body=None):
+        observed.update({"method": method, "path": path, "body": body})
+        return 204, {}
+
+    monkeypatch.setattr(known_place, "_github_request", fake_request)
+    request = known_place.KnownPlacePaperReproductionRequest(confirm_raw_downloads=True)
+    response = known_place.dispatch_known_place_paper_reproduction(settings(), request)
+
+    assert response.status == "dispatching"
+    assert response.execute_downloads is True
+    assert observed["method"] == "POST"
+    assert observed["path"].endswith("/known-place-paper-reproduction.yml/dispatches")
+    assert observed["body"]["ref"] == "main"
+    inputs = observed["body"]["inputs"]
+    assert inputs["request_id"] == response.request_id
+    assert inputs["consent_marker"] == "[run-know-place]"
+    assert inputs["backend_code_ref"] == known_place.KNOWN_PLACE_AUTHOR_BACKEND_REF
+    assert len(inputs["backend_code_ref"]) == 40
+    assert inputs["geometry_height_m"] == "5151"
+    assert inputs["control_draws"] == "1000"
+    assert inputs["seed"] == "260826"
+
+
+def test_author_exact_paper_reproduction_status_is_matched_by_request_and_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
+    request_id = "c19a7630-9f19-4b38-ae0e-88d53ad7c8f2"
+
+    def fake_request(_settings, method, path, body=None):
+        assert method == "GET"
+        assert "known-place-paper-reproduction.yml/runs" in path
+        return 200, {
+            "workflow_runs": [
+                {
+                    "id": 54321,
+                    "display_title": f"Known Place Paper Reproduction {request_id}",
+                    "path": ".github/workflows/known-place-paper-reproduction.yml",
+                    "head_branch": "main",
+                    "event": "workflow_dispatch",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "html_url": "https://github.com/moshiour0/SARGuardian_Dynamic/actions/runs/54321",
+                    "created_at": "2026-11-02T00:00:00Z",
+                    "updated_at": "2026-11-02T00:30:00Z",
+                },
+                {
+                    "id": 54320,
+                    "display_title": "Unrelated workflow",
+                    "path": ".github/workflows/known-place-analysis.yml",
+                    "head_branch": "main",
+                    "event": "workflow_dispatch",
+                    "status": "completed",
+                    "conclusion": "failure",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(known_place, "_github_request", fake_request)
+    response = known_place.get_known_place_paper_reproduction_status(settings(), request_id)
+    assert response.status == "completed"
+    assert response.github_run_id == "54321"
+    assert response.conclusion == "success"
+    assert response.github_run_url.endswith("/54321")
+
+
 def candidate_context() -> dict:
     return {
         "source": "FIND_DISPLACEMENTS",
