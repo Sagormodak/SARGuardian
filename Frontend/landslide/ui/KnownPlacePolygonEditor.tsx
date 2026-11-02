@@ -90,6 +90,11 @@ function polygonInsideOuter(inner: Coordinate[], outer: Coordinate[]): boolean {
       ];
       if (!isPointInsidePolygon(point[0], point[1], outer)) return false;
     }
+    // The backend requires both inner polygons to remain strictly inside the
+    // outer boundary; touching or crossing an AOI edge is not accepted.
+    for (let j = 0; j < outer.length; j += 1) {
+      if (segmentsIntersect(start, end, outer[j], outer[(j + 1) % outer.length])) return false;
+    }
   }
   return true;
 }
