@@ -5,16 +5,12 @@ export type StoredKnownPlaceRun = KnownPlaceAnalysisRun & {
   request_fingerprint?: string;
 };
 
-type ScienceRequest = Omit<KnownPlaceAnalysisInput, 'execute_downloads' | 'confirm_raw_downloads'>;
-
 /** Stable client-side identity for the exact catalog request a preflight checked. */
 export function knownPlaceRequestFingerprint(input: KnownPlaceAnalysisInput): string {
-  const {
-    execute_downloads: _executeDownloads,
-    confirm_raw_downloads: _confirmRawDownloads,
-    ...scienceRequest
-  } = input;
-  return JSON.stringify(scienceRequest satisfies ScienceRequest);
+  const scienceRequest = { ...input };
+  delete scienceRequest.execute_downloads;
+  delete scienceRequest.confirm_raw_downloads;
+  return JSON.stringify(scienceRequest);
 }
 
 /**
