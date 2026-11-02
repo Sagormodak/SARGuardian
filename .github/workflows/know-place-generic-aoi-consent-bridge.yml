@@ -20,7 +20,7 @@ jobs:
     uses: ./.github/workflows/know-place-aoi-analysis.yml
     with:
       # Preserve the historical exact-replay source pin used by this consent bridge.
-      backend_science_ref: "526090db8ae2efb7b800129a9d4d9b7eba87efbf"
+      backend_science_ref: "a53583229de2e17514e9e0585d27c7e27e5bb77d"
       aoi_wkt: "POLYGON ((85.5245 28.2847, 85.5400 28.2847, 85.5400 28.2970, 85.5245 28.2970, 85.5245 28.2847))"
       start_date: "2026-06-20"
       end_date: "2026-08-31"
