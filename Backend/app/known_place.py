@@ -449,3 +449,416 @@ def get_known_place_analysis_status(
         execute_downloads=None,
         notice="GitHub accepted the request. The workflow run is still being allocated; refresh status shortly.",
     )
+
+
+# Result-bundle retrieval is deliberately scoped to the generic two-polygon workflow.
+# The author-exact paper workflow remains a separate dispatch and result path.
+MAX_KNOWN_PLACE_ARTIFACT_BYTES = 20 * 1024 * 1024
+MAX_KNOWN_PLACE_ARTIFACT_UNCOMPRESSED_BYTES = 24 * 1024 * 1024
+MAX_KNOWN_PLACE_ARTIFACT_FILES = 2_000
+MAX_KNOWN_PLACE_RESULT_JSON_BYTES = 3 * 1024 * 1024
+MAX_KNOWN_PLACE_HTML_BYTES = 1_500_000
+
+
+def _normalize_known_place_request_id(request_id: str) -> str:
+    try:
+        return str(UUID(request_id))
+    except (ValueError, TypeError, AttributeError):
+        raise KnownPlaceWorkflowError("Invalid Known Place request ID.") from None
+
+
+def _find_generic_known_place_run(settings: RuntimeSettings, normalized_id: str) -> dict[str, Any]:
+    query = urlencode({"branch": KNOWN_PLACE_REF, "event": "workflow_dispatch", "per_page": "100"})
+    path = (
+        f"/repos/{KNOWN_PLACE_REPOSITORY}/actions/workflows/{KNOWN_PLACE_WORKFLOW}/runs?{query}"
+    )
+    _status, response = _github_request(settings, "GET", path)
+    runs = response.get("workflow_runs")
+    if not isinstance(runs, list):
+        raise KnownPlaceWorkflowError("GitHub returned an invalid Known Place result response.")
+    expected_title = f"Known Place Analysis {normalized_id}"
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        if (
+            run.get("display_title") == expected_title
+            and run.get("path") == f".github/workflows/{KNOWN_PLACE_WORKFLOW}"
+            and run.get("head_branch") == KNOWN_PLACE_REF
+            and run.get("event") == "workflow_dispatch"
+        ):
+            if run.get("status") != "completed":
+                raise KnownPlaceWorkflowError("KNOWN_PLACE_RESULTS_NOT_READY: the science workflow is still running.")
+            if run.get("conclusion") != "success":
+                conclusion = str(run.get("conclusion") or "unknown").upper()
+                raise KnownPlaceWorkflowError(
+                    f"KNOWN_PLACE_RESULTS_UNAVAILABLE: the GitHub Actions run concluded with {conclusion}."
+                )
+            return run
+    raise KnownPlaceWorkflowError("KNOWN_PLACE_RESULTS_NOT_FOUND: no matching generic Known Place run was found.")
+
+
+def _download_known_place_artifact(settings: RuntimeSettings, artifact_id: int) -> bytes:
+    token = settings.github_actions_token.strip()
+    if not token:
+        raise KnownPlaceWorkflowError("Known Place result retrieval is not configured on this server.")
+    request = Request(
+        f"https://api.github.com/repos/{KNOWN_PLACE_REPOSITORY}/actions/artifacts/{artifact_id}/zip",
+        method="GET",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        # urllib follows GitHub's short-lived archive redirect. Its redirect handler
+        # strips Authorization when the host changes, so the browser never receives
+        # or handles a GitHub token or a private artifact URL.
+        with urlopen(request, timeout=35) as response:
+            archive_bytes = response.read(MAX_KNOWN_PLACE_ARTIFACT_BYTES + 1)
+        if len(archive_bytes) > MAX_KNOWN_PLACE_ARTIFACT_BYTES:
+            raise KnownPlaceWorkflowError("The Known Place result archive exceeds the safe download limit.")
+        if not archive_bytes:
+            raise KnownPlaceWorkflowError("GitHub returned an empty Known Place result archive.")
+        return archive_bytes
+    except HTTPError as exc:
+        if exc.code == 401:
+            raise KnownPlaceWorkflowError("GitHub rejected the server's Actions token while retrieving the result.") from None
+        if exc.code == 403:
+            raise KnownPlaceWorkflowError("GitHub denied Actions artifact read access for Known Place results.") from None
+        if exc.code == 404:
+            raise KnownPlaceWorkflowError("The Known Place result artifact is unavailable or has expired.") from None
+        raise KnownPlaceWorkflowError(f"Could not download the Known Place result artifact ({exc.code}).") from None
+    except (URLError, TimeoutError):
+        raise KnownPlaceWorkflowError("Could not reach GitHub to retrieve the Known Place result artifact.") from None
+
+
+def _load_generic_known_place_artifact(
+    settings: RuntimeSettings,
+    request_id: str,
+) -> tuple[str, dict[str, Any], bytes]:
+    normalized_id = _normalize_known_place_request_id(request_id)
+    run = _find_generic_known_place_run(settings, normalized_id)
+    run_id = run.get("id")
+    if isinstance(run_id, bool) or not isinstance(run_id, int):
+        raise KnownPlaceWorkflowError("GitHub returned an invalid Known Place run identity.")
+    path = f"/repos/{KNOWN_PLACE_REPOSITORY}/actions/runs/{run_id}/artifacts?per_page=100"
+    _status, response = _github_request(settings, "GET", path)
+    artifacts = response.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise KnownPlaceWorkflowError("GitHub returned an invalid Known Place artifact inventory.")
+    expected_prefix = f"know-place-aoi-{run_id}-"
+    matches = [
+        item for item in artifacts
+        if isinstance(item, dict)
+        and isinstance(item.get("id"), int)
+        and isinstance(item.get("name"), str)
+        and item["name"].startswith(expected_prefix)
+        and item.get("expired") is not True
+    ]
+    if not matches:
+        raise KnownPlaceWorkflowError("KNOWN_PLACE_RESULTS_UNAVAILABLE: no unexpired result artifact exists for this run.")
+    matches.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    artifact = matches[0]
+    return normalized_id, run, _download_known_place_artifact(settings, artifact["id"])
+
+
+def _safe_known_place_archive(archive_bytes: bytes) -> tuple[ZipFile, BytesIO]:
+    buffer = BytesIO(archive_bytes)
+    try:
+        archive = ZipFile(buffer, "r")
+        infos = archive.infolist()
+        if not infos or len(infos) > MAX_KNOWN_PLACE_ARTIFACT_FILES:
+            archive.close()
+            raise KnownPlaceWorkflowError("The Known Place result archive has an invalid file count.")
+        total_size = 0
+        for info in infos:
+            name = info.filename
+            item_path = PurePosixPath(name)
+            if (
+                name.startswith("/")
+                or "\\" in name
+                or "\x00" in name
+                or ".." in item_path.parts
+                or item_path.is_absolute()
+            ):
+                archive.close()
+                raise KnownPlaceWorkflowError("The Known Place result archive contains an unsafe path.")
+            total_size += info.file_size
+            if total_size > MAX_KNOWN_PLACE_ARTIFACT_UNCOMPRESSED_BYTES:
+                archive.close()
+                raise KnownPlaceWorkflowError("The Known Place result archive expands beyond the safe size limit.")
+        return archive, buffer
+    except BadZipFile:
+        raise KnownPlaceWorkflowError("GitHub returned an unreadable Known Place result archive.") from None
+
+
+def _read_known_place_member(archive: ZipFile, suffix: str, max_bytes: int) -> bytes:
+    matches = [
+        info for info in archive.infolist()
+        if not info.is_dir() and info.filename.endswith(suffix)
+    ]
+    if len(matches) != 1:
+        raise KnownPlaceWorkflowError(f"The Known Place result archive must contain exactly one {suffix} file.")
+    info = matches[0]
+    if info.file_size > max_bytes:
+        raise KnownPlaceWorkflowError(f"The Known Place {suffix} file exceeds the safe size limit.")
+    try:
+        return archive.read(info)
+    except (BadZipFile, OSError, RuntimeError):
+        raise KnownPlaceWorkflowError(f"The Known Place {suffix} file could not be read.") from None
+
+
+def _known_place_pair_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_pairs = result.get("pairs")
+    dynamics = result.get("motion_dynamics")
+    feature_pairs = dynamics.get("pairs") if isinstance(dynamics, dict) else None
+    if not isinstance(raw_pairs, list) or not isinstance(feature_pairs, list):
+        raise KnownPlaceWorkflowError("The Known Place result is missing its pairwise measurement contract.")
+    by_interval = {
+        (item.get("reference_date"), item.get("secondary_date")): item
+        for item in feature_pairs if isinstance(item, dict)
+    }
+    rows: list[dict[str, Any]] = []
+    for raw in raw_pairs:
+        if not isinstance(raw, dict):
+            continue
+        key = (raw.get("reference_date"), raw.get("secondary_date"))
+        feature = by_interval.get(key, {})
+        chain_id = str(feature.get("chain_id") or raw.get("chain_id") or "")
+        chain_parts = chain_id.split("-")
+        rows.append({
+            "reference_date": raw.get("reference_date"),
+            "secondary_date": raw.get("secondary_date"),
+            "interval_days": raw.get("interval_days"),
+            "chain_id": chain_id,
+            "track": raw.get("track") or (chain_parts[0] if len(chain_parts) > 1 else None),
+            "direction": raw.get("direction") or (chain_parts[1] if len(chain_parts) > 1 else None),
+            "polarization": raw.get("polarization"),
+            "release_id": raw.get("release_id"),
+            "catalog_maturity": raw.get("catalog_maturity"),
+            "status": raw.get("status") or feature.get("measurement_status"),
+            "valid_aoi_pixels": feature.get("valid_aoi_pixels", raw.get("valid_aoi_pixels")),
+            "aoi_total_grid_cells": raw.get("aoi_total_grid_cells"),
+            "valid_aoi_fraction": feature.get("valid_aoi_fraction", raw.get("valid_aoi_fraction")),
+            "high_magnitude_flagged_pixels": feature.get("high_magnitude_flagged_pixels", raw.get("high_magnitude_flagged_pixels")),
+            "high_magnitude_flagged_fraction": feature.get("high_magnitude_flagged_fraction"),
+            "high_magnitude_threshold_m": raw.get("high_magnitude_threshold"),
+            "median_horizontal_displacement_rate_m_per_day": feature.get("median_horizontal_displacement_rate_m_per_day"),
+            "mean_vector_magnitude_rate_m_per_day": feature.get("mean_vector_magnitude_rate_m_per_day"),
+            "mean_vector_east_rate_m_per_day": feature.get("mean_vector_east_rate_m_per_day"),
+            "mean_vector_north_rate_m_per_day": feature.get("mean_vector_north_rate_m_per_day"),
+            "mean_vector_azimuth_deg_clockwise_from_north": feature.get("mean_vector_azimuth_deg_clockwise_from_north"),
+            "median_directional_coherence_R": feature.get("median_directional_coherence_R"),
+            "crosses_registered_instrument_gap": feature.get("crosses_registered_instrument_gap", False),
+            "grid_lattice_compatible_with_previous": feature.get("grid_lattice_compatible_with_previous"),
+            "vector_rate_change_eligible": feature.get("vector_rate_change_eligible", False),
+            "vector_rate_change_magnitude_m_per_day": feature.get("vector_rate_change_magnitude_m_per_day"),
+            "vector_rate_acceleration_m_per_day_squared": feature.get("vector_rate_acceleration_m_per_day_squared"),
+            "rate_change_block_reason": feature.get("rate_change_block_reason"),
+            "spatial_uncertainty_status": feature.get("spatial_uncertainty_status"),
+            "risk_score": feature.get("risk_score"),
+            "risk_score_status": feature.get("risk_score_status", "NOT_CALIBRATED"),
+            "detection_status": feature.get("detection_status", result.get("hazard_detection_status", "NOT_EVALUATED")),
+            "quality_gate_counts": raw.get("quality_gate_counts"),
+            "interval_coverage_warning": raw.get("interval_coverage_warning"),
+        })
+    return rows
+
+
+def _known_place_result_summary(result: dict[str, Any]) -> dict[str, Any]:
+    plan = result.get("pairwise_series_plan")
+    dynamics = result.get("motion_dynamics")
+    request = result.get("request")
+    if not isinstance(plan, dict) or not isinstance(dynamics, dict) or not isinstance(request, dict):
+        raise KnownPlaceWorkflowError("The Known Place result is missing its versioned science summary.")
+    raw_chains = plan.get("chains")
+    chains: list[dict[str, Any]] = []
+    if isinstance(raw_chains, list):
+        for chain in raw_chains:
+            if not isinstance(chain, dict):
+                continue
+            geometry = chain.get("geometry_key") if isinstance(chain.get("geometry_key"), dict) else {}
+            processing = chain.get("processing_identity") if isinstance(chain.get("processing_identity"), dict) else {}
+            chain_pairs = []
+            for pair in chain.get("pairs", []) if isinstance(chain.get("pairs"), list) else []:
+                if not isinstance(pair, dict):
+                    continue
+                gaps = pair.get("known_instrument_data_gaps")
+                chain_pairs.append({
+                    "reference_date": pair.get("reference_date"),
+                    "secondary_date": pair.get("secondary_date"),
+                    "interval_days": pair.get("interval_days"),
+                    "relation_to_previous": pair.get("relation_to_previous"),
+                    "crosses_registered_instrument_gap": bool(gaps),
+                    "gap_count": len(gaps) if isinstance(gaps, list) else 0,
+                    "interval_coverage_warning": pair.get("interval_coverage_warning"),
+                })
+            chains.append({
+                "chain_id": chain.get("chain_id"),
+                "track": geometry.get("track"),
+                "direction": geometry.get("direction"),
+                "polarization": geometry.get("polarization"),
+                "release_id": processing.get("release_id"),
+                "maturity": processing.get("maturity"),
+                "pair_count": chain.get("pair_count"),
+                "continuous_chain_eligible": chain.get("continuous_chain_eligible"),
+                "cumulative_displacement_status": chain.get("cumulative_displacement_status"),
+                "grid_lattice_compatible": chain.get("grid_lattice_compatible"),
+                "pairs": chain_pairs,
+            })
+    source_evidence = result.get("download_evidence")
+    source_rows = []
+    if isinstance(source_evidence, list):
+        for source in source_evidence:
+            if not isinstance(source, dict):
+                continue
+            source_rows.append({
+                "granule_name": source.get("granule_name"),
+                "release_id": source.get("release_id"),
+                "maturity": source.get("maturity"),
+                "source_sha256": source.get("source_sha256"),
+                "source_bytes": source.get("source_bytes"),
+                "cache_status": source.get("cache_status"),
+            })
+    req_aoi = request.get("aoi") if isinstance(request.get("aoi"), dict) else {}
+    req_scope = request.get("scope_aoi") if isinstance(request.get("scope_aoi"), dict) else {}
+    req_reference = request.get("reference") if isinstance(request.get("reference"), dict) else {}
+    date_range = request.get("date_range") if isinstance(request.get("date_range"), dict) else {}
+    return {
+        "schema_version": result.get("schema_version"),
+        "engine_version": result.get("engine_version"),
+        "created_at_utc": result.get("created_at_utc"),
+        "status": result.get("status"),
+        "structural_status": result.get("structural_status"),
+        "measurement_status": result.get("measurement_status"),
+        "paper_reproduction_status": result.get("paper_reproduction_status"),
+        "hazard_detection_status": result.get("hazard_detection_status"),
+        "pair_measurement_counts": result.get("pair_measurement_counts"),
+        "grid_compatibility_status": result.get("grid_compatibility_status"),
+        "grid_mismatch_pair_count": result.get("grid_mismatch_pair_count"),
+        "motion_dynamics": {
+            "status": dynamics.get("status"),
+            "measured_feature_count": dynamics.get("measured_feature_count"),
+            "unmeasured_feature_count": dynamics.get("unmeasured_feature_count"),
+            "risk_score": dynamics.get("risk_score"),
+            "hazard_detection_status": dynamics.get("hazard_detection_status"),
+            "interpretation": dynamics.get("interpretation"),
+            "limitations": dynamics.get("limitations"),
+        },
+        "pairwise_series_plan": {
+            "status": plan.get("status"),
+            "chain_count": plan.get("chain_count"),
+            "continuous_chain_eligible": plan.get("continuous_chain_eligible"),
+            "cumulative_displacement_status": plan.get("cumulative_displacement_status"),
+            "pair_count": plan.get("pair_count"),
+            "pairwise_metrics_are_not_cumulative": plan.get("pairwise_metrics_are_not_cumulative"),
+            "warnings": plan.get("warnings") if isinstance(plan.get("warnings"), list) else [],
+            "known_nisar_data_gaps_intersecting_requested_pairs": plan.get("known_nisar_data_gaps_intersecting_requested_pairs"),
+            "chains": chains,
+        },
+        "pairs": _known_place_pair_rows(result),
+        "request": {
+            "measurement_wkt": req_aoi.get("wkt"),
+            "outer_scope_wkt": req_scope.get("wkt"),
+            "reference_wkt": req_reference.get("polygon_wkt"),
+            "date_range": date_range,
+            "hazard_mode": request.get("hazard_mode"),
+            "analysis_mode": request.get("analysis_mode"),
+            "source_adapters": result.get("source_adapters"),
+            "polarization": request.get("polarization"),
+            "product_selection": request.get("product_selection"),
+            "geometry_policy": request.get("geometry_policy"),
+            "quality_policy": request.get("quality_policy"),
+            "coherence_policy": request.get("coherence_policy"),
+            "reference_policy": result.get("reference_policy"),
+            "reference_buffer_m": result.get("reference_buffer_m"),
+        },
+        "source_evidence": source_rows,
+        "limitations": result.get("limitations") if isinstance(result.get("limitations"), list) else [],
+        "output_files": result.get("output_files") if isinstance(result.get("output_files"), list) else [],
+    }
+
+
+def _parse_known_place_result_archive(
+    archive_bytes: bytes,
+    request_id: str,
+    run: dict[str, Any],
+) -> dict[str, Any]:
+    archive, _buffer = _safe_known_place_archive(archive_bytes)
+    try:
+        result_bytes = _read_known_place_member(archive, "/result.json", MAX_KNOWN_PLACE_RESULT_JSON_BYTES)
+        dashboard_bytes = _read_known_place_member(archive, "/visuals/dashboard.html", MAX_KNOWN_PLACE_HTML_BYTES)
+        map_bytes = _read_known_place_member(archive, "/visuals/interactive-map.html", MAX_KNOWN_PLACE_HTML_BYTES)
+        try:
+            result = json.loads(result_bytes.decode("utf-8"))
+            dashboard_html = dashboard_bytes.decode("utf-8")
+            interactive_map_html = map_bytes.decode("utf-8")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise KnownPlaceWorkflowError("The Known Place result bundle contains invalid UTF-8 or JSON.") from None
+        if not isinstance(result, dict) or result.get("schema_version") != "know-place-aoi-result/1.0":
+            raise KnownPlaceWorkflowError("The Known Place result does not match the supported science schema.")
+        if not isinstance(dashboard_html, str) or "<html" not in dashboard_html[:500].lower():
+            raise KnownPlaceWorkflowError("The generated Known Place report is not a valid HTML document.")
+        if not isinstance(interactive_map_html, str) or "<html" not in interactive_map_html[:500].lower():
+            raise KnownPlaceWorkflowError("The generated Known Place map is not a valid HTML document.")
+        summary = _known_place_result_summary(result)
+        receipt_bytes = None
+        receipt_matches = [
+            info for info in archive.infolist()
+            if not info.is_dir() and info.filename.endswith(".drive-upload-receipt.json")
+        ]
+        if len(receipt_matches) == 1 and receipt_matches[0].file_size <= 128_000:
+            receipt_bytes = archive.read(receipt_matches[0])
+        storage: dict[str, Any] = {"status": "NOT_PRESENT", "remote_bytes_verified": False, "hash_verified": False}
+        if receipt_bytes:
+            try:
+                receipt = json.loads(receipt_bytes.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                receipt = {}
+            if isinstance(receipt, dict):
+                local_hash = receipt.get("bundle_sha256_local")
+                remote_hash = receipt.get("bundle_sha256_downloaded_from_drive")
+                storage = {
+                    "status": receipt.get("status"),
+                    "action": receipt.get("action"),
+                    "bundle_bytes": receipt.get("bundle_bytes"),
+                    "remote_bytes_verified": receipt.get("remote_bytes_verified") is True,
+                    "hash_verified": isinstance(local_hash, str) and local_hash == remote_hash,
+                    "raw_h5_included": receipt.get("raw_h5_included"),
+                    "bundled_file_count": (receipt.get("bundle") or {}).get("bundled_file_count")
+                    if isinstance(receipt.get("bundle"), dict) else None,
+                }
+        return {
+            "request_id": request_id,
+            "run": {
+                "id": run.get("id"),
+                "status": run.get("status"),
+                "conclusion": run.get("conclusion"),
+                "html_url": run.get("html_url"),
+                "created_at": run.get("created_at"),
+                "updated_at": run.get("updated_at"),
+                "head_sha": run.get("head_sha"),
+            },
+            "result": summary,
+            "storage": storage,
+            "dashboard_html": dashboard_html,
+            "interactive_map_html": interactive_map_html,
+        }
+    finally:
+        archive.close()
+
+
+def get_known_place_analysis_results(settings: RuntimeSettings, request_id: str) -> dict[str, Any]:
+    """Return authenticated, bounded view data from the completed generic Known Place artifact."""
+    normalized_id, run, archive_bytes = _load_generic_known_place_artifact(settings, request_id)
+    return _parse_known_place_result_archive(archive_bytes, normalized_id, run)
+
+
+def download_known_place_analysis_bundle(settings: RuntimeSettings, request_id: str) -> tuple[str, bytes]:
+    """Return the original Actions artifact ZIP after validating its request/run identity."""
+    normalized_id, _run, archive_bytes = _load_generic_known_place_artifact(settings, request_id)
+    # Validate the archive before making the original package available to the browser.
+    archive, _buffer = _safe_known_place_archive(archive_bytes)
+    archive.close()
+    return f"SARGuardian-known-place-{normalized_id}.zip", archive_bytes
