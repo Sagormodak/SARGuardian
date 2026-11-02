@@ -75,8 +75,8 @@ def test_dry_run_dispatch_does_not_include_raw_download_consent(monkeypatch: pyt
 def test_raw_analysis_dispatch_needs_confirmed_checkbox_and_sets_exact_marker(monkeypatch: pytest.MonkeyPatch) -> None:
     observed: dict = {}
 
-    def fake_request(_settings, _method, _path, body=None):
-        observed.update(body or {})
+    def fake_request(_settings, method, path, body=None):
+        observed.update({"method": method, "path": path, "body": body})
         return 204, {}
 
     monkeypatch.setattr(known_place, "_github_request", fake_request)
@@ -86,10 +86,11 @@ def test_raw_analysis_dispatch_needs_confirmed_checkbox_and_sets_exact_marker(mo
     response = known_place.dispatch_known_place_analysis(settings(), request)
 
     assert response.execute_downloads is True
+    assert observed["method"] == "POST"
     assert observed["path"].startswith("/repos/moshiour0/SARGuardian-backend/")
     assert observed["path"].endswith("/know-place-aoi-dispatcher.yml/dispatches")
-    assert observed["inputs"]["execute_downloads"] is True
-    assert observed["inputs"]["consent_marker"] == "[run-know-place]"
+    assert observed["body"]["inputs"]["execute_downloads"] is True
+    assert observed["body"]["inputs"]["consent_marker"] == "[run-know-place]"
 
 
 def test_status_is_matched_by_random_request_id_and_workflow_identity(monkeypatch: pytest.MonkeyPatch) -> None:
