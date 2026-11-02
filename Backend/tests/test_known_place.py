@@ -312,3 +312,237 @@ def test_generic_known_place_dispatch_is_backend_owned_and_paper_reproduction_st
     assert known_place.KNOWN_PLACE_PAPER_WORKFLOW == "know-place-paper-reproduction-dispatcher.yml"
     assert known_place.KNOWN_PLACE_PAPER_REF == "main"
     assert known_place.KNOWN_PLACE_PAPER_WORKFLOW != known_place.KNOWN_PLACE_WORKFLOW
+
+
+def _known_place_test_artifact() -> bytes:
+    import json
+    from io import BytesIO
+    from zipfile import ZIP_DEFLATED, ZipFile
+
+    pairs = []
+    features = []
+    chains = []
+    for track, direction, rate in (("048", "D", 24.48), ("098", "A", 0.07)):
+        reference_date = "2026-08-16" if direction == "D" else "2026-08-19"
+        secondary_date = "2026-08-28" if direction == "D" else "2026-08-31"
+        chain_id = f"{track}-{direction}-HH-PROVISIONAL-P05023"
+        pairs.append({
+            "reference_date": reference_date,
+            "secondary_date": secondary_date,
+            "interval_days": 12,
+            "track": track,
+            "direction": direction,
+            "polarization": "HH",
+            "release_id": "P05023",
+            "catalog_maturity": "PROVISIONAL",
+            "status": "METRICS_COMPUTED",
+            "aoi_total_grid_cells": 67,
+            "valid_aoi_pixels": 9 if direction == "D" else 65,
+            "valid_aoi_fraction": 9 / 67 if direction == "D" else 65 / 67,
+            "high_magnitude_flagged_pixels": 9 if direction == "D" else 0,
+            "high_magnitude_threshold": 10,
+            "quality_gate_counts": {"valid": 9},
+            "interval_coverage_warning": "Interval-averaged pairwise observation.",
+        })
+        features.append({
+            "reference_date": reference_date,
+            "secondary_date": secondary_date,
+            "chain_id": chain_id,
+            "measurement_status": "METRICS_COMPUTED",
+            "median_horizontal_displacement_rate_m_per_day": rate,
+            "mean_vector_magnitude_rate_m_per_day": rate * 0.8,
+            "mean_vector_east_rate_m_per_day": 0.1,
+            "mean_vector_north_rate_m_per_day": 0.2,
+            "mean_vector_azimuth_deg_clockwise_from_north": 45,
+            "median_directional_coherence_R": 0.4,
+            "valid_aoi_pixels": 9 if direction == "D" else 65,
+            "valid_aoi_fraction": 9 / 67 if direction == "D" else 65 / 67,
+            "high_magnitude_flagged_pixels": 9 if direction == "D" else 0,
+            "high_magnitude_flagged_fraction": 9 / 67 if direction == "D" else 0,
+            "risk_score": None,
+            "risk_score_status": "NOT_CALIBRATED",
+            "detection_status": "NOT_EVALUATED",
+            "crosses_registered_instrument_gap": direction == "A",
+        })
+        chains.append({
+            "chain_id": chain_id,
+            "geometry_key": {"track": track, "direction": direction, "polarization": "HH"},
+            "processing_identity": {"release_id": "P05023", "maturity": "PROVISIONAL"},
+            "pair_count": 1,
+            "continuous_chain_eligible": True,
+            "cumulative_displacement_status": "ELIGIBLE_FOR_SEPARATE_REVIEW",
+            "grid_lattice_compatible": True,
+            "pairs": [{
+                "reference_date": reference_date,
+                "secondary_date": secondary_date,
+                "interval_days": 12,
+                "relation_to_previous": "FIRST_PAIR",
+                "known_instrument_data_gaps": [{"reason": "instrument gap"}] if direction == "A" else [],
+                "interval_coverage_warning": "Interval gap review." if direction == "A" else "Pairwise interval.",
+            }],
+        })
+    result = {
+        "schema_version": "know-place-aoi-result/1.0",
+        "engine_version": "1.0.0",
+        "created_at_utc": "2026-11-02T14:28:05Z",
+        "status": "SCIENTIFIC_METRICS_COMPUTED",
+        "structural_status": "PASS",
+        "measurement_status": "METRICS_COMPUTED_ALL_PAIRS",
+        "paper_reproduction_status": "NOT_EVALUATED_GENERIC_AOI",
+        "hazard_detection_status": "NOT_EVALUATED",
+        "request": {
+            "aoi": {"wkt": AOI},
+            "scope_aoi": {"wkt": AOI},
+            "reference": {"polygon_wkt": AOI},
+            "date_range": {"start": "2026-06-20", "end": "2026-09-18", "inclusive": True},
+            "hazard_mode": "mixed",
+            "analysis_mode": "exploratory",
+            "source_adapters": ["NISAR_GOFF"],
+            "polarization": "HH",
+            "product_selection": {"allowed_release_ids": ["P05023"], "allowed_maturities": ["PROVISIONAL"]},
+            "geometry_policy": {"source": "product_height_axis_midpoint_approximation"},
+            "quality_policy": {"maximum_horizontal_magnitude_m": 10},
+            "coherence_policy": {"window_size": 5},
+        },
+        "source_adapters": ["NISAR_GOFF"],
+        "reference_policy": "external_reference_polygon_component_median",
+        "reference_buffer_m": 2000,
+        "pairwise_series_plan": {
+            "status": "PAIRWISE_SERIES_PLANNED",
+            "chain_count": 2,
+            "continuous_chain_eligible": False,
+            "cumulative_displacement_status": "SEPARATE_CHAINS_REVIEW_REQUIRED",
+            "pair_count": 2,
+            "pairwise_metrics_are_not_cumulative": True,
+            "warnings": ["Orbit chains must not be combined."],
+            "known_nisar_data_gaps_intersecting_requested_pairs": 1,
+            "chains": chains,
+        },
+        "grid_compatibility_status": "CONSISTENT_LATTICE_WITHIN_CHAINS",
+        "grid_mismatch_pair_count": 0,
+        "pairs": pairs,
+        "download_evidence": [{
+            "granule_name": "NISAR_L2_PR_GOFF_TEST_P05023.h5",
+            "release_id": "P05023",
+            "maturity": "PROVISIONAL",
+            "source_sha256": "a" * 64,
+            "source_bytes": 1024,
+            "cache_status": "DOWNLOADED_AND_HASHED",
+        }],
+        "pair_measurement_counts": {"requested": 2, "metrics_computed": 2, "insufficient_data": 0},
+        "limitations": ["No hazard detection was evaluated."],
+        "motion_dynamics": {
+            "status": "DESCRIPTIVE_MOTION_FEATURES_COMPUTED",
+            "measured_feature_count": 2,
+            "unmeasured_feature_count": 0,
+            "risk_score": None,
+            "hazard_detection_status": "NOT_EVALUATED",
+            "interpretation": "Pairwise rate only.",
+            "limitations": ["Not cumulative."],
+            "pairs": features,
+        },
+        "output_files": ["timeseries.csv", "motion-features.csv"],
+    }
+    receipt = {
+        "status": "PASS",
+        "action": "UPLOADED",
+        "bundle_bytes": 2048,
+        "bundle_sha256_local": "b" * 64,
+        "bundle_sha256_downloaded_from_drive": "b" * 64,
+        "remote_bytes_verified": True,
+        "raw_h5_included": False,
+        "bundle": {"bundled_file_count": 4},
+    }
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("know-place-aoi-output/run/result.json", json.dumps(result))
+        archive.writestr("know-place-aoi-output/run/visuals/dashboard.html", "<!doctype html><html><body>Report</body></html>")
+        archive.writestr("know-place-aoi-output/run/visuals/interactive-map.html", "<!doctype html><html><body>Map</body></html>")
+        archive.writestr("know-place-aoi-output/know-place-77-attempt-1.drive-upload-receipt.json", json.dumps(receipt))
+    return buffer.getvalue()
+
+
+def test_known_place_result_parser_preserves_separate_chains_and_claim_gates() -> None:
+    archive = _known_place_test_artifact()
+    run = {
+        "id": 77,
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://github.com/moshiour0/SARGuardian-backend/actions/runs/77",
+        "created_at": "2026-11-02T14:00:00Z",
+        "updated_at": "2026-11-02T14:30:00Z",
+        "head_sha": "a" * 40,
+    }
+    parsed = known_place._parse_known_place_result_archive(
+        archive, "c19a7630-9f19-4b38-ae0e-88d53ad7c8f2", run,
+    )
+    result = parsed["result"]
+    assert result["pair_measurement_counts"]["metrics_computed"] == 2
+    assert result["pairwise_series_plan"]["chain_count"] == 2
+    assert result["pairwise_series_plan"]["cumulative_displacement_status"] == "SEPARATE_CHAINS_REVIEW_REQUIRED"
+    assert {pair["track"] for pair in result["pairs"]} == {"048", "098"}
+    assert result["pairs"][0]["median_horizontal_displacement_rate_m_per_day"] == 24.48
+    assert result["hazard_detection_status"] == "NOT_EVALUATED"
+    assert result["paper_reproduction_status"] == "NOT_EVALUATED_GENERIC_AOI"
+    assert parsed["storage"]["hash_verified"] is True
+    assert parsed["storage"]["remote_bytes_verified"] is True
+    assert parsed["storage"]["raw_h5_included"] is False
+    assert "<html" in parsed["interactive_map_html"]
+
+
+def test_known_place_result_lookup_requires_exact_generic_workflow_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    request_id = "c19a7630-9f19-4b38-ae0e-88d53ad7c8f2"
+    observed_paths: list[str] = []
+
+    def fake_request(_settings, method, path, body=None):
+        assert method == "GET"
+        observed_paths.append(path)
+        if "know-place-aoi-dispatcher.yml/runs" in path:
+            return 200, {"workflow_runs": [
+                {
+                    "id": 77,
+                    "display_title": f"Known Place Analysis {request_id}",
+                    "path": ".github/workflows/know-place-aoi-dispatcher.yml",
+                    "head_branch": "main",
+                    "event": "workflow_dispatch",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "html_url": "https://github.com/moshiour0/SARGuardian-backend/actions/runs/77",
+                    "created_at": "2026-11-02T14:00:00Z",
+                    "updated_at": "2026-11-02T14:30:00Z",
+                    "head_sha": "a" * 40,
+                },
+                {
+                    "id": 76,
+                    "display_title": f"Known Place Paper Reproduction {request_id}",
+                    "path": ".github/workflows/know-place-paper-reproduction-dispatcher.yml",
+                    "head_branch": "main",
+                    "event": "workflow_dispatch",
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+            ]}
+        assert "/actions/runs/77/artifacts" in path
+        return 200, {"artifacts": [
+            {"id": 100, "name": "know-place-aoi-77-1", "expired": False, "created_at": "2026-11-02T14:30:00Z"},
+        ]}
+
+    monkeypatch.setattr(known_place, "_github_request", fake_request)
+    monkeypatch.setattr(known_place, "_download_known_place_artifact", lambda _settings, _artifact_id: _known_place_test_artifact())
+    parsed = known_place.get_known_place_analysis_results(settings(), request_id)
+    assert parsed["run"]["id"] == 77
+    assert parsed["result"]["pair_measurement_counts"]["requested"] == 2
+    assert len(observed_paths) == 2
+    assert "know-place-aoi-dispatcher.yml" in observed_paths[0]
+    assert "know-place-paper-reproduction-dispatcher.yml" not in observed_paths[0]
+
+
+def test_known_place_result_archive_rejects_path_traversal() -> None:
+    from io import BytesIO
+    from zipfile import ZIP_DEFLATED, ZipFile
+
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("../result.json", "{}")
+    with pytest.raises(known_place.KnownPlaceWorkflowError, match="unsafe path"):
+        known_place._safe_known_place_archive(buffer.getvalue())
