@@ -9,7 +9,7 @@ import {
 import './knownPlaceResults.css';
 
 type AudienceView = 'public' | 'deep-dive' | 'scientific';
-type TrackFilter = 'all' | '048-D' | '098-A';
+type TrackFilter = string;
 
 const views: Array<{ id: AudienceView; title: string; audience: string; summary: string }> = [
   { id: 'public', title: 'Public Discovery', audience: 'For everyone', summary: 'What was measured, what needs caution, and what cannot be concluded.' },
@@ -113,8 +113,15 @@ export function KnownPlaceResultsDashboard({
   const result = results?.result;
   const allPairs = useMemo(() => results?.result.pairs ?? [], [results]);
   const filteredPairs = useMemo(
-    () => allPairs.filter((pair) => trackFilter === 'all' || `${pair.track}-${pair.direction}` === trackFilter),
+    () => allPairs.filter((pair) => trackFilter === 'all' || pair.chain_id === trackFilter),
     [allPairs, trackFilter],
+  );
+  const chainLabels = useMemo(
+    () => (result?.pairwise_series_plan.chains ?? []).map((chain) => ({
+      id: chain.chain_id,
+      label: `Track ${chain.track ?? 'unknown'} · ${chain.direction === 'A' ? 'Ascending' : chain.direction === 'D' ? 'Descending' : 'Unknown direction'} · ${chain.polarization ?? 'pol. unknown'}`,
+    })),
+    [result],
   );
   const maximumRate = Math.max(0.1, ...allPairs.map((pair) => rate(pair) ?? 0));
   const peakPair = allPairs.reduce<KnownPlacePairResult | null>((best, pair) => {
@@ -204,9 +211,9 @@ export function KnownPlaceResultsDashboard({
                   <span className="result-kicker">DIRECT ANSWER</span>
                   <h3>Pairwise horizontal-displacement metrics were computed for every selected GOFF interval.</h3>
                   <p>
-                    The selected area has observations from two separate satellite viewing geometries:
-                    ascending track 098 and descending track 048. Their measurements are kept as separate
-                    series, not added into one cumulative movement figure.
+                    The selected area has {result.pairwise_series_plan.chain_count} separate observation chain(s):
+                    {' '}{chainLabels.map((chain) => chain.label).join('; ')}. Their measurements are kept
+                    as separate series, not added into one cumulative movement figure.
                   </p>
                 </div>
                 <div className="known-place-answer-status">
@@ -333,8 +340,9 @@ export function KnownPlaceResultsDashboard({
                     <span>Observation chain</span>
                     <select value={trackFilter} onChange={(event) => setTrackFilter(event.target.value as TrackFilter)}>
                       <option value="all">All tracks</option>
-                      <option value="048-D">Track 048 · Descending</option>
-                      <option value="098-A">Track 098 · Ascending</option>
+                      {chainLabels.map((chain) => (
+                        <option value={chain.id} key={chain.id}>{chain.label}</option>
+                      ))}
                     </select>
                   </label>
                 </div>
