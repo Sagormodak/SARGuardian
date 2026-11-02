@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -269,3 +270,17 @@ def test_gunw_candidate_cannot_be_sent_to_goff_known_place_measurement() -> None
     with pytest.raises(ValidationError, match="CANDIDATE_CONTEXT_MUST_BE_A_GOFF"):
         known_place.KnownPlaceAnalysisRequest(**(REQUEST | {"candidate_context": value}))
 
+
+def test_author_exact_paper_workflow_is_separate_and_pinned_to_immutable_backend_source() -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+    paper_workflow = (repository_root / ".github" / "workflows" / known_place.KNOWN_PLACE_PAPER_WORKFLOW).read_text(encoding="utf-8")
+    generic_workflow = (repository_root / ".github" / "workflows" / known_place.KNOWN_PLACE_WORKFLOW).read_text(encoding="utf-8")
+
+    assert known_place.KNOWN_PLACE_PAPER_WORKFLOW != known_place.KNOWN_PLACE_WORKFLOW
+    assert "moshiour0/SARGuardian-backend/.github/workflows/know-place-author-exact-replay.yml@" in paper_workflow
+    assert known_place.KNOWN_PLACE_AUTHOR_BACKEND_REF in paper_workflow
+    assert 'backend_code_ref: "' + known_place.KNOWN_PLACE_AUTHOR_BACKEND_REF + '"' in paper_workflow
+    assert "consent_marker: ${{ inputs.consent_marker }}" in paper_workflow
+    assert "bridge_authorized: false" in paper_workflow
+    assert "know-place-aoi-analysis.yml@" in generic_workflow
+    assert "know-place-author-exact-replay.yml@" not in generic_workflow
