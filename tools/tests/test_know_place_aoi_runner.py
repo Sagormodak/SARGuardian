@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools.know_place.aoi_request import REQUEST_SCHEMA, validate_aoi_request
+from tools.know_place import aoi_runner
 from tools.know_place.geometry import polygon_pair_envelope_wkt
 from tools.know_place.aoi_runner import (
     AOIRunError,
