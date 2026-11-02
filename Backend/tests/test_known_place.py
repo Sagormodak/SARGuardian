@@ -51,7 +51,7 @@ def test_known_place_request_rejects_bad_track_and_invalid_polygon() -> None:
     "repository,workflow",
     [
         ("moshiour0/SARGuardian-backend", "know-place-aoi-dispatcher.yml"),
-        ("moshiour0/SARGuardian_Dynamic", "known-place-paper-reproduction.yml"),
+        ("moshiour0/SARGuardian-backend", "know-place-paper-reproduction-dispatcher.yml"),
     ],
 )
 def test_github_dispatch_403_explains_target_repository_permission(
@@ -207,13 +207,14 @@ def test_author_exact_paper_reproduction_dispatches_immutable_backend_pin_and_ex
     assert response.status == "dispatching"
     assert response.execute_downloads is True
     assert observed["method"] == "POST"
-    assert observed["path"].endswith("/known-place-paper-reproduction.yml/dispatches")
+    assert observed["path"] == (
+        "/repos/moshiour0/SARGuardian-backend/actions/workflows/"
+        "know-place-paper-reproduction-dispatcher.yml/dispatches"
+    )
     assert observed["body"]["ref"] == "main"
     inputs = observed["body"]["inputs"]
     assert inputs["request_id"] == response.request_id
     assert inputs["consent_marker"] == "[run-know-place]"
-    assert inputs["backend_code_ref"] == known_place.KNOWN_PLACE_AUTHOR_BACKEND_REF
-    assert len(inputs["backend_code_ref"]) == 40
     assert inputs["geometry_height_m"] == "5151"
     assert inputs["control_draws"] == "1000"
     assert inputs["seed"] == "260826"
@@ -224,18 +225,18 @@ def test_author_exact_paper_reproduction_status_is_matched_by_request_and_workfl
 
     def fake_request(_settings, method, path, body=None):
         assert method == "GET"
-        assert "known-place-paper-reproduction.yml/runs" in path
+        assert "know-place-paper-reproduction-dispatcher.yml/runs" in path
         return 200, {
             "workflow_runs": [
                 {
                     "id": 54321,
                     "display_title": f"Known Place Paper Reproduction {request_id}",
-                    "path": ".github/workflows/known-place-paper-reproduction.yml",
+                    "path": ".github/workflows/know-place-paper-reproduction-dispatcher.yml",
                     "head_branch": "main",
                     "event": "workflow_dispatch",
                     "status": "completed",
                     "conclusion": "success",
-                    "html_url": "https://github.com/moshiour0/SARGuardian_Dynamic/actions/runs/54321",
+                    "html_url": "https://github.com/moshiour0/SARGuardian-backend/actions/runs/54321",
                     "created_at": "2026-11-02T00:00:00Z",
                     "updated_at": "2026-11-02T00:30:00Z",
                 },
@@ -304,18 +305,10 @@ def test_gunw_candidate_cannot_be_sent_to_goff_known_place_measurement() -> None
 
 
 def test_generic_known_place_dispatch_is_backend_owned_and_paper_reproduction_stays_separate() -> None:
-    repository_root = Path(__file__).resolve().parents[2]
-    paper_workflow = (repository_root / ".github" / "workflows" / known_place.KNOWN_PLACE_PAPER_WORKFLOW).read_text(encoding="utf-8")
-
     assert known_place.KNOWN_PLACE_REPOSITORY == "moshiour0/SARGuardian-backend"
     assert known_place.KNOWN_PLACE_WORKFLOW == "know-place-aoi-dispatcher.yml"
     assert known_place.KNOWN_PLACE_REF == "main"
-    assert known_place.KNOWN_PLACE_PAPER_REPOSITORY == "moshiour0/SARGuardian_Dynamic"
+    assert known_place.KNOWN_PLACE_PAPER_REPOSITORY == "moshiour0/SARGuardian-backend"
+    assert known_place.KNOWN_PLACE_PAPER_WORKFLOW == "know-place-paper-reproduction-dispatcher.yml"
+    assert known_place.KNOWN_PLACE_PAPER_REF == "main"
     assert known_place.KNOWN_PLACE_PAPER_WORKFLOW != known_place.KNOWN_PLACE_WORKFLOW
-    assert "moshiour0/SARGuardian-backend/.github/workflows/know-place-author-exact-replay.yml@" in paper_workflow
-    assert known_place.KNOWN_PLACE_AUTHOR_BACKEND_REF in paper_workflow
-    assert 'backend_code_ref: "' + known_place.KNOWN_PLACE_AUTHOR_BACKEND_REF + '"' in paper_workflow
-    assert "consent_marker: ${{ inputs.consent_marker }}" in paper_workflow
-    assert "bridge_authorized: false" in paper_workflow
-    assert "know-place-aoi-analysis.yml@" not in paper_workflow
-    assert "know-place-author-exact-replay.yml@" in paper_workflow

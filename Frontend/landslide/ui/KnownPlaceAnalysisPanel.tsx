@@ -464,7 +464,7 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
           </label>
           <label className="aoi-job-label known-place-wide">
             <span>Exact release IDs (optional, comma-separated)</span>
-            <input value={allowedReleaseIds} onChange={(event) => setAllowedReleaseIds(event.target.value)} placeholder="Leave blank to retain valid candidates; conflicts fail safe" autoComplete="off" />
+            <input value={allowedReleaseIds} onChange={(event) => setAllowedReleaseIds(event.target.value)} placeholder="e.g. P05023 — pin one release when duplicate pairs exist" autoComplete="off" />
           </label>
           <label className="aoi-job-label">
             <span>Constant ellipsoidal height in metres (optional sensitivity only)</span>

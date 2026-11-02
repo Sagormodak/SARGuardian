@@ -29,15 +29,14 @@ KNOWN_PLACE_WORKFLOW_PAGE = (
     f"https://github.com/{KNOWN_PLACE_REPOSITORY}/actions/workflows/{KNOWN_PLACE_WORKFLOW}"
 )
 
-# The fixed author-exact paper launcher remains separate from the generic AOI workflow.
-KNOWN_PLACE_PAPER_REPOSITORY = "moshiour0/SARGuardian_Dynamic"
-KNOWN_PLACE_PAPER_WORKFLOW = "known-place-paper-reproduction.yml"
+# The fixed author-exact paper launcher remains separate from the generic AOI workflow,
+# but its entry point lives in the backend repository covered by the server Actions token.
+KNOWN_PLACE_PAPER_REPOSITORY = "moshiour0/SARGuardian-backend"
+KNOWN_PLACE_PAPER_WORKFLOW = "know-place-paper-reproduction-dispatcher.yml"
 KNOWN_PLACE_PAPER_REF = "main"
 KNOWN_PLACE_PAPER_WORKFLOW_PAGE = (
     f"https://github.com/{KNOWN_PLACE_PAPER_REPOSITORY}/actions/workflows/{KNOWN_PLACE_PAPER_WORKFLOW}"
 )
-# Immutable backend commit containing the author-exact workflow and science code.
-KNOWN_PLACE_AUTHOR_BACKEND_REF = "d847b0461a2fec1bdf2abcce0a6b1d2f9dddabc9"
 KNOWN_PLACE_MAX_DATE_WINDOW_DAYS = 90
 
 
@@ -327,7 +326,6 @@ def dispatch_known_place_paper_reproduction(
     inputs = {
         "request_id": request_id,
         "consent_marker": "[run-know-place]",
-        "backend_code_ref": KNOWN_PLACE_AUTHOR_BACKEND_REF,
         "geometry_height_m": "5151",
         "control_draws": "1000",
         "seed": "260826",
