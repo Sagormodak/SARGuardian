@@ -424,6 +424,45 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           if [[ -d "$OUTPUT_ROOT" ]]; then
             find "$OUTPUT_ROOT" -maxdepth 3 -type f | sort | sed 's#^#- #g' >> "$GITHUB_STEP_SUMMARY"
+            python - "$OUTPUT_ROOT" "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          output_root, summary_path = Path(sys.argv[1]), Path(sys.argv[2])
+          lines = []
+          for failure_path in sorted(output_root.glob("*/failure.json")):
+              try:
+                  failure = json.loads(failure_path.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError):
+                  continue
+              detail = failure.get("failure", {}) if isinstance(failure, dict) else {}
+              code = str(detail.get("code", "ANALYSIS_FAILED"))
+              safe_message = str(detail.get("safe_message", "No safe failure detail was recorded."))
+              lines.extend(["", "### Failure diagnostics", f"- Code: `{code}`", f"- Detail: {safe_message}"])
+              if code == "AMBIGUOUS_PRODUCT_RELEASE_VARIANTS":
+                  diagnostics = detail.get("selection_diagnostics", {})
+                  releases = diagnostics.get("candidate_release_ids", [])
+                  lines.extend([
+                      "- Action: select the intended exact release ID in the UI and rerun catalog-only dry run.",
+                      "- No raw GOFF product was downloaded because series planning stopped before acquisition.",
+                      "- Candidate release IDs: " + (", ".join(map(str, releases)) if releases else "not resolved"),
+                  ])
+                  for pair in diagnostics.get("ambiguous_pairs", [])[:10]:
+                      lines.append(
+                          "- Ambiguous pair: "
+                          + str(pair.get("pair", "unknown"))
+                          + " | candidates: "
+                          + ", ".join(map(str, pair.get("candidate_release_ids", [])))
+                      )
+                      for granule in pair.get("candidate_granules", [])[:4]:
+                          lines.append("  - " + str(granule))
+              elif detail.get("required_user_action"):
+                  lines.append("- Action: " + str(detail["required_user_action"]))
+          if lines:
+              with summary_path.open("a", encoding="utf-8") as stream:
+                  stream.write("\\n".join(lines) + "\\n")
+          PY
           fi
 
       - name: Preserve report, dashboard, maps and Drive receipt as workflow artifacts
