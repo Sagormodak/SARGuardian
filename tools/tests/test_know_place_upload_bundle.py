@@ -306,3 +306,30 @@ def test_drive_client_preserves_safe_google_api_error_reason(monkeypatch):
     assert captured.value.api_reason == "notFound"
     assert "secret-resource-id" not in str(captured.value)
 
+
+
+@pytest.mark.parametrize(
+    "configured_value, expected",
+    [
+        ("folder_ID-123", "folder_ID-123"),
+        ("https://drive.google.com/drive/folders/folder_ID-123?usp=sharing", "folder_ID-123"),
+        ("https://drive.google.com/open?id=folder_ID-123", "folder_ID-123"),
+    ],
+)
+def test_drive_parent_folder_id_accepts_raw_id_and_standard_drive_urls(configured_value, expected):
+    assert uploader.normalize_drive_folder_id(configured_value) == expected
+
+
+@pytest.mark.parametrize(
+    "configured_value, expected_error",
+    [
+        ("", "DRIVE_PARENT_FOLDER_ID_REQUIRED"),
+        ("https://attacker.example/folders/folder_ID-123", "DRIVE_PARENT_FOLDER_URL_HOST_INVALID"),
+        ("https://drive.google.com/drive/my-drive", "DRIVE_PARENT_FOLDER_ID_FORMAT_INVALID"),
+        ("folder/id", "DRIVE_PARENT_FOLDER_ID_FORMAT_INVALID"),
+    ],
+)
+def test_drive_parent_folder_id_rejects_invalid_values(configured_value, expected_error):
+    with pytest.raises(uploader.BundleUploadError, match=expected_error):
+        uploader.normalize_drive_folder_id(configured_value)
+
