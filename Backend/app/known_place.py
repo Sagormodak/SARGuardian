@@ -113,6 +113,8 @@ class KnownPlaceAnalysisRequest(BaseModel):
             raise ValueError("CANDIDATE_CONTEXT_AREA_INVALID")
         if not isinstance(value.get("geometry_simplified"), bool):
             raise ValueError("CANDIDATE_CONTEXT_SIMPLIFICATION_FLAG_INVALID")
+        if not isinstance(value.get("geometry_edited"), bool):
+            raise ValueError("CANDIDATE_CONTEXT_EDIT_FLAG_INVALID")
         product_ids = value.get("product_ids", [])
         if not isinstance(product_ids, list) or len(product_ids) > 30 or any(not isinstance(item, str) or len(item) > 512 for item in product_ids):
             raise ValueError("CANDIDATE_CONTEXT_PRODUCT_IDS_INVALID")
