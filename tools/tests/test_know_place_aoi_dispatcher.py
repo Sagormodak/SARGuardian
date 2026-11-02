@@ -1,0 +1,41 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+def test_default_branch_dispatcher_pins_validated_backend_two_polygon_workflow() -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+    workflow_path = repository_root / ".github" / "workflows" / "know-place-aoi-dispatcher.yml"
+    text = workflow_path.read_text(encoding="utf-8")
+
+    science_sha = "bfde7dde8ada92a03054cd8dbad8daa7a5c119f8"
+    assert "workflow_dispatch:" in text
+    assert "run-name: Known Place Analysis ${{ inputs.request_id }}" in text
+    assert f"know-place-aoi-analysis.yml@{science_sha}" in text
+    assert f'backend_science_ref: "{science_sha}"' in text
+    assert "secrets: inherit" in text
+    assert "consent_marker: ${{ inputs.consent_marker }}" in text
+    assert "execute_downloads: ${{ inputs.execute_downloads }}" in text
+    assert 'default: false\n        type: boolean' in text
+
+
+def test_dispatcher_forwards_independent_outer_measurement_and_reference_geometry() -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+    text = (repository_root / ".github" / "workflows" / "know-place-aoi-dispatcher.yml").read_text(encoding="utf-8")
+
+    for field in (
+        "aoi_wkt",
+        "scope_aoi_wkt",
+        "reference_wkt",
+        "start_date",
+        "end_date",
+        "hazard_mode",
+        "analysis_mode",
+        "polarization",
+        "track",
+        "direction",
+        "coherence_neighbours",
+        "allowed_release_ids",
+        "candidate_context_json",
+    ):
+        assert f"      {field}: ${{ inputs.{field} }}" in text
