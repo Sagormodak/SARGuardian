@@ -120,29 +120,53 @@ class DriveClient:
     def get_file(self, file_id: str) -> dict:
         return self._request_json(
             self._authorized_request(
-                f"{DRIVE_API_URL}/{file_id}?{urlencode({'fields': 'id,name,mimeType,parents'})}"
+                f"{DRIVE_API_URL}/{file_id}?{urlencode({'fields': 'id,name,mimeType,parents,driveId', 'supportsAllDrives': 'true'})}"
             ),
             "DRIVE_FILE_LOOKUP_FAILED",
             retries=2,
         )
 
     def list_children(self, parent_id: str) -> list[dict]:
+        """List every child of a My Drive or shared-drive folder.
+
+        The user corpus plus includeItemsFromAllDrives covers both My Drive
+        and shared-drive items the authenticated account can access. Pagination
+        is required because Drive may return fewer than pageSize entries.
+        """
         query = {
             "q": f"'{self._escape(parent_id)}' in parents and trashed = false",
-            "fields": "files(id,name,mimeType,parents)",
+            "fields": "nextPageToken,incompleteSearch,files(id,name,mimeType,parents,driveId)",
             "spaces": "drive",
+            "corpora": "user",
+            "includeItemsFromAllDrives": "true",
+            "supportsAllDrives": "true",
+            "pageSize": "1000",
         }
-        response = self._request_json(
-            self._authorized_request(
-                f"{DRIVE_API_URL}?{urlencode(query)}"
-            ),
-            "DRIVE_LIST_FAILED",
-            retries=2,
-        )
-        files = response.get("files")
-        if not isinstance(files, list):
-            raise DriveClientError("DRIVE_LIST_FAILED")
-        return [file for file in files if isinstance(file, dict)]
+        files: list[dict] = []
+        page_token: str | None = None
+        seen_page_tokens: set[str] = set()
+        while True:
+            page_query = dict(query)
+            if page_token:
+                if page_token in seen_page_tokens:
+                    raise DriveClientError("DRIVE_LIST_PAGINATION_LOOP")
+                seen_page_tokens.add(page_token)
+                page_query["pageToken"] = page_token
+            response = self._request_json(
+                self._authorized_request(f"{DRIVE_API_URL}?{urlencode(page_query)}"),
+                "DRIVE_LIST_FAILED",
+                retries=2,
+            )
+            if response.get("incompleteSearch") is True:
+                raise DriveClientError("DRIVE_LIST_INCOMPLETE")
+            page_files = response.get("files")
+            if not isinstance(page_files, list):
+                raise DriveClientError("DRIVE_LIST_FAILED")
+            files.extend(file for file in page_files if isinstance(file, dict))
+            next_page_token = response.get("nextPageToken")
+            if not isinstance(next_page_token, str) or not next_page_token:
+                return files
+            page_token = next_page_token
 
     def create_folder(self, parent_id: str, name: str) -> str:
         metadata = json.dumps({"name": name, "mimeType": DRIVE_FOLDER_MIME, "parents": [parent_id]}).encode("utf-8")
@@ -187,7 +211,7 @@ class DriveClient:
 
     def download_file(self, file_id: str) -> bytes:
         request = self._authorized_request(
-            f"{DRIVE_API_URL}/{file_id}?{urlencode({'alt': 'media'})}"
+            f"{DRIVE_API_URL}/{file_id}?{urlencode({'alt': 'media', 'supportsAllDrives': 'true'})}"
         )
         try:
             with urlopen(request, timeout=60) as response:
