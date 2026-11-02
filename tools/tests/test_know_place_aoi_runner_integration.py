@@ -117,9 +117,18 @@ def test_synthetic_five_pair_aoi_pipeline_emits_verified_bundle_and_deletes_ephe
         lambda path, *args, **kwargs: Path(path).write_bytes(b"synthetic-geotiff-placeholder"),
     )
 
+    reference_wkt = (
+        "POLYGON ((85.505000 28.285000, 85.520000 28.285000, "
+        "85.520000 28.297000, 85.505000 28.297000, 85.505000 28.285000))"
+    )
     request = {
         "schema_version": REQUEST_SCHEMA,
         "aoi": {"type": "Polygon", "crs": "EPSG:4326", "wkt": CROWN_WKT},
+        "scope_aoi": {"type": "Polygon", "crs": "EPSG:4326", "wkt": BOX_WKT},
+        "reference": {
+            "policy": "external_reference_polygon_component_median",
+            "polygon_wkt": reference_wkt,
+        },
         "date_range": {"start": "2026-06-20", "end": "2026-08-31", "inclusive": True},
         "hazard_mode": "ice_rock_avalanche",
         "analysis_mode": "retrospective_validation",
@@ -163,7 +172,9 @@ def test_synthetic_five_pair_aoi_pipeline_emits_verified_bundle_and_deletes_ephe
     assert result["motion_dynamics"]["risk_score"] is None
     assert result["motion_dynamics"]["hazard_detection_status"] == "NOT_EVALUATED"
     assert len(result["motion_dynamics"]["pairs"]) == 5
-    assert result["reference_policy"] == "local_context_component_median"
+    assert result["reference_policy"] == "external_reference_polygon_component_median"
+    assert result["request"]["reference"]["polygon_wkt"] == reference_wkt
+    assert result["request"]["scope_aoi"]["wkt"] == BOX_WKT
     assert result["pair_measurement_counts"] == {
         "requested": 5, "metrics_computed": 5, "insufficient_data": 0,
     }
@@ -172,6 +183,12 @@ def test_synthetic_five_pair_aoi_pipeline_emits_verified_bundle_and_deletes_ephe
     assert all(pair["status"] == "METRICS_COMPUTED" for pair in result["pairs"])
     assert all(pair["grid_identity_sha256"] for pair in result["pairs"])
     assert all(pair["source_sha256"] for pair in result["pairs"])
+    assert all(pair["reference_policy"] == "APPLIED_EXTERNAL_REFERENCE_POLYGON_COMPONENT_MEDIAN" for pair in result["pairs"])
+    assert all(pair["reference_geometry"]["type"] == "INDEPENDENT_USER_POLYGON" for pair in result["pairs"])
+    assert all(pair["reference_geometry"]["stability_status"] == "USER_SELECTED_NOT_INDEPENDENTLY_VERIFIED" for pair in result["pairs"])
+    assert all(pair["reference_geometry"]["overlap_status"] == "NO_OVERLAP_OR_TOUCH_VERIFIED_ON_PROJECTED_POLYGONS" for pair in result["pairs"])
+    assert all(pair["reference_geometry"]["outer_aoi_status"] == "BOTH_POLYGONS_VERIFIED_INSIDE_OUTER_AOI" for pair in result["pairs"])
+    assert all(pair["background_correction"]["background_valid_pixels"] == pair["reference_geometry"]["reference_grid_cells"] for pair in result["pairs"])
     for pair in result["pairs"]:
         identity = parse_granule_identity(pair["granule_name"])
         reference_midpoint = identity.reference_start + (identity.reference_end - identity.reference_start) / 2
