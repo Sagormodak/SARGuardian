@@ -11,7 +11,7 @@ def test_default_branch_dispatcher_pins_validated_backend_two_polygon_workflow()
     science_sha = "bfde7dde8ada92a03054cd8dbad8daa7a5c119f8"
     assert "workflow_dispatch:" in text
     assert "run-name: Known Place Analysis ${{ inputs.request_id }}" in text
-    assert f"know-place-aoi-analysis.yml@{science_sha}" in text
+    assert f".github/workflows/know-place-aoi-analysis.yml@{science_sha}" in text
     assert f'backend_science_ref: "{science_sha}"' in text
     assert "secrets: inherit" in text
     assert "consent_marker: ${{ inputs.consent_marker }}" in text
@@ -38,4 +38,4 @@ def test_dispatcher_forwards_independent_outer_measurement_and_reference_geometr
         "allowed_release_ids",
         "candidate_context_json",
     ):
-        assert f"      {field}: ${{ inputs.{field} }}" in text
+        assert f"      {field}: ${{{{ inputs.{field} }}}}" in text
