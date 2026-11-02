@@ -75,6 +75,19 @@ on:
         required: false
         default: false
         type: boolean
+    secrets:
+      EARTHDATA_TOKEN:
+        required: false
+      EARTHDATA_USERNAME:
+        required: false
+      EARTHDATA_PASSWORD:
+        required: false
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON:
+        required: false
+      GOOGLE_DRIVE_REFRESH_TOKEN:
+        required: false
+      GOOGLE_DRIVE_PARENT_FOLDER_ID:
+        required: false
 
 permissions:
   contents: read
