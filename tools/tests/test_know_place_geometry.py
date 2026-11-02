@@ -120,6 +120,7 @@ def test_independent_measurement_and_reference_polygons_are_rasterized_separatel
     )
 
     assert roi.reference_mask is not None
+    assert roi.reference_geometry_mode == "INDEPENDENT_REFERENCE_POLYGON"
     assert roi.crown_mask.any()
     assert roi.reference_mask.any()
     assert not np.any(roi.crown_mask & roi.reference_mask)
@@ -135,13 +136,29 @@ def test_independent_measurement_and_reference_polygons_are_rasterized_separatel
     assert envelope.startswith("POLYGON ((")
 
 
+def test_enclosing_reference_region_excludes_measurement_from_background_mask():
+    xs, ys = _two_polygon_grid(MEASUREMENT_WKT, BOX_WKT)
+    roi = build_independent_reference_roi(
+        xs, ys, 32645,
+        measurement_wkt=MEASUREMENT_WKT,
+        reference_wkt=BOX_WKT,
+    )
+
+    assert roi.reference_geometry_mode == "ENCLOSING_REFERENCE_REGION_MINUS_MEASUREMENT"
+    assert roi.crown_mask.any()
+    assert roi.reference_mask is not None and roi.reference_mask.any()
+    assert not np.any(roi.crown_mask & roi.reference_mask)
+    assert np.array_equal(roi.box_mask, roi.crown_mask | roi.reference_mask)
+    assert int(roi.crown_mask.sum() + roi.reference_mask.sum()) == int(roi.box_mask.sum())
+
+
 @pytest.mark.parametrize(
     "reference_wkt",
     [
         # Partial overlap.
         "POLYGON ((85.535 28.290, 85.550 28.290, 85.550 28.310, 85.535 28.310, 85.535 28.290))",
-        # Contains the measurement polygon.
-        BOX_WKT,
+        # Reverse containment: reference is smaller and inside measurement.
+        "POLYGON ((85.528 28.290, 85.535 28.290, 85.535 28.294, 85.528 28.294, 85.528 28.290))",
         # Touches the measurement polygon along its eastern edge.
         "POLYGON ((85.540000 28.284700, 85.550000 28.284700, 85.550000 28.297000, 85.540000 28.297000, 85.540000 28.284700))",
     ],
