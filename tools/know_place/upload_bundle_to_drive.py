@@ -110,9 +110,8 @@ def upload_and_verify(archive_path: Path, *, folder_name: str) -> dict[str, Any]
     # is a writable folder. Do not require files.get(parent_id) here; that
     # extra metadata lookup is not used by the working AOI worker path and has
     # been returning a false-negative 404 for this same configured destination.
-    client.list_children(parent_id)
-
-    matches = [entry for entry in client.list_children(parent_id) if entry.get("name") == folder_name]
+    parent_children = client.list_children(parent_id)
+    matches = [entry for entry in parent_children if entry.get("name") == folder_name]
     if any(entry.get("mimeType") != DRIVE_FOLDER_MIME for entry in matches):
         raise BundleUploadError("DRIVE_BUNDLE_ENTRY_NAME_CONFLICT")
     if len(matches) > 1:
