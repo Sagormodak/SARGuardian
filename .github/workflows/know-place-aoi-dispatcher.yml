@@ -123,9 +123,9 @@ concurrency:
 jobs:
   known-place-aoi-analysis:
     name: Run pinned Known Place two-polygon science workflow
-    uses: moshiour0/SARGuardian-backend/.github/workflows/know-place-aoi-analysis.yml@4182aa2589195a2cf734bc21a7d6632b98b55aa5
+    uses: moshiour0/SARGuardian-backend/.github/workflows/know-place-aoi-analysis.yml@7fe6a767d808c1510e63c8463f79f21c1a1ef1e4
     with:
-      backend_science_ref: "4182aa2589195a2cf734bc21a7d6632b98b55aa5"
+      backend_science_ref: "7fe6a767d808c1510e63c8463f79f21c1a1ef1e4"
       aoi_wkt: ${{ inputs.aoi_wkt }}
       scope_aoi_wkt: ${{ inputs.scope_aoi_wkt }}
       start_date: ${{ inputs.start_date }}
