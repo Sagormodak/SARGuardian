@@ -6,6 +6,7 @@ import {
   pointInProjectedRing,
   previewCellCorners,
   projectedRingToLatLng,
+  type KnownPlaceMapPreview,
   type KnownPlaceVectorSample,
   type MapLatLng,
 } from './knownPlaceMapGeometry';
@@ -14,8 +15,9 @@ import { configureGoogleMaps } from '../../src/googleMapsLoader';
 type RasterOverlayHandle = google.maps.OverlayView & { redraw: () => void };
 
 function makeRasterOverlay(map: google.maps.Map, pair: KnownPlacePairResult): RasterOverlayHandle | null {
-  const preview = pair.map_preview;
-  if (!preview) return null;
+  const rawPreview = pair.map_preview;
+  if (!rawPreview) return null;
+  const preview: KnownPlaceMapPreview = rawPreview;
 
   const values = preview.values.flat().filter((value): value is number =>
     typeof value === 'number' && Number.isFinite(value),
