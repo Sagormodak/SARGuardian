@@ -130,6 +130,7 @@ export function KnownPlaceResultsDashboard({
   }, null);
   const weakSupportPairs = allPairs.filter((pair) => typeof pair.valid_aoi_fraction === 'number' && pair.valid_aoi_fraction < 0.3);
   const flaggedPairs = allPairs.filter((pair) => (pair.high_magnitude_flagged_pixels ?? 0) > 0);
+  const insufficientUncertaintyPairs = allPairs.filter((pair) => pair.spatial_uncertainty_status === 'INSUFFICIENT_SPATIAL_BLOCKS');
   const rawRunUrl = results?.run.html_url;
 
   async function handleDownload(): Promise<void> {
@@ -294,6 +295,10 @@ export function KnownPlaceResultsDashboard({
                   instantaneous or forecast velocities.
                 </p>
                 <p>
+                  {insufficientUncertaintyPairs.length} of {allPairs.length} interval(s) do not have enough spatially independent blocks
+                  for the configured bootstrap uncertainty method. No valid spatial confidence interval is available for those pairs.
+                </p>
+                <p>
                   GOFF horizontal motion assumes zero vertical motion and does not measure 3-D displacement.
                   Reference-ground stability is not independently verified.
                 </p>
@@ -349,7 +354,7 @@ export function KnownPlaceResultsDashboard({
                 <div className="known-place-table-scroll">
                   <table>
                     <thead>
-                      <tr><th>Acquisition pair</th><th>Median rate</th><th>Valid support</th><th>Flagged pixels</th><th>Coherence R</th><th>QC</th></tr>
+                      <tr><th>Acquisition pair</th><th>Median rate</th><th>Valid support</th><th>Flagged pixels</th><th>Coherence R</th><th>Spatial uncertainty</th><th>QC</th></tr>
                     </thead>
                     <tbody>
                       {filteredPairs.map((pair) => (
@@ -359,6 +364,7 @@ export function KnownPlaceResultsDashboard({
                           <td>{supportLabel(pair)} <small>({percent(pair.valid_aoi_fraction)})</small></td>
                           <td>{pair.high_magnitude_flagged_pixels ?? '—'}</td>
                           <td>{number(pair.median_directional_coherence_R, 3)}</td>
+                          <td>{pair.spatial_uncertainty_status || 'Not reported'}</td>
                           <td>
                             {(pair.crosses_registered_instrument_gap || (pair.valid_aoi_fraction ?? 1) < 0.3 || (pair.high_magnitude_flagged_pixels ?? 0) > 0)
                               ? <span className="known-place-qc-badge is-caution">Review</span>
