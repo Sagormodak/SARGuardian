@@ -111,7 +111,7 @@ export function KnownPlaceResultsDashboard({
   }, [requestId, user, attempt]);
 
   const result = results?.result;
-  const allPairs = result?.pairs ?? [];
+  const allPairs = useMemo(() => results?.result.pairs ?? [], [results]);
   const filteredPairs = useMemo(
     () => allPairs.filter((pair) => trackFilter === 'all' || `${pair.track}-${pair.direction}` === trackFilter),
     [allPairs, trackFilter],
@@ -121,7 +121,7 @@ export function KnownPlaceResultsDashboard({
     if (rate(pair) === null) return best;
     return !best || (rate(pair) ?? 0) > (rate(best) ?? 0) ? pair : best;
   }, null);
-  const weakSupportPairs = allPairs.filter((pair) => (pair.valid_aoi_fraction ?? 0) < 0.3);
+  const weakSupportPairs = allPairs.filter((pair) => typeof pair.valid_aoi_fraction === 'number' && pair.valid_aoi_fraction < 0.3);
   const flaggedPairs = allPairs.filter((pair) => (pair.high_magnitude_flagged_pixels ?? 0) > 0);
   const rawRunUrl = results?.run.html_url;
 
