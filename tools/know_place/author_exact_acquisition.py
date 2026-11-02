@@ -348,7 +348,7 @@ def authenticated_preflight(
         "checked_at_utc": _utc_now(),
         "collection_concept_id": CMR_COLLECTION_CONCEPT_ID,
         "science_acquisition_module_sha256": acquisition_sha,
-        "probe_method": "Authenticated HEAD with bounded metadata-only fallback to HTTP Range bytes=0-0 where server disallows HEAD",
+        "probe_method": "Authenticated HEAD with bounded metadata-only fallback to a streamed HTTP Range bytes=0-0 probe when ASF responds 400, 405 or 501; no response body is consumed",
         "product_count": len(probe_rows),
         "passed_count": sum(row["probe_status"] == "PASS" for row in probe_rows),
         "blocking_count": len(blockers),
