@@ -11,6 +11,7 @@ type ValidationResult = { valid: boolean; message: string };
 type Props = {
   outerAoiWkt: string | null;
   initialMeasurementWkt?: string | null;
+  initialReferenceWkt?: string | null;
   onMeasurementChange: (wkt: string) => void;
   onReferenceChange: (wkt: string) => void;
   onValidationChange: (result: ValidationResult) => void;
@@ -145,6 +146,7 @@ function validatePolygonPair(
 export function KnownPlacePolygonEditor({
   outerAoiWkt,
   initialMeasurementWkt,
+  initialReferenceWkt,
   onMeasurementChange,
   onReferenceChange,
   onValidationChange,
@@ -173,6 +175,7 @@ export function KnownPlacePolygonEditor({
   const [referenceText, setReferenceText] = useState('');
   const [geometryError, setGeometryError] = useState('');
   const initialMeasurementAppliedRef = useRef(false);
+  const initialReferenceAppliedRef = useRef(false);
 
   drawingRoleRef.current = drawingRole;
 
@@ -209,6 +212,21 @@ export function KnownPlacePolygonEditor({
       setGeometryError(error instanceof Error ? error.message : 'The suggested candidate polygon could not be loaded.');
     }
   }, [initialMeasurementWkt]);
+
+  useEffect(() => {
+    if (!initialReferenceWkt || initialReferenceAppliedRef.current) return;
+    initialReferenceAppliedRef.current = true;
+    try {
+      const points = parsePolygonWkt(initialReferenceWkt);
+      if (points.length > 500) throw new Error('The saved reference polygon is too detailed to edit safely. Draw a simpler background polygon.');
+      if (hasSelfIntersection(points)) throw new Error('The saved reference polygon crosses itself.');
+      setReference(points);
+      setReferenceClosed(true);
+      setReferenceText(initialReferenceWkt);
+    } catch (error) {
+      setGeometryError(error instanceof Error ? error.message : 'The saved reference polygon could not be loaded.');
+    }
+  }, [initialReferenceWkt]);
 
   useEffect(() => {
     try {
