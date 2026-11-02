@@ -366,7 +366,6 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
           <div><span>End date</span><strong>{endDate || 'Not selected'}</strong></div>
         </div>
         <p className="catalog-notice">The original map AOI is retained as an outer selection boundary. The Measurement Polygon is the area whose pairwise motion is summarized; the separate Reference Polygon supplies background comparison. A selected reference area is not assumed to be stable ground.</p>
-        {!aoiWkt && <p className="catalog-error" role="alert">A valid outer AOI is required. Go back to the map and draw your polygon.</p>}
         <section className="known-place-paper-reproduction" aria-labelledby="known-place-paper-title">
           <div className="known-place-paper-heading">
             <span className="result-kicker">FIXED RESEARCH BENCHMARK · AUTHOR-EXACT P05023</span>
@@ -411,6 +410,7 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
           <span className="result-kicker">CUSTOM MEASUREMENT · GENERIC GOFF METHOD</span>
           <h2 id="known-place-custom-title">Two-polygon known-place measurement</h2>
           <p>This separate path measures a user-drawn target polygon relative to a disjoint user-drawn background polygon on the selected AOI/date window. It is not the author-exact paper method and reports PAPER_REPRODUCTION_STATUS=NOT_EVALUATED_GENERIC_AOI.</p>
+        {!aoiWkt && <p className="catalog-error" role="alert">A valid outer AOI is required for custom measurement. Go back to the map and draw your polygon.</p>}
         {candidateTransfer && <div className="catalog-notice known-place-candidate-handoff" role="status">
           <strong>Suggested Measurement Polygon imported from Find Displacements</strong>
           <span>{candidateTransfer.candidate.candidateId} · GOFF offset-anomaly candidate · {candidateTransfer.candidate.supportPairs} supporting pair(s) · {candidateTransfer.candidate.pixelCount} pixels</span>
