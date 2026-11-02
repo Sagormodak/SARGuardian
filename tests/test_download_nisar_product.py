@@ -116,6 +116,47 @@ def test_probe_direct_product_uses_range_get_when_head_is_not_supported():
     assert size == 987654321
 
 
+def test_probe_direct_product_uses_one_byte_range_when_head_returns_400():
+    granule = WANTED.replace("GUNW", "GOFF")
+    url = download.direct_product_url(granule, "GOFF", "PROVISIONAL")
+    head = FakeResponse(400, reason="Bad Request")
+    ranged = FakeResponse(206, {"Content-Range": "bytes 0-0/987654321"}, reason="Partial Content")
+    session = FakeSession(head_response=head, get_response=ranged)
+
+    _record, returned_session, size = download.probe_direct_product(
+        FakeSourceAcquisition(session), granule, "GOFF", "PROVISIONAL"
+    )
+
+    assert returned_session is session
+    assert head.closed is True
+    assert session.get_calls == [(
+        url,
+        {
+            "headers": {"Range": "bytes=0-0"},
+            "allow_redirects": True,
+            "stream": True,
+            "timeout": 60,
+        },
+    )]
+    assert ranged.closed is True
+    assert size == 987654321
+
+
+def test_probe_direct_product_rejects_range_response_that_does_not_honor_one_byte_request():
+    head = FakeResponse(400, reason="Bad Request")
+    ranged = FakeResponse(200, {"Content-Length": "987654321"}, reason="OK")
+    session = FakeSession(head_response=head, get_response=ranged)
+
+    with pytest.raises(RuntimeError, match="DIRECT_PRODUCT_RANGE_PROBE_NOT_HONOURED"):
+        download.probe_url_content_length(
+            session,
+            "https://nisar.asf.earthdatacloud.nasa.gov/NISAR/example.h5",
+        )
+
+    assert head.closed is True
+    assert ranged.closed is True
+
+
 def test_probe_direct_product_fails_closed_for_missing_direct_object():
     response = FakeResponse(404, reason="Not Found")
     session = FakeSession(head_response=response)
