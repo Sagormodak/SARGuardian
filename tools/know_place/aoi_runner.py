@@ -1510,6 +1510,27 @@ def run_aoi_analysis(
                 pass
         code = getattr(exc, "code", str(exc).split(":", 1)[0]) or type(exc).__name__
         safe = getattr(exc, "safe_message", str(exc))
+        failure_detail: dict[str, Any] = {
+            "code": str(code)[:100],
+            "safe_message": str(safe)[:300],
+        }
+        selection_diagnostics = getattr(exc, "details", None)
+        if isinstance(selection_diagnostics, dict) and selection_diagnostics:
+            # These diagnostics contain only catalogue identities and pair keys;
+            # no signed URLs, credentials, local paths, or raw source bytes.
+            failure_detail["selection_diagnostics"] = selection_diagnostics
+            if code == "AMBIGUOUS_PRODUCT_RELEASE_VARIANTS":
+                failure_detail["required_user_action"] = (
+                    "Set product_selection.allowed_release_ids or preferred_granules "
+                    "to the exact intended source series. Rerun catalog-only preflight; "
+                    "the engine will never silently substitute a release."
+                )
+                print("PRODUCT_RELEASE_SELECTION_REQUIRED=true")
+                print("PRODUCT_RELEASE_CANDIDATE_IDS=" + json.dumps(
+                    selection_diagnostics.get("candidate_release_ids", []), sort_keys=True
+                ))
+                for index, pair in enumerate(selection_diagnostics.get("ambiguous_pairs", [])[:20], start=1):
+                    print("AMBIGUOUS_RELEASE_PAIR_{}=".format(index) + json.dumps(pair, sort_keys=True))
         failure = {
             "schema_version": "know-place-aoi-result/1.0",
             "engine_version": ENGINE_VERSION,
@@ -1519,9 +1540,9 @@ def run_aoi_analysis(
             "paper_reproduction_status": "NOT_EVALUATED",
             "hazard_detection_status": "NOT_EVALUATED",
             "request_sha256": request.request_sha256,
-            "failure": {"code": str(code)[:100], "safe_message": str(safe)[:300]},
+            "failure": failure_detail,
         }
-        (run_dir / "failure.json").write_text(json.dumps(failure, indent=2) + "\n", encoding="utf-8")
+        (run_dir / "failure.json").write_text(json.dumps(failure, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         raise AOIRunError(str(code)[:100], str(safe)[:300]) from None
     except Exception as exc:
         for pending_path in list(locals().get("ephemeral_pending_paths", [])):
