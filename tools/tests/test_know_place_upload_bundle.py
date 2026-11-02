@@ -37,7 +37,6 @@ def test_derived_bundle_contains_all_run_outputs_and_hashes(tmp_path):
     result = uploader.create_derived_bundle(run_dir, archive)
 
     assert result["raw_h5_included"] is False
-    assert "parent" in client.listed_parents
     assert result["archive_bytes"] == archive.stat().st_size
     assert result["archive_sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
     with zipfile.ZipFile(archive) as package:
@@ -118,6 +117,7 @@ def test_drive_bundle_upload_checks_identity_and_downloaded_bytes(tmp_path, monk
     assert result["remote_bytes_verified"] is True
     assert result["bundle_sha256_local"] == result["bundle_sha256_downloaded_from_drive"]
     assert result["raw_h5_included"] is False
+    assert "parent" in client.listed_parents
 
 
 def test_drive_upload_fails_closed_for_wrong_storage_identity(tmp_path, monkeypatch):
