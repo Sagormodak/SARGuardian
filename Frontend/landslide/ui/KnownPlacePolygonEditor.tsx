@@ -173,6 +173,8 @@ export function KnownPlacePolygonEditor({
   const [referenceClosed, setReferenceClosed] = useState(false);
   const [measurementText, setMeasurementText] = useState('');
   const [referenceText, setReferenceText] = useState('');
+  const [measurementWktDirty, setMeasurementWktDirty] = useState(false);
+  const [referenceWktDirty, setReferenceWktDirty] = useState(false);
   const [geometryError, setGeometryError] = useState('');
   const initialMeasurementAppliedRef = useRef(false);
   const initialReferenceAppliedRef = useRef(false);
@@ -184,10 +186,15 @@ export function KnownPlacePolygonEditor({
     try { return parsePolygonWkt(outerAoiWkt); } catch { return null; }
   }, [outerAoiWkt]);
 
-  const validation = useMemo(
+  const geometryValidation = useMemo(
     () => validatePolygonPair(outerCoordinates, measurement, reference, measurementClosed, referenceClosed),
     [outerCoordinates, measurement, reference, measurementClosed, referenceClosed],
   );
+  const validation = useMemo(() => {
+    if (measurementWktDirty) return { valid: false, message: 'The Measurement WKT draft has not been applied. Apply it or redraw the polygon before submitting.' };
+    if (referenceWktDirty) return { valid: false, message: 'The Reference WKT draft has not been applied. Apply it or redraw the polygon before submitting.' };
+    return geometryValidation;
+  }, [geometryValidation, measurementWktDirty, referenceWktDirty]);
 
   const measurementArea = measurementClosed ? calculateGeodesicAreaKm2(measurement) : 0;
   const referenceArea = referenceClosed ? calculateGeodesicAreaKm2(reference) : 0;
@@ -206,6 +213,7 @@ export function KnownPlacePolygonEditor({
       setMeasurement(points);
       setMeasurementClosed(true);
       setMeasurementText(initialMeasurementWkt);
+      setMeasurementWktDirty(false);
       setActiveRole('measurement');
       setGeometryError('A candidate-derived Suggested Measurement Polygon was loaded. Review and edit its boundary before running measurement.');
     } catch (error) {
@@ -223,6 +231,7 @@ export function KnownPlacePolygonEditor({
       setReference(points);
       setReferenceClosed(true);
       setReferenceText(initialReferenceWkt);
+      setReferenceWktDirty(false);
     } catch (error) {
       setGeometryError(error instanceof Error ? error.message : 'The saved reference polygon could not be loaded.');
     }
@@ -232,6 +241,7 @@ export function KnownPlacePolygonEditor({
     try {
       const wkt = measurementClosed && measurement.length >= 3 ? polygonToWkt(measurement) : '';
       setMeasurementText(wkt);
+      setMeasurementWktDirty(false);
       onMeasurementChange(wkt);
     } catch {
       setMeasurementText('');
@@ -243,6 +253,7 @@ export function KnownPlacePolygonEditor({
     try {
       const wkt = referenceClosed && reference.length >= 3 ? polygonToWkt(reference) : '';
       setReferenceText(wkt);
+      setReferenceWktDirty(false);
       onReferenceChange(wkt);
     } catch {
       setReferenceText('');
@@ -421,11 +432,13 @@ export function KnownPlacePolygonEditor({
       setMeasurement([]);
       setMeasurementClosed(false);
       setMeasurementText('');
+      setMeasurementWktDirty(false);
       onMeasurementChange('');
     } else {
       setReference([]);
       setReferenceClosed(false);
       setReferenceText('');
+      setReferenceWktDirty(false);
       onReferenceChange('');
     }
   };
@@ -459,11 +472,13 @@ export function KnownPlacePolygonEditor({
       setMeasurement([]);
       setMeasurementClosed(false);
       setMeasurementText('');
+      setMeasurementWktDirty(false);
       onMeasurementChange('');
     } else {
       setReference([]);
       setReferenceClosed(false);
       setReferenceText('');
+      setReferenceWktDirty(false);
       onReferenceChange('');
     }
     setDrawingRole(null);
@@ -480,9 +495,11 @@ export function KnownPlacePolygonEditor({
       if (role === 'measurement') {
         setMeasurement(points);
         setMeasurementClosed(true);
+        setMeasurementWktDirty(false);
       } else {
         setReference(points);
         setReferenceClosed(true);
+        setReferenceWktDirty(false);
       }
     } catch (error) {
       // Keep the user's pasted text intact so it can be edited and applied again.
@@ -532,12 +549,12 @@ export function KnownPlacePolygonEditor({
       <div className="known-place-geometry-fields">
         <label className="aoi-job-label">
           <span>Measurement Polygon WKT</span>
-          <textarea rows={2} value={measurementText} onChange={(event) => setMeasurementText(event.target.value)} spellCheck={false} placeholder="Draw on the map or paste a closed WGS84 POLYGON WKT" />
+          <textarea rows={2} value={measurementText} onChange={(event) => { setMeasurementText(event.target.value); setMeasurementWktDirty(true); }} spellCheck={false} placeholder="Draw on the map or paste a closed WGS84 POLYGON WKT" />
           <button type="button" className="known-place-apply-wkt" onClick={() => readWkt('measurement', measurementText)}>Apply measurement WKT</button>
         </label>
         <label className="aoi-job-label">
           <span>Reference Polygon WKT</span>
-          <textarea rows={2} value={referenceText} onChange={(event) => setReferenceText(event.target.value)} spellCheck={false} placeholder="Draw on the map or paste a separate closed WGS84 POLYGON WKT" />
+          <textarea rows={2} value={referenceText} onChange={(event) => { setReferenceText(event.target.value); setReferenceWktDirty(true); }} spellCheck={false} placeholder="Draw on the map or paste a separate closed WGS84 POLYGON WKT" />
           <button type="button" className="known-place-apply-wkt" onClick={() => readWkt('reference', referenceText)}>Apply reference WKT</button>
         </label>
       </div>
