@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { KnownPlacePolygonEditor } from './KnownPlacePolygonEditor';
+import { parsePolygonWkt } from '../engine/investigation';
 import type { User } from 'firebase/auth';
 import {
   getKnownPlaceAnalysisStatus,
@@ -27,7 +28,6 @@ function consumeCandidateTransfer(): CandidateTransfer | null {
   try {
     const raw = window.sessionStorage.getItem('sarguardian.knownPlaceCandidate.v1');
     if (!raw) return null;
-    window.sessionStorage.removeItem('sarguardian.knownPlaceCandidate.v1');
     const value = JSON.parse(raw) as Partial<CandidateTransfer>;
     if (value.schemaVersion !== 'sarguardian-known-place-candidate/1.0') return null;
     if (typeof value.measurementWkt !== 'string' || !value.measurementWkt.startsWith('POLYGON')) return null;
@@ -62,6 +62,41 @@ function storageKey(uid: string): string {
   return `sarguardian.knownPlaceAnalysis.v1:${uid}`;
 }
 
+function geometryDraftKey(uid: string): string {
+  return `sarguardian.knownPlaceGeometry.v1:${uid}`;
+}
+
+type GeometryDraft = { measurementWkt: string; referenceWkt: string };
+
+function loadGeometryDraft(uid: string): GeometryDraft {
+  if (typeof window === 'undefined') return { measurementWkt: '', referenceWkt: '' };
+  try {
+    const raw = window.sessionStorage.getItem(geometryDraftKey(uid));
+    if (!raw) return { measurementWkt: '', referenceWkt: '' };
+    const parsed = JSON.parse(raw) as Partial<GeometryDraft>;
+    return {
+      measurementWkt: typeof parsed.measurementWkt === 'string' ? parsed.measurementWkt : '',
+      referenceWkt: typeof parsed.referenceWkt === 'string' ? parsed.referenceWkt : '',
+    };
+  } catch {
+    return { measurementWkt: '', referenceWkt: '' };
+  }
+}
+
+function samePolygonGeometry(firstWkt: string, secondWkt: string): boolean {
+  try {
+    const first = parsePolygonWkt(firstWkt);
+    const second = parsePolygonWkt(secondWkt);
+    return first.length === second.length && first.every((point, index) =>
+      Math.abs(point[0] - second[index][0]) <= 1e-9
+      && Math.abs(point[1] - second[index][1]) <= 1e-9,
+    );
+  } catch {
+    return false;
+  }
+}
+
+
 function loadStoredRun(uid: string): StoredRun | null {
   if (typeof window === 'undefined') return null;
   try {
@@ -92,20 +127,31 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
   const [direction, setDirection] = useState<'ANY' | 'A' | 'D'>('ANY');
   const [coherenceNeighbours, setCoherenceNeighbours] = useState<'1' | '5' | '10' | '15' | '20' | '25'>('1');
   const [allowedReleaseIds, setAllowedReleaseIds] = useState('');
-  const [measurementWkt, setMeasurementWkt] = useState('');
-  const [referenceWkt, setReferenceWkt] = useState('');
+  const [candidateTransfer] = useState<CandidateTransfer | null>(() => consumeCandidateTransfer());
+  const [geometryDraft] = useState<GeometryDraft>(() => loadGeometryDraft(user.uid));
+  const [measurementWkt, setMeasurementWkt] = useState(() => geometryDraft.measurementWkt || candidateTransfer?.measurementWkt || '');
+  const [referenceWkt, setReferenceWkt] = useState(() => geometryDraft.referenceWkt);
   const [polygonValidation, setPolygonValidation] = useState({ valid: false, message: 'Draw and close both analysis polygons.' });
   const [geometryHeight, setGeometryHeight] = useState('');
   const [confirmRawDownloads, setConfirmRawDownloads] = useState(false);
   const [pendingAction, setPendingAction] = useState<'dry-run' | 'analysis' | null>(null);
   const [run, setRun] = useState<StoredRun | null>(() => loadStoredRun(user.uid));
-  const [candidateTransfer] = useState<CandidateTransfer | null>(() => consumeCandidateTransfer());
   const [error, setError] = useState('');
   const [pollError, setPollError] = useState('');
   const handleMeasurementChange = useCallback((wkt: string) => setMeasurementWkt(wkt), []);
   const handleReferenceChange = useCallback((wkt: string) => setReferenceWkt(wkt), []);
   const handlePolygonValidation = useCallback((result: { valid: boolean; message: string }) => setPolygonValidation(result), []);
   const canSubmitGeometry = Boolean(aoiWkt && measurementWkt && referenceWkt && polygonValidation.valid);
+
+  useEffect(() => {
+    try {
+      if (!measurementWkt && !referenceWkt) {
+        sessionStorage.removeItem(geometryDraftKey(user.uid));
+      } else {
+        sessionStorage.setItem(geometryDraftKey(user.uid), JSON.stringify({ measurementWkt, referenceWkt }));
+      }
+    } catch { /* session storage is optional; current component state remains authoritative */ }
+  }, [measurementWkt, referenceWkt, user.uid]);
 
   useEffect(() => {
     if (!run) {
@@ -199,6 +245,7 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
           geometry_original_vertices: candidateTransfer.candidate.geometryOriginalVertices,
           geometry_suggested_vertices: candidateTransfer.candidate.geometrySuggestedVertices,
           geometry_simplified: candidateTransfer.candidate.geometrySimplified,
+          geometry_edited: !samePolygonGeometry(measurementWkt, candidateTransfer.measurementWkt),
           interpretation: candidateTransfer.candidate.interpretation,
         } : null,
         geometry_height_m: height,
@@ -206,6 +253,10 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
         confirm_raw_downloads: executeDownloads && confirmRawDownloads,
       }, user);
       setRun({ ...submitted, execute_downloads: executeDownloads });
+      try {
+        sessionStorage.removeItem('sarguardian.knownPlaceCandidate.v1');
+        sessionStorage.removeItem(geometryDraftKey(user.uid));
+      } catch { /* accepted workflow request remains authoritative */ }
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : 'Could not submit Known Place Analysis.');
     } finally {
@@ -239,7 +290,8 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
         </div>}
         <KnownPlacePolygonEditor
           outerAoiWkt={aoiWkt}
-          initialMeasurementWkt={candidateTransfer?.measurementWkt ?? null}
+          initialMeasurementWkt={measurementWkt || null}
+          initialReferenceWkt={referenceWkt || null}
           onMeasurementChange={handleMeasurementChange}
           onReferenceChange={handleReferenceChange}
           onValidationChange={handlePolygonValidation}
