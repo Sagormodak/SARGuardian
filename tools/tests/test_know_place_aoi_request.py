@@ -279,6 +279,7 @@ def test_candidate_context_rejects_gunw_cross_family_handoff_and_oversized_metad
         "geometry_original_vertices": 10,
         "geometry_suggested_vertices": 10,
         "geometry_simplified": False,
+        "geometry_edited": False,
         "interpretation": "Offset anomaly candidate; not measured ground motion.",
         "pair_intervals": [],
         "product_ids": ["P" * 600],
