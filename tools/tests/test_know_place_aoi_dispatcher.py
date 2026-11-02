@@ -8,7 +8,7 @@ def test_default_branch_dispatcher_pins_validated_backend_two_polygon_workflow()
     workflow_path = repository_root / ".github" / "workflows" / "know-place-aoi-dispatcher.yml"
     text = workflow_path.read_text(encoding="utf-8")
 
-    science_sha = "bfde7dde8ada92a03054cd8dbad8daa7a5c119f8"
+    science_sha = "80357e5b8bec698651f6e4fc282e9d17249a8f70"
     assert "workflow_dispatch:" in text
     assert "run-name: Known Place Analysis ${{ inputs.request_id }}" in text
     assert f".github/workflows/know-place-aoi-analysis.yml@{science_sha}" in text
@@ -16,7 +16,7 @@ def test_default_branch_dispatcher_pins_validated_backend_two_polygon_workflow()
     assert "secrets: inherit" in text
     assert "consent_marker: ${{ inputs.consent_marker }}" in text
     assert "execute_downloads: ${{ inputs.execute_downloads }}" in text
-    assert 'default: false\n        type: boolean' in text
+    assert 'default: false\\n        type: boolean' in text
 
 
 def test_dispatcher_forwards_independent_outer_measurement_and_reference_geometry() -> None:
