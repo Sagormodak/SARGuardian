@@ -4,8 +4,12 @@ import hashlib
 import json
 from pathlib import Path
 import zipfile
+import sys
+from urllib.parse import parse_qs, urlparse
 
 import pytest
+
+import app.storage.drive_client as drive_client_module
 
 from app.storage.drive_client import DriveClient, DriveClientError
 import tools.know_place.upload_bundle_to_drive as uploader
@@ -162,4 +166,114 @@ def test_drive_client_rejects_malformed_oauth_client_json(monkeypatch):
 
     with pytest.raises(DriveClientError, match="DRIVE_CONFIGURATION_INVALID"):
         DriveClient.from_environment()
+
+
+
+def _drive_query(request):
+    return parse_qs(urlparse(request.full_url).query)
+
+
+def test_drive_get_file_enables_shared_drive_lookup(monkeypatch):
+    client = DriveClient("client-id", "client-secret", "refresh-token")
+    client.access_token = "access-token"
+    captured = {}
+
+    def fake_request(request, error_code, retries=0):
+        captured["request"] = request
+        return {"id": "parent", "mimeType": uploader.DRIVE_FOLDER_MIME, "driveId": "shared-drive"}
+
+    monkeypatch.setattr(client, "_request_json", fake_request)
+
+    result = client.get_file("parent")
+
+    query = _drive_query(captured["request"])
+    assert result["driveId"] == "shared-drive"
+    assert query["supportsAllDrives"] == ["true"]
+    assert query["fields"] == ["id,name,mimeType,parents,driveId"]
+
+
+def test_drive_list_children_includes_shared_drives_and_all_pages(monkeypatch):
+    client = DriveClient("client-id", "client-secret", "refresh-token")
+    client.access_token = "access-token"
+    responses = [
+        {"files": [{"id": "first", "name": "one"}], "nextPageToken": "next-page"},
+        {"files": [{"id": "second", "name": "two"}]},
+    ]
+    requests = []
+
+    def fake_request(request, error_code, retries=0):
+        requests.append(request)
+        return responses.pop(0)
+
+    monkeypatch.setattr(client, "_request_json", fake_request)
+
+    files = client.list_children("shared-folder")
+
+    assert [entry["id"] for entry in files] == ["first", "second"]
+    assert len(requests) == 2
+    first_query = _drive_query(requests[0])
+    second_query = _drive_query(requests[1])
+    for query in (first_query, second_query):
+        assert query["supportsAllDrives"] == ["true"]
+        assert query["includeItemsFromAllDrives"] == ["true"]
+        assert query["corpora"] == ["user"]
+        assert query["pageSize"] == ["1000"]
+    assert second_query["pageToken"] == ["next-page"]
+
+
+def test_drive_list_children_fails_closed_on_incomplete_search(monkeypatch):
+    client = DriveClient("client-id", "client-secret", "refresh-token")
+    client.access_token = "access-token"
+    monkeypatch.setattr(
+        client,
+        "_request_json",
+        lambda request, error_code, retries=0: {"files": [], "incompleteSearch": True},
+    )
+
+    with pytest.raises(DriveClientError, match="DRIVE_LIST_INCOMPLETE"):
+        client.list_children("shared-folder")
+
+
+def test_drive_download_file_enables_shared_drive_access(monkeypatch):
+    client = DriveClient("client-id", "client-secret", "refresh-token")
+    client.access_token = "access-token"
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self):
+            return b"verified-derived-bundle"
+
+    def fake_urlopen(request, timeout=60):
+        captured["request"] = request
+        return FakeResponse()
+
+    monkeypatch.setattr(drive_client_module, "urlopen", fake_urlopen)
+
+    assert client.download_file("shared-drive-file") == b"verified-derived-bundle"
+    assert _drive_query(captured["request"])["supportsAllDrives"] == ["true"]
+
+
+def test_bundle_uploader_logs_safe_drive_http_status(tmp_path, monkeypatch, capsys):
+    run_dir = make_run(tmp_path)
+
+    def fail_upload(*args, **kwargs):
+        raise DriveClientError("DRIVE_FILE_LOOKUP_FAILED", 404)
+
+    monkeypatch.setattr(uploader, "upload_and_verify", fail_upload)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["upload_bundle_to_drive", "--run-root", str(tmp_path), "--folder-name", "known-place-test"],
+    )
+
+    assert uploader.main() == 2
+    output = capsys.readouterr().out
+    assert "ERROR=DriveClientError:DRIVE_FILE_LOOKUP_FAILED" in output
+    assert "DRIVE_HTTP_STATUS=404" in output
 
