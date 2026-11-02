@@ -129,7 +129,7 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
   const [allowedReleaseIds, setAllowedReleaseIds] = useState('');
   const [candidateTransfer] = useState<CandidateTransfer | null>(() => consumeCandidateTransfer());
   const [geometryDraft] = useState<GeometryDraft>(() => loadGeometryDraft(user.uid));
-  const [measurementWkt, setMeasurementWkt] = useState(() => geometryDraft.measurementWkt || candidateTransfer?.measurementWkt || '');
+  const [measurementWkt, setMeasurementWkt] = useState(() => candidateTransfer?.measurementWkt || geometryDraft.measurementWkt || '');
   const [referenceWkt, setReferenceWkt] = useState(() => geometryDraft.referenceWkt);
   const [polygonValidation, setPolygonValidation] = useState({ valid: false, message: 'Draw and close both analysis polygons.' });
   const [geometryHeight, setGeometryHeight] = useState('');
