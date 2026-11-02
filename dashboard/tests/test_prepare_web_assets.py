@@ -1096,7 +1096,35 @@ if (!hasRenderableFamily("GOFF")) throw new Error("GOFF_FALLBACK_NOT_FOUND");
         self.assertIn("function transferGoffCandidate(feature)", viewer)
         self.assertIn("sarguardian.knownPlaceCandidate.v1", viewer)
         self.assertIn("GUNW LOS candidates require a separate LOS measurement workflow", viewer)
+        self.assertIn("GOFF candidate has multiple polygon components or interior rings", viewer)
+        self.assertIn("originalVertices>20000", viewer)
         self.assertIn('id="pixelTimeseriesSummary"', viewer)
+
+        if shutil.which("node"):
+            helper_start = viewer.index("function simplifyCandidateOpenPath(points,tolerance)")
+            helper_end = viewer.index("function transferGoffCandidate(feature)", helper_start)
+            helpers = viewer[helper_start:helper_end]
+            candidate_geometry_check = helpers + """
+const square = candidateFeatureMeasurementGeometry({geometry:{type:'Polygon',coordinates:[[[85,28],[85.01,28],[85.01,28.01],[85,28.01],[85,28]]]}});
+if (!square || square.simplified || square.vertices !== 5) throw new Error('SIMPLE_POLYGON_NOT_PRESERVED');
+const dense = [];
+for(let i=0;i<640;i++){const a=2*Math.PI*i/640;dense.push([85+0.01*Math.cos(a),28+0.01*Math.sin(a)]);}
+dense.push(dense[0]);
+const simplified = candidateFeatureMeasurementGeometry({geometry:{type:'Polygon',coordinates:[dense]}});
+if (!simplified || !simplified.simplified || simplified.vertices > 500 || simplified.vertices < 4) throw new Error('DENSE_POLYGON_NOT_BOUNDED');
+const first = simplified.wkt.match(/POLYGON \\(\\((.*)\\)\\)/)[1].split(', ');
+if (first.length !== simplified.vertices) throw new Error('WKT_VERTEX_COUNT_MISMATCH');
+const hole = candidateFeatureMeasurementGeometry({geometry:{type:'Polygon',coordinates:[dense,dense]}});
+if (hole !== null) throw new Error('INTERIOR_RING_MUST_NOT_BE_SILENTLY_DROPPED');
+const unsupported = candidateFeatureMeasurementGeometry({geometry:{type:'MultiPolygon',coordinates:[]}});
+if (unsupported !== null) throw new Error('MULTIPOLYGON_MUST_REQUIRE_MANUAL_DRAWING');
+const oversized = [];
+for(let i=0;i<20000;i++) oversized.push([85+0.00001*i,28+0.000001*(i%11)]);
+oversized.push(oversized[0]);
+if (candidateFeatureMeasurementGeometry({geometry:{type:'Polygon',coordinates:[oversized]}}) !== null) throw new Error('OVERSIZED_POLYGON_MUST_BE_REJECTED');
+"""
+            geometry_check = subprocess.run(["node", "-e", candidate_geometry_check], capture_output=True, text=True)
+            self.assertEqual(geometry_check.returncode, 0, geometry_check.stderr)
         self.assertIn('id="scienceStages"', viewer)
         self.assertIn('id="provenance"', viewer)
 
