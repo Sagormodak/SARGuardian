@@ -195,6 +195,8 @@ def test_synthetic_five_pair_aoi_pipeline_emits_verified_bundle_and_deletes_ephe
     assert all(pair["reference_geometry"]["overlap_status"] == "NO_OVERLAP_OR_TOUCH_VERIFIED_ON_PROJECTED_POLYGONS" for pair in result["pairs"])
     assert all(pair["reference_geometry"]["outer_aoi_status"] == "BOTH_POLYGONS_VERIFIED_INSIDE_OUTER_AOI" for pair in result["pairs"])
     assert all(pair["background_correction"]["background_valid_pixels"] == pair["reference_geometry"]["reference_grid_cells"] for pair in result["pairs"])
+    assert all(pair["background_correction"]["background_east_bias_m"] == pytest.approx(0.0, abs=1e-8) for pair in result["pairs"])
+    assert all(pair["background_correction"]["background_north_bias_m"] == pytest.approx(0.0, abs=1e-8) for pair in result["pairs"])
     for pair in result["pairs"]:
         identity = parse_granule_identity(pair["granule_name"])
         reference_midpoint = identity.reference_start + (identity.reference_end - identity.reference_start) / 2
