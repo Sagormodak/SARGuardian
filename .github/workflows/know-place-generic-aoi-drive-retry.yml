@@ -1,15 +1,15 @@
 name: Know Place Generic AOI — retry derived-only Drive retention
 
-# This workflow reuses the already-created GitHub artifact from generic AOI run
-# 40233937573. It does NOT run the AOI engine, query the product catalogue, or
-# download any raw GOFF HDF5. Its input is a derived-only artifact whose per-pair
-# raw-source cache was already cleaned by the original acquisition/analysis step.
+# This recovery workflow reuses the retained GitHub artifact from Generic Known Place run
+# 41449092466. It never runs the AOI engine, queries ASF/CMR, or downloads raw NISAR data.
+# Only derived result files are copied to Drive; HDF5 presence is explicitly rejected.
 on:
   push:
     branches:
       - feat/know-place-analysis
+      - fix/known-place-drive-shared-drive-support-20261102
     paths:
-      - "docs/know-place/GENERIC_AOI_DRIVE_RETRY_20261026.md"
+      - "docs/know-place/DRIVE_RETRY_41449092466.md"
 
 permissions:
   actions: read
@@ -21,9 +21,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
-      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
-      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
       GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
       GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
       GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
@@ -43,10 +40,10 @@ jobs:
       - name: Download the existing derived-only generic AOI artifact
         uses: actions/download-artifact@v4
         with:
-          name: know-place-aoi-40233937573-1
+          name: know-place-aoi-41449092466-1
           path: source-artifact
           repository: ${{ github.repository }}
-          run-id: 40233937573
+          run-id: 41449092466
           github-token: ${{ github.token }}
 
       - name: Verify derived inputs and prepare an isolated retry root (no source download)
@@ -93,13 +90,13 @@ jobs:
           set -euo pipefail
           python -m tools.know_place.upload_bundle_to_drive \
             --run-root drive-retry-root \
-            --folder-name "know-place-40233937573-attempt-1"
+            --folder-name "know-place-41449092466-attempt-1"
 
       - name: Upload and verify the Drive bundle receipt
         id: receipt
         shell: bash
         env:
-          RECEIPT: drive-retry-root/know-place-40233937573-attempt-1.drive-upload-receipt.json
+          RECEIPT: drive-retry-root/know-place-41449092466-attempt-1.drive-upload-receipt.json
         run: |
           set -euo pipefail
           test -s "$RECEIPT"
@@ -113,7 +110,7 @@ jobs:
           PY
           python tools/drive_resumable_upload.py \
             --root drive-retry-root \
-            --run-name "KnowPlaceGenericAOI-40233937573" \
+            --run-name "KnowPlaceGenericAOI-41449092466" \
             --files "$RECEIPT" \
             --out drive-retry-root/drive-receipt-upload.json
           python - "drive-retry-root/drive-receipt-upload.json" <<'PY'
@@ -131,7 +128,7 @@ jobs:
           {
             echo "## Generic AOI derived-only Drive retry"
             echo
-            echo "- Source run: [#40233937573](https://github.com/moshiour0/SARGuardian-backend/actions/runs/40233937573)"
+            echo "- Source run: [#41449092466](https://github.com/moshiour0/SARGuardian-backend/actions/runs/41449092466)"
             echo "- This job reuses the existing derived artifact; it performs no CMR query and no raw HDF5 download."
             if [[ "${{ steps.drive_bundle.outcome }}" == "success" && "${{ steps.receipt.outcome }}" == "success" ]]; then
               echo "- Remote derived-bundle byte verification: PASS"
@@ -146,7 +143,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: know-place-aoi-drive-retry-40233937573
+          name: know-place-aoi-drive-retry-41449092466
           path: |
             drive-retry-root/**
             source-artifact/know-place-aoi-output/*/manifest.json
