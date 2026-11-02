@@ -231,6 +231,7 @@ def test_goff_candidate_context_is_normalized_and_saved_as_provenance():
         "geometry_original_vertices": 1800,
         "geometry_suggested_vertices": 420,
         "geometry_simplified": True,
+        "geometry_edited": True,
         "interpretation": "Offset anomaly candidate; not measured ground motion.",
     }
     parsed = validate_aoi_request(payload)
@@ -238,6 +239,7 @@ def test_goff_candidate_context_is_normalized_and_saved_as_provenance():
     assert normalized["candidate_context"]["candidate_id"] == "GOFF-CANDIDATE-004"
     assert normalized["candidate_context"]["product_type"] == "GOFF"
     assert normalized["candidate_context"]["geometry_simplified"] is True
+    assert normalized["candidate_context"]["geometry_edited"] is True
     assert len(parsed.request_sha256) == 64
 
 
