@@ -11,6 +11,7 @@ from pyproj import Transformer
 
 from tools.know_place.aoi_request import REQUEST_SCHEMA
 from tools.know_place.goff_io import parse_granule_identity
+from tools.know_place.geometry import parse_polygon_wkt
 from tools.know_place import aoi_runner
 from tools.tests.test_know_place_analyze import (
     BOX_WKT,
@@ -19,6 +20,11 @@ from tools.tests.test_know_place_analyze import (
     _granule_name,
     _write_goff,
 )
+
+
+def _canonical_test_wkt(value: str) -> str:
+    ring = parse_polygon_wkt(value)
+    return "POLYGON ((" + ", ".join(f"{lon:.9f} {lat:.9f}" for lon, lat in ring) + "))"
 
 
 def test_synthetic_five_pair_aoi_pipeline_emits_verified_bundle_and_deletes_ephemeral_sources(
@@ -173,8 +179,8 @@ def test_synthetic_five_pair_aoi_pipeline_emits_verified_bundle_and_deletes_ephe
     assert result["motion_dynamics"]["hazard_detection_status"] == "NOT_EVALUATED"
     assert len(result["motion_dynamics"]["pairs"]) == 5
     assert result["reference_policy"] == "external_reference_polygon_component_median"
-    assert result["request"]["reference"]["polygon_wkt"] == reference_wkt
-    assert result["request"]["scope_aoi"]["wkt"] == BOX_WKT
+    assert result["request"]["reference"]["polygon_wkt"] == _canonical_test_wkt(reference_wkt)
+    assert result["request"]["scope_aoi"]["wkt"] == _canonical_test_wkt(BOX_WKT)
     assert result["pair_measurement_counts"] == {
         "requested": 5, "metrics_computed": 5, "insufficient_data": 0,
     }
