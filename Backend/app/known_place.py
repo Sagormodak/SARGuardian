@@ -21,15 +21,20 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .config import RuntimeSettings
 from science_adapter.geometry import validate_wkt
 
-KNOWN_PLACE_REPOSITORY = "moshiour0/SARGuardian_Dynamic"
-KNOWN_PLACE_WORKFLOW = "known-place-analysis.yml"
-KNOWN_PLACE_PAPER_WORKFLOW = "known-place-paper-reproduction.yml"
+# Generic two-polygon measurement runs in the scientific backend repository.
+KNOWN_PLACE_REPOSITORY = "moshiour0/SARGuardian-backend"
+KNOWN_PLACE_WORKFLOW = "know-place-aoi-dispatcher.yml"
 KNOWN_PLACE_REF = "main"
 KNOWN_PLACE_WORKFLOW_PAGE = (
     f"https://github.com/{KNOWN_PLACE_REPOSITORY}/actions/workflows/{KNOWN_PLACE_WORKFLOW}"
 )
+
+# The fixed author-exact paper launcher remains separate from the generic AOI workflow.
+KNOWN_PLACE_PAPER_REPOSITORY = "moshiour0/SARGuardian_Dynamic"
+KNOWN_PLACE_PAPER_WORKFLOW = "known-place-paper-reproduction.yml"
+KNOWN_PLACE_PAPER_REF = "main"
 KNOWN_PLACE_PAPER_WORKFLOW_PAGE = (
-    f"https://github.com/{KNOWN_PLACE_REPOSITORY}/actions/workflows/{KNOWN_PLACE_PAPER_WORKFLOW}"
+    f"https://github.com/{KNOWN_PLACE_PAPER_REPOSITORY}/actions/workflows/{KNOWN_PLACE_PAPER_WORKFLOW}"
 )
 # Immutable backend commit containing the author-exact workflow and science code.
 KNOWN_PLACE_AUTHOR_BACKEND_REF = "d847b0461a2fec1bdf2abcce0a6b1d2f9dddabc9"
@@ -306,7 +311,7 @@ def dispatch_known_place_paper_reproduction(
         raise KnownPlaceWorkflowError("Explicit author-exact raw-download consent is required.")
     request_id = str(uuid4())
     workflow_path = (
-        f"/repos/{KNOWN_PLACE_REPOSITORY}/actions/workflows/{KNOWN_PLACE_PAPER_WORKFLOW}/dispatches"
+        f"/repos/{KNOWN_PLACE_PAPER_REPOSITORY}/actions/workflows/{KNOWN_PLACE_PAPER_WORKFLOW}/dispatches"
     )
     inputs = {
         "request_id": request_id,
@@ -320,7 +325,7 @@ def dispatch_known_place_paper_reproduction(
         settings,
         "POST",
         workflow_path,
-        {"ref": KNOWN_PLACE_REF, "inputs": inputs},
+        {"ref": KNOWN_PLACE_PAPER_REF, "inputs": inputs},
     )
     if status != 204:
         raise KnownPlaceWorkflowError("GitHub Actions did not accept the author-exact paper reproduction request.")
@@ -345,9 +350,9 @@ def get_known_place_paper_reproduction_status(
         normalized_id = str(UUID(request_id))
     except (ValueError, TypeError, AttributeError):
         raise KnownPlaceWorkflowError("Invalid Known Place paper-reproduction request ID.") from None
-    query = urlencode({"branch": KNOWN_PLACE_REF, "event": "workflow_dispatch", "per_page": "30"})
+    query = urlencode({"branch": KNOWN_PLACE_PAPER_REF, "event": "workflow_dispatch", "per_page": "30"})
     path = (
-        f"/repos/{KNOWN_PLACE_REPOSITORY}/actions/workflows/{KNOWN_PLACE_PAPER_WORKFLOW}/runs?{query}"
+        f"/repos/{KNOWN_PLACE_PAPER_REPOSITORY}/actions/workflows/{KNOWN_PLACE_PAPER_WORKFLOW}/runs?{query}"
     )
     _status, response = _github_request(settings, "GET", path)
     runs = response.get("workflow_runs")
@@ -360,7 +365,7 @@ def get_known_place_paper_reproduction_status(
         if (
             run.get("display_title") != expected_title
             or run.get("path") != f".github/workflows/{KNOWN_PLACE_PAPER_WORKFLOW}"
-            or run.get("head_branch") != KNOWN_PLACE_REF
+            or run.get("head_branch") != KNOWN_PLACE_PAPER_REF
             or run.get("event") != "workflow_dispatch"
         ):
             continue
