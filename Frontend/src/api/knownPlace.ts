@@ -154,3 +154,187 @@ export async function getKnownPlaceAnalysisStatus(
   }
   return readPayload<KnownPlaceAnalysisRun>(response, 'Could not refresh Known Place Analysis status');
 }
+
+
+export type KnownPlacePairResult = {
+  reference_date: string;
+  secondary_date: string;
+  interval_days: number | null;
+  chain_id: string;
+  track: string | null;
+  direction: string | null;
+  polarization: string | null;
+  release_id: string | null;
+  catalog_maturity: string | null;
+  status: string | null;
+  valid_aoi_pixels: number | null;
+  aoi_total_grid_cells: number | null;
+  valid_aoi_fraction: number | null;
+  high_magnitude_flagged_pixels: number | null;
+  high_magnitude_flagged_fraction: number | null;
+  high_magnitude_threshold_m: number | null;
+  median_horizontal_displacement_rate_m_per_day: number | null;
+  mean_vector_magnitude_rate_m_per_day: number | null;
+  mean_vector_east_rate_m_per_day: number | null;
+  mean_vector_north_rate_m_per_day: number | null;
+  mean_vector_azimuth_deg_clockwise_from_north: number | null;
+  median_directional_coherence_R: number | null;
+  crosses_registered_instrument_gap: boolean;
+  grid_lattice_compatible_with_previous: boolean | null;
+  vector_rate_change_eligible: boolean;
+  vector_rate_change_magnitude_m_per_day: number | null;
+  vector_rate_acceleration_m_per_day_squared: number | null;
+  rate_change_block_reason: string | null;
+  spatial_uncertainty_status: string | null;
+  risk_score: number | null;
+  risk_score_status: string;
+  detection_status: string;
+  quality_gate_counts: Record<string, number> | null;
+  interval_coverage_warning: string | null;
+};
+
+export type KnownPlaceChain = {
+  chain_id: string;
+  track: string | null;
+  direction: string | null;
+  polarization: string | null;
+  release_id: string | null;
+  maturity: string | null;
+  pair_count: number | null;
+  continuous_chain_eligible: boolean | null;
+  cumulative_displacement_status: string | null;
+  grid_lattice_compatible: boolean | null;
+  pairs: Array<{
+    reference_date: string;
+    secondary_date: string;
+    interval_days: number | null;
+    relation_to_previous: string | null;
+    crosses_registered_instrument_gap: boolean;
+    gap_count: number;
+    interval_coverage_warning: string | null;
+  }>;
+};
+
+export type KnownPlaceAnalysisResults = {
+  request_id: string;
+  run: {
+    id: number;
+    status: string;
+    conclusion: string;
+    html_url: string;
+    created_at: string | null;
+    updated_at: string | null;
+    head_sha: string | null;
+  };
+  result: {
+    schema_version: string;
+    engine_version: string;
+    created_at_utc: string;
+    status: string;
+    structural_status: string;
+    measurement_status: string;
+    paper_reproduction_status: string;
+    hazard_detection_status: string;
+    pair_measurement_counts: { requested: number; metrics_computed: number; insufficient_data: number };
+    grid_compatibility_status: string;
+    grid_mismatch_pair_count: number;
+    motion_dynamics: {
+      status: string;
+      measured_feature_count: number;
+      unmeasured_feature_count: number;
+      risk_score: number | null;
+      hazard_detection_status: string;
+      interpretation: string;
+      limitations: string[];
+    };
+    pairwise_series_plan: {
+      status: string;
+      chain_count: number;
+      continuous_chain_eligible: boolean;
+      cumulative_displacement_status: string;
+      pair_count: number;
+      pairwise_metrics_are_not_cumulative: boolean;
+      warnings: string[];
+      known_nisar_data_gaps_intersecting_requested_pairs: unknown;
+      chains: KnownPlaceChain[];
+    };
+    pairs: KnownPlacePairResult[];
+    request: {
+      measurement_wkt: string | null;
+      outer_scope_wkt: string | null;
+      reference_wkt: string | null;
+      date_range: { start: string; end: string; inclusive?: boolean; timezone?: string };
+      hazard_mode: string;
+      analysis_mode: string;
+      source_adapters: string[];
+      polarization: string;
+      product_selection: Record<string, unknown>;
+      geometry_policy: Record<string, unknown>;
+      quality_policy: Record<string, unknown>;
+      coherence_policy: Record<string, unknown>;
+      reference_policy: string;
+      reference_buffer_m: number | null;
+    };
+    source_evidence: Array<{
+      granule_name: string;
+      release_id: string;
+      maturity: string;
+      source_sha256: string;
+      source_bytes: number;
+      cache_status: string;
+    }>;
+    limitations: string[];
+    output_files: Array<string | Record<string, unknown>>;
+  };
+  storage: {
+    status: string;
+    action?: string;
+    bundle_bytes?: number;
+    remote_bytes_verified: boolean;
+    hash_verified: boolean;
+    raw_h5_included?: boolean;
+    bundled_file_count?: number | null;
+  };
+  dashboard_html: string;
+  interactive_map_html: string;
+};
+
+export async function getKnownPlaceAnalysisResults(
+  requestId: string,
+  user: Pick<User, 'getIdToken'> | null,
+): Promise<KnownPlaceAnalysisResults> {
+  if (!/^[0-9a-f-]{36}$/i.test(requestId)) throw new Error('Invalid Known Place request ID.');
+  const token = await firebaseToken(user);
+  let response: Response;
+  try {
+    response = await fetch(
+      `${API_BASE}/api/known-place-analysis/requests/${encodeURIComponent(requestId)}/results`,
+      { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' },
+    );
+  } catch {
+    throw new Error('Could not reach the processing service to retrieve the Known Place result.');
+  }
+  return readPayload<KnownPlaceAnalysisResults>(response, 'Could not retrieve the Known Place result');
+}
+
+export async function downloadKnownPlaceAnalysisBundle(
+  requestId: string,
+  user: Pick<User, 'getIdToken'> | null,
+): Promise<Blob> {
+  if (!/^[0-9a-f-]{36}$/i.test(requestId)) throw new Error('Invalid Known Place request ID.');
+  const token = await firebaseToken(user);
+  let response: Response;
+  try {
+    response = await fetch(
+      `${API_BASE}/api/known-place-analysis/requests/${encodeURIComponent(requestId)}/bundle`,
+      { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' },
+    );
+  } catch {
+    throw new Error('Could not reach the processing service to download the Known Place result package.');
+  }
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { detail?: string; message?: string };
+    throw new Error(payload.detail || payload.message || `Could not download the Known Place result package (${response.status}).`);
+  }
+  return response.blob();
+}
