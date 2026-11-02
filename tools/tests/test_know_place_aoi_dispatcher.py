@@ -16,7 +16,7 @@ def test_default_branch_dispatcher_pins_validated_backend_two_polygon_workflow()
     assert "secrets: inherit" in text
     assert "consent_marker: ${{ inputs.consent_marker }}" in text
     assert "execute_downloads: ${{ inputs.execute_downloads }}" in text
-    assert 'default: false\\n        type: boolean' in text
+    assert 'default: false\n        type: boolean' in text
 
 
 def test_dispatcher_forwards_independent_outer_measurement_and_reference_geometry() -> None:
