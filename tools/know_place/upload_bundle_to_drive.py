@@ -105,9 +105,12 @@ def upload_and_verify(archive_path: Path, *, folder_name: str) -> dict[str, Any]
         raise BundleUploadError("DRIVE_STORAGE_ACCOUNT_IDENTITY_MISMATCH")
 
     parent_id = normalize_drive_folder_id(os.environ.get("GOOGLE_DRIVE_PARENT_FOLDER_ID", ""))
-    parent = client.get_file(parent_id)
-    if parent.get("mimeType") != DRIVE_FOLDER_MIME:
-        raise BundleUploadError("DRIVE_PARENT_FOLDER_IS_NOT_A_FOLDER")
+    # Match the proven Find Displacements Drive path: enumerate children
+    # under the configured parent and let create_folder enforce that the parent
+    # is a writable folder. Do not require files.get(parent_id) here; that
+    # extra metadata lookup is not used by the working AOI worker path and has
+    # been returning a false-negative 404 for this same configured destination.
+    client.list_children(parent_id)
 
     matches = [entry for entry in client.list_children(parent_id) if entry.get("name") == folder_name]
     if any(entry.get("mimeType") != DRIVE_FOLDER_MIME for entry in matches):
