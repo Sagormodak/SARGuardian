@@ -1168,3 +1168,34 @@ def test_dashboard_presentation_builds_three_audience_views_without_replacing_sc
     assert "requestAnimationFrame(function(){M.resize();});" in rendered
     assert "12 cm/year" not in rendered
     assert ">70% confidence" not in rendered
+
+
+def test_known_place_result_endpoints_require_firebase_authentication() -> None:
+    request_id = str(uuid4())
+    assert client.get(f"/api/known-place-analysis/requests/{request_id}/results").status_code == 401
+    assert client.get(f"/api/known-place-analysis/requests/{request_id}/bundle").status_code == 401
+
+
+def test_known_place_result_endpoint_returns_only_authenticated_result_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    request_id = str(uuid4())
+    expected = {"request_id": request_id, "result": {"hazard_detection_status": "NOT_EVALUATED"}}
+    monkeypatch.setattr(main_module, "get_known_place_analysis_results", lambda _settings, value: expected if value == request_id else {})
+    response = authenticated_client().get(f"/api/known-place-analysis/requests/{request_id}/results")
+    assert response.status_code == 200
+    assert response.json() == expected
+
+
+def test_known_place_bundle_endpoint_sets_private_download_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+    request_id = str(uuid4())
+    archive = b"PK\\x03\\x04test-known-place-result"
+    monkeypatch.setattr(
+        main_module,
+        "download_known_place_analysis_bundle",
+        lambda _settings, value: (f"SARGuardian-known-place-{value}.zip", archive),
+    )
+    response = authenticated_client().get(f"/api/known-place-analysis/requests/{request_id}/bundle")
+    assert response.status_code == 200
+    assert response.content == archive
+    assert response.headers["content-type"].startswith("application/zip")
+    assert response.headers["content-disposition"] == f'attachment; filename="SARGuardian-known-place-{request_id}.zip"'
+    assert response.headers["cache-control"] == "private, no-store"
