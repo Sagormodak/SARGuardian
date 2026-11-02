@@ -47,11 +47,12 @@ def test_author_exact_paper_dispatcher_uses_backend_scoped_entry_and_immutable_s
     workflow_path = repository_root / ".github" / "workflows" / "know-place-paper-reproduction-dispatcher.yml"
     text = workflow_path.read_text(encoding="utf-8")
 
-    science_sha = "d847b0461a2fec1bdf2abcce0a6b1d2f9dddabc9"
+    reusable_workflow_sha = "d847b0461a2fec1bdf2abcce0a6b1d2f9dddabc9"
+    science_sha = "b825df798ea4cb9874aa10dd01174d2a8ef73cba"
     reusable_path = ".github/workflows/know-place-author-exact-replay.yml"
     assert "workflow_dispatch:" in text
     assert "run-name: Known Place Paper Reproduction ${{ inputs.request_id }}" in text
-    assert f"uses: moshiour0/SARGuardian-backend/{reusable_path}@{science_sha}" in text
+    assert f"uses: moshiour0/SARGuardian-backend/{reusable_path}@{reusable_workflow_sha}" in text
     assert f'backend_code_ref: "{science_sha}"' in text
     assert "consent_marker: ${{ inputs.consent_marker }}" in text
     assert "bridge_authorized: false" in text
