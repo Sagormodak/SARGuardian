@@ -43,8 +43,16 @@ function shortDate(value: string): string {
     : new Intl.DateTimeFormat('en', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(parsed);
 }
 
+function intervalLabel(referenceDate: string, secondaryDate: string): string {
+  return shortDate(referenceDate) + ' → ' + shortDate(secondaryDate);
+}
+
 function pairTitle(pair: KnownPlacePairResult): string {
-  return `${shortDate(pair.reference_date)} → ${shortDate(pair.secondary_date)}`;
+  return intervalLabel(pair.reference_date, pair.secondary_date);
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 }
 
 function supportLabel(pair: KnownPlacePairResult): string {
@@ -373,7 +381,7 @@ export function KnownPlaceResultsDashboard({
                   <dl>
                     <dt>Date range (inclusive)</dt><dd>{result.request.date_range.start} – {result.request.date_range.end}</dd>
                     <dt>Input product</dt><dd>{result.request.source_adapters.join(', ')}</dd>
-                    <dt>Release / maturity</dt><dd>{result.request.product_selection.allowed_release_ids?.join(', ') || 'Catalog selected'} · {result.request.product_selection.allowed_maturities?.join(', ') || 'Not reported'}</dd>
+                    <dt>Release / maturity</dt><dd>{stringArray(result.request.product_selection.allowed_release_ids).join(', ') || 'Catalog selected'} · {stringArray(result.request.product_selection.allowed_maturities).join(', ') || 'Not reported'}</dd>
                     <dt>Polarization</dt><dd>{result.request.polarization}</dd>
                     <dt>Reference policy</dt><dd>{result.request.reference_policy}</dd>
                     <dt>Reference buffer</dt><dd>{number(result.request.reference_buffer_m, 0)} m</dd>
@@ -397,7 +405,7 @@ export function KnownPlaceResultsDashboard({
                       <strong>{chain.chain_id}</strong>
                       <small>{chain.pair_count} pair(s) · grid compatible: {String(chain.grid_lattice_compatible)}</small>
                       {chain.pairs.filter((pair) => pair.crosses_registered_instrument_gap).map((pair) => (
-                        <p key={pair.reference_date}><b>Instrument gap:</b> {pairTitle({ ...pair, chain_id: chain.chain_id, track: chain.track, direction: chain.direction, polarization: chain.polarization, release_id: chain.release_id, catalog_maturity: chain.maturity, status: null, valid_aoi_pixels: null, aoi_total_grid_cells: null, valid_aoi_fraction: null, high_magnitude_flagged_pixels: null, high_magnitude_flagged_fraction: null, high_magnitude_threshold_m: null, median_horizontal_displacement_rate_m_per_day: null, mean_vector_magnitude_rate_m_per_day: null, mean_vector_east_rate_m_per_day: null, mean_vector_north_rate_m_per_day: null, mean_vector_azimuth_deg_clockwise_from_north: null, median_directional_coherence_R: null, crosses_registered_instrument_gap: true, grid_lattice_compatible_with_previous: null, vector_rate_change_eligible: false, vector_rate_change_magnitude_m_per_day: null, vector_rate_acceleration_m_per_day_squared: null, rate_change_block_reason: null, spatial_uncertainty_status: null, risk_score: null, risk_score_status: 'NOT_CALIBRATED', detection_status: 'NOT_EVALUATED', quality_gate_counts: null, interval_coverage_warning: pair.interval_coverage_warning })}. {pair.interval_coverage_warning}</p>
+                        <p key={pair.reference_date}><b>Instrument gap:</b> {intervalLabel(pair.reference_date, pair.secondary_date)}. {pair.interval_coverage_warning}</p>
                       ))}
                     </div>
                   ))}
