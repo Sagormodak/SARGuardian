@@ -1229,7 +1229,11 @@ def run_aoi_analysis(
                 "background_correction": background_info,
                 "reference_policy": reference_status,
                 "reference_geometry": {
-                    "type": "INDEPENDENT_USER_POLYGON" if roi.reference_mask is not None else "LOCAL_CONTEXT_OUTSIDE_MEASUREMENT",
+                    "type": (
+                        roi.reference_geometry_mode
+                        if roi.reference_geometry_mode is not None
+                        else "LOCAL_CONTEXT_OUTSIDE_MEASUREMENT"
+                    ),
                     "measurement_valid_grid_cells": int(roi.crown_mask.sum()),
                     "reference_grid_cells": int((roi.reference_mask if roi.reference_mask is not None else (roi.box_mask & ~roi.crown_mask)).sum()),
                     "stability_status": "USER_SELECTED_NOT_INDEPENDENTLY_VERIFIED" if roi.reference_mask is not None else "LOCAL_CONTEXT_STABILITY_ASSUMPTION_NOT_VERIFIED",
