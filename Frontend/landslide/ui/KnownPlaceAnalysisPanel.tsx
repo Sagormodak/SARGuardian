@@ -505,7 +505,7 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
           <p className="catalog-notice" role="status">
             {catalogPreflightReady
               ? 'Catalog preflight passed for the exact current polygons, dates and processing settings. Raw download still requires the separate consent checkbox.'
-              : 'Raw GOFF downloads remain locked until a catalog-only dry run succeeds for the exact current settings. Changing a polygon, date, track, direction, polarization or release filter requires a new dry run.'}
+              : 'Raw GOFF downloads remain locked until a successful catalog-only dry run for the exact current settings, completed within the last 15 minutes. Older or timestamp-missing preflight evidence expires; changing a polygon, date, track, direction, polarization or release filter also requires a new dry run.'}
           </p>
           <div className="known-place-consent">
             <label>
