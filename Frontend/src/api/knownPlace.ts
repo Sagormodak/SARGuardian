@@ -19,6 +19,7 @@ export type KnownPlaceCandidateContext = {
   geometry_original_vertices: number;
   geometry_suggested_vertices: number;
   geometry_simplified: boolean;
+  geometry_edited: boolean;
   interpretation: string;
 };
 
