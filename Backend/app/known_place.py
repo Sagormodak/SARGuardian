@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import date
 import hashlib
+import hmac
 from io import BytesIO
 from pathlib import PurePosixPath
 from zipfile import BadZipFile, ZipFile
