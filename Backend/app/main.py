@@ -35,6 +35,8 @@ from .known_place import (
     dispatch_known_place_analysis,
     dispatch_known_place_paper_reproduction,
     get_known_place_analysis_status,
+    get_known_place_analysis_results,
+    download_known_place_analysis_bundle,
     get_known_place_paper_reproduction_status,
 )
 from .displacements import (
@@ -202,6 +204,42 @@ def read_known_place_analysis_status(
     except KnownPlaceWorkflowError as exc:
         code = 422 if "Invalid Known Place request ID" in str(exc) else 503
         raise HTTPException(status_code=code, detail=str(exc)) from None
+
+
+@app.get("/api/known-place-analysis/requests/{request_id}/results")
+def read_known_place_analysis_results(
+    request_id: str,
+    _user: dict = Depends(get_current_user),
+) -> dict:
+    """Return the validated generic Known Place artifact for its opaque request ID."""
+    try:
+        return get_known_place_analysis_results(get_settings(), request_id)
+    except KnownPlaceWorkflowError as exc:
+        message = str(exc)
+        code = 409 if "NOT_READY" in message else 404 if "NOT_FOUND" in message else 503
+        raise HTTPException(status_code=code, detail=message) from None
+
+
+@app.get("/api/known-place-analysis/requests/{request_id}/bundle")
+def download_known_place_analysis_bundle_route(
+    request_id: str,
+    _user: dict = Depends(get_current_user),
+) -> Response:
+    """Download the original bounded Actions result archive through Firebase auth."""
+    try:
+        filename, archive_bytes = download_known_place_analysis_bundle(get_settings(), request_id)
+    except KnownPlaceWorkflowError as exc:
+        message = str(exc)
+        code = 409 if "NOT_READY" in message else 404 if "NOT_FOUND" in message else 503
+        raise HTTPException(status_code=code, detail=message) from None
+    return Response(
+        content=archive_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 @app.post("/api/known-place-paper-reproduction", response_model=KnownPlaceAnalysisSubmission)
