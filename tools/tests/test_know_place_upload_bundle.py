@@ -37,6 +37,7 @@ def test_derived_bundle_contains_all_run_outputs_and_hashes(tmp_path):
     result = uploader.create_derived_bundle(run_dir, archive)
 
     assert result["raw_h5_included"] is False
+    assert "parent" in client.listed_parents
     assert result["archive_bytes"] == archive.stat().st_size
     assert result["archive_sha256"] == hashlib.sha256(archive.read_bytes()).hexdigest()
     with zipfile.ZipFile(archive) as package:
@@ -73,10 +74,11 @@ def test_drive_bundle_upload_checks_identity_and_downloaded_bytes(tmp_path, monk
             return 200, uploader.EXPECTED_ACCOUNT
 
         def get_file(self, file_id):
-            assert file_id == "parent"
-            return {"id": "parent", "mimeType": uploader.DRIVE_FOLDER_MIME}
+            raise AssertionError("Known Place uploader must not require files.get(parent_id)")
 
         def list_children(self, parent_id):
+            self.listed_parents = getattr(self, "listed_parents", [])
+            self.listed_parents.append(parent_id)
             return list(self.children.get(parent_id, []))
 
         def create_folder(self, parent_id, name):
