@@ -43,6 +43,10 @@ export type KnownPlaceAnalysisInput = {
   confirm_raw_downloads: boolean;
 };
 
+export type KnownPlacePaperReproductionInput = {
+  confirm_raw_downloads: boolean;
+};
+
 export type KnownPlaceAnalysisRun = {
   request_id: string;
   status: KnownPlaceRunState;
@@ -94,6 +98,43 @@ export async function startKnownPlaceAnalysis(
     throw new Error('Could not reach the processing service. Check your connection and retry.');
   }
   return readPayload<KnownPlaceAnalysisRun>(response, 'Could not submit Known Place Analysis');
+}
+
+export async function startKnownPlacePaperReproduction(
+  input: KnownPlacePaperReproductionInput,
+  user: Pick<User, 'getIdToken'> | null,
+): Promise<KnownPlaceAnalysisRun> {
+  const token = await firebaseToken(user);
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/known-place-paper-reproduction`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify(input),
+      cache: 'no-store',
+    });
+  } catch {
+    throw new Error('Could not reach the processing service. Check your connection and retry.');
+  }
+  return readPayload<KnownPlaceAnalysisRun>(response, 'Could not submit the author-exact paper reproduction');
+}
+
+export async function getKnownPlacePaperReproductionStatus(
+  requestId: string,
+  user: Pick<User, 'getIdToken'> | null,
+): Promise<KnownPlaceAnalysisRun> {
+  if (!/^[0-9a-f-]{36}$/i.test(requestId)) throw new Error('Invalid paper-reproduction request ID.');
+  const token = await firebaseToken(user);
+  let response: Response;
+  try {
+    response = await fetch(
+      `${API_BASE}/api/known-place-paper-reproduction/requests/${encodeURIComponent(requestId)}`,
+      { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' },
+    );
+  } catch {
+    throw new Error('Could not reach the processing service to refresh paper-reproduction status.');
+  }
+  return readPayload<KnownPlaceAnalysisRun>(response, 'Could not refresh paper-reproduction status');
 }
 
 export async function getKnownPlaceAnalysisStatus(
