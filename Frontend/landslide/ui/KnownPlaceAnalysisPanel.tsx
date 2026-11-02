@@ -151,7 +151,7 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
   const [geometryDraft] = useState<GeometryDraft>(() => loadGeometryDraft(user.uid));
   const [measurementWkt, setMeasurementWkt] = useState(() => candidateTransfer?.measurementWkt || geometryDraft.measurementWkt || '');
   const [referenceWkt, setReferenceWkt] = useState(() => geometryDraft.referenceWkt);
-  const [polygonValidation, setPolygonValidation] = useState({ valid: false, message: 'Draw and close both analysis polygons.' });
+  const [polygonValidation, setPolygonValidation] = useState({ valid: false, message: 'Draw and close the Measurement and Reference Polygons. The Reference may enclose the Measurement; partial overlap is invalid.' });
   const [geometryHeight, setGeometryHeight] = useState('');
   const [confirmRawDownloads, setConfirmRawDownloads] = useState(false);
   const [paperRawConsent, setPaperRawConsent] = useState(false);
@@ -260,7 +260,7 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
       return;
     }
     if (!measurementWkt || !referenceWkt || !polygonValidation.valid) {
-      setError(polygonValidation.message || 'Draw and validate both the Measurement and Reference polygons before submitting.');
+      setError(polygonValidation.message || 'Draw and validate the Measurement and Reference polygons before submitting. The Reference may be a larger enclosing region; partial overlap is invalid.');
       return;
     }
     if (executeDownloads && !confirmRawDownloads) {
@@ -365,7 +365,7 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
           <div><span>Start date</span><strong>{startDate || 'Not selected'}</strong></div>
           <div><span>End date</span><strong>{endDate || 'Not selected'}</strong></div>
         </div>
-        <p className="catalog-notice">The original map AOI is retained as an outer selection boundary. The Measurement Polygon is the area whose pairwise motion is summarized; the separate Reference Polygon supplies background comparison. A selected reference area is not assumed to be stable ground.</p>
+        <p className="catalog-notice">The original map AOI is retained as the outer selection boundary. The Measurement Polygon is the area whose pairwise motion is summarized. The Reference Polygon may be disjoint, or may enclose the Measurement Polygon; in the enclosing case, measurement cells are excluded from background statistics. Reference-ground stability is not independently verified.</p>
         <section className="known-place-paper-reproduction" aria-labelledby="known-place-paper-title">
           <div className="known-place-paper-heading">
             <span className="result-kicker">FIXED RESEARCH BENCHMARK · AUTHOR-EXACT P05023</span>
@@ -409,13 +409,13 @@ export function KnownPlaceAnalysisPanel({ user, aoiWkt, startDate, endDate, plac
         <section className="known-place-custom-measurement" aria-labelledby="known-place-custom-title">
           <span className="result-kicker">CUSTOM MEASUREMENT · GENERIC GOFF METHOD</span>
           <h2 id="known-place-custom-title">Two-polygon known-place measurement</h2>
-          <p>This separate path measures a user-drawn target polygon relative to a disjoint user-drawn background polygon on the selected AOI/date window. It is not the author-exact paper method and reports PAPER_REPRODUCTION_STATUS=NOT_EVALUATED_GENERIC_AOI.</p>
+          <p>This separate path measures a user-drawn target polygon relative to either a disjoint background polygon or an enclosing background region on the selected AOI/date window. When the reference encloses the target, the target footprint is subtracted before background statistics. This generic method is not the author-exact paper method and reports PAPER_REPRODUCTION_STATUS=NOT_EVALUATED_GENERIC_AOI.</p>
         {!aoiWkt && <p className="catalog-error" role="alert">A valid outer AOI is required for custom measurement. Go back to the map and draw your polygon.</p>}
         {candidateTransfer && <div className="catalog-notice known-place-candidate-handoff" role="status">
           <strong>Suggested Measurement Polygon imported from Find Displacements</strong>
           <span>{candidateTransfer.candidate.candidateId} · GOFF offset-anomaly candidate · {candidateTransfer.candidate.supportPairs} supporting pair(s) · {candidateTransfer.candidate.pixelCount} pixels</span>
           <span>{candidateTransfer.candidate.geometrySimplified ? `Boundary simplified from ${candidateTransfer.candidate.geometryOriginalVertices} to ${candidateTransfer.candidate.geometrySuggestedVertices} vertices; inspect and edit it before measurement.` : `${candidateTransfer.candidate.geometrySuggestedVertices} boundary vertices transferred; inspect and edit before measurement.`}</span>
-          <span>Candidate evidence is not measured ground motion or a confirmed landslide. Draw the separate reference polygon and verify the proposed measurement area.</span>
+          <span>Candidate evidence is not measured ground motion or a confirmed landslide. Draw a background polygon that is either disjoint from or fully encloses the proposed measurement area; partial overlap and boundary-touch are rejected.</span>
         </div>}
         <KnownPlacePolygonEditor
           outerAoiWkt={aoiWkt}
