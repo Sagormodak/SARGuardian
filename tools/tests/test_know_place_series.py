@@ -55,8 +55,18 @@ def test_products_crossing_request_boundary_are_excluded():
 
 def test_release_variants_are_not_silently_substituted():
     duplicate = PAIR_NAMES[0].replace("_X05026_", "_P05023_")
-    with pytest.raises(SeriesPlanError, match="AMBIGUOUS_PRODUCT_RELEASE_VARIANTS"):
+    with pytest.raises(SeriesPlanError, match="AMBIGUOUS_PRODUCT_RELEASE_VARIANTS") as exc_info:
         build([row(PAIR_NAMES[0]), row(duplicate)])
+
+    assert exc_info.value.code == "AMBIGUOUS_PRODUCT_RELEASE_VARIANTS"
+    assert exc_info.value.details["ambiguous_pair_count"] == 1
+    assert exc_info.value.details["candidate_release_ids"] == ["P05023", "X05026"]
+    pair = exc_info.value.details["ambiguous_pairs"][0]
+    assert pair["track"] == "098"
+    assert pair["direction"] == "A"
+    assert pair["polarization"] == "HH"
+    assert set(pair["candidate_granules"]) == {PAIR_NAMES[0], duplicate}
+    assert "never substitute a release automatically" in exc_info.value.details["required_action"]
 
 
 def test_user_can_pin_exact_granule_variant():
