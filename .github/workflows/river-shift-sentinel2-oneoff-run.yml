@@ -67,8 +67,8 @@ jobs:
             --source-run-id "41642281327" \
             --observation-date "2026-07-12" \
             --output-dir ../../replay-output \
-            --max-day-offset 3 \
-            --max-cloud-cover 40 \
+            --max-day-offset 10 \
+            --max-cloud-cover 80 \
             --mndwi-threshold "0.0" \
             --minimum-common-support "0.80"
 
