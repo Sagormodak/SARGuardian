@@ -35,6 +35,10 @@ class RiverShiftStore:
         rows = [row for row in self.rows.values() if row["owner_uid"] == owner_uid]
         return sorted(rows, key=lambda row: row["created_at"], reverse=True)[:limit]
 
+    def list_active_river_shift_jobs(self, owner_uid: str):
+        return [row for row in self.rows.values()
+                if row["owner_uid"] == owner_uid and row["state"] in {"queued", "dispatching", "running"}][:2]
+
     def get_river_shift_job(self, owner_uid: str, job_id):
         row = self.rows.get(str(job_id))
         return row if row and row["owner_uid"] == owner_uid else None
@@ -291,3 +295,22 @@ def test_list_river_shift_jobs_enforces_bounded_limit(monkeypatch) -> None:
     api = configure(monkeypatch, store)
     assert api.get("/api/river-shift/jobs?limit=0").status_code == 422
     assert api.get("/api/river-shift/jobs?limit=101").status_code == 422
+
+
+def test_river_shift_allows_only_one_active_job_per_account_but_keeps_idempotent_replay(monkeypatch) -> None:
+    store = RiverShiftStore()
+    api = configure(monkeypatch, store)
+
+    first = api.post("/api/river-shift/jobs", json=payload())
+    duplicate = api.post("/api/river-shift/jobs", json=payload())
+    competing = api.post(
+        "/api/river-shift/jobs",
+        json=payload() | {"idempotency_key": "river-shift-request-0002"},
+    )
+
+    assert first.status_code == duplicate.status_code == 200
+    assert duplicate.json()["id"] == first.json()["id"]
+    assert competing.status_code == 409
+    assert competing.json()["detail"]["code"] == "RIVERSHIFT_JOB_ALREADY_ACTIVE"
+    assert competing.json()["detail"]["job_id"] == first.json()["id"]
+    assert len(store.rows) == 1
