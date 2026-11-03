@@ -1,63 +1,63 @@
 # 02 · Download one exact NISAR GCOV product
 
 ## Purpose
-Download exactly one NISAR GCOV HDF5 granule already present in a reviewed NASA CMR UMM-JSON manifest. The script never searches for a different granule. When the ASF response omits a direct URL, it may reconstruct the canonical ASF HTTPS path only from a strict official GCOV granule name and explicit BETA/PROVISIONAL collection maturity.
-
-## NASA challenge relevance
-The downloaded HDF5 file is the native NASA-ISRO NISAR observation used by the subsequent scientific scripts. Keeping the exact granule identifier and SHA-256 checksum provides traceability.
+Download exactly one NISAR L2 GCOV HDF5 granule already selected from the reviewed NASA CMR UMM manifest. The downloader authenticates with NASA Earthdata through `earthaccess`, re-resolves the exact granule within its exact BETA or PROVISIONAL collection, and downloads only that CMR result. It does not broaden the AOI/date search or substitute another granule.
 
 ## Inputs
-- Catalogue manifest produced by README_01_discover_gcov_products.md.
+- Catalogue manifest produced by `README_01_discover_gcov_products.md`.
 - Exact granule name copied from that manifest.
+- One explicit maturity: `BETA` or `PROVISIONAL`.
 - Output directory.
-- Earthdata authentication through EARTHDATA_TOKEN or a protected user ~/.netrc file.
+- Earthdata authentication through the Actions environment (`EARTHDATA_TOKEN`, or `EARTHDATA_USERNAME` and `EARTHDATA_PASSWORD`).
 
 ## Method
-1. Find exactly one matching product in the manifest.
-2. Refuse ambiguous or missing granule names.
-3. Use the exact ASF URL returned in the catalogue manifest. If it is absent, construct the canonical ASF HTTPS path only when the official collection maturity is explicitly known as BETA or PROVISIONAL and the granule name passes the official GCOV filename validator. Unknown maturity blocks URL construction and download.
-4. Validate that the product URL uses HTTPS and a trusted ASF/NISAR Earthdata host.
-5. Download the product as a streamed HDF5 file to a temporary .part path.
-6. Compare received bytes with HTTP Content-Length when supplied.
-7. Atomically rename the complete file and write a SHA-256 receipt.
+1. Match the requested granule name against exactly one row in the accepted catalogue manifest.
+2. Require the recorded maturity to be exactly `BETA` or `PROVISIONAL`; never infer or mix maturities.
+3. Authenticate using `earthaccess.login(strategy="environment")`.
+4. Query NASA CMR using the exact NISAR GCOV collection short name and exact `granule_name`.
+5. Independently compare each returned UMM `GranuleUR` against the requested identifier and require exactly one exact match.
+6. Download that one CMR DataGranule through `earthaccess.download` with one transfer thread into a private temporary directory.
+7. Require one returned file, the exact requested filename, a non-empty file, and the official 8-byte HDF5 signature (including permitted HDF5 user-block offsets).
+8. Move the validated HDF5 product into the raw working directory and write its byte count and SHA-256 receipt.
+9. Remove the temporary download directory on both success and failure.
 
 ## Reproduce
-From tools/river_shift:
+From `tools/river_shift` in the pinned RiverShift environment:
 
-    export EARTHDATA_TOKEN="YOUR_EARTHDATA_TOKEN"
-    python download_gcov_product.py --catalogue data-audit/jamuna_gcov.json --granule-name EXACT_GRANULE_NAME_FROM_MANIFEST --out-dir data/raw
+```bash
+python download_gcov_product.py \
+  --catalogue data-audit/gcov-catalogue-manifest.json \
+  --granule-name EXACT_GRANULE_NAME_FROM_MANIFEST \
+  --out-dir data/raw
+```
 
-On Windows PowerShell, set the token in the terminal session using $env:EARTHDATA_TOKEN. Never commit it, print it, place it in a VITE_ variable, or paste it into a GitHub issue.
+For local use, configure Earthdata credentials in the environment using the current NASA Earthdata Login guidance. Never commit tokens, print credentials, or expose them in browser-visible environment variables.
 
 ## Outputs
-- Original NISAR HDF5 product.
-- JSON download receipt containing granule name, maturity, byte count, source host and SHA-256.
+- Original NISAR HDF5 source file, stored only in the worker's temporary raw directory.
+- JSON download receipt containing the exact granule name, collection maturity, collection short name, download method, byte count, source host (when present), and SHA-256.
+- Secret-safe stage logs for Earthdata login, exact CMR match, and the download.
 
 ## Acceptance tests
-- The granule name must match exactly one CMR manifest record.
-- URL reconstruction is limited to exact official GCOV names with explicit BETA/PROVISIONAL maturity.
-- Unknown maturity never triggers URL construction or download.
-- URL reconstruction is permitted only for a strict official 18-token GCOV name with explicit BETA/PROVISIONAL collection maturity.
-- An untrusted/non-HTTPS download host is rejected.
-- Unknown maturity is never inferred from the CRID or filename.
-- Empty or partial downloads are deleted.
-- A received Content-Length mismatch fails.
+- The requested granule matches exactly one accepted catalogue record.
+- Only one known maturity is allowed; BETA and PROVISIONAL are never mixed.
+- Earthdata authentication failure is reported without exposing credentials.
+- CMR lookup includes the exact collection short name and exact granule name.
+- A missing or ambiguous exact CMR result blocks download.
+- Only the exact matched CMR DataGranule is passed to `earthaccess.download`.
+- The worker uses one transfer thread per granule.
+- Empty, mismatched-name, invalid-HDF5, and HTML/login responses fail closed.
+- The temporary directory is removed after success or failure.
+- No existing raw file is overwritten.
 - SHA-256 and byte count are recorded after successful download.
-- Authentication failures explain the need for a valid Earthdata login without exposing credentials.
 
 ## Scientific limitations
-- Download success says nothing about scientific suitability.
-- Only use products with the intended maturity, frequency, polarization, orbit geometry and AOI coverage.
-- Users must follow NASA Earthdata and ASF data access terms.
-
-## AI reviewer checklist
-- Verify the download is tied to one ASF manifest record.
-- Verify there is no arbitrary URL input.
-- Verify credentials never enter logs or output files.
-- Verify partial files cannot be mistaken for complete HDF5 products.
-- Verify checksum evidence is preserved.
+- A successful download is not evidence of scientific suitability or surface change.
+- Product maturity, orbit, frequency, covariance term, AOI coverage, and temporal compatibility are checked by later RiverShift stages.
+- The retained source receipt proves file identity and bytes; it does not validate the scientific interpretation.
 
 ## Primary references
-- ASF downloading guide: https://docs.asf.alaska.edu/asf_search/downloading/
+- NISAR official Earthaccess guide: https://nisar-docs.asf.alaska.edu/earthaccess/
 - NASA Earthdata Login: https://urs.earthdata.nasa.gov/
-- NISAR HDF5 guide: https://nisar-docs.asf.alaska.edu/data-format/
+- Earthaccess API: https://earthaccess.readthedocs.io/en/latest/
+- NISAR HDF5 data format: https://nisar-docs.asf.alaska.edu/data-format/

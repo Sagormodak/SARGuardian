@@ -274,8 +274,29 @@ class DriveClient:
             response.raise_for_status()
             payload = response.json() if response.content else {}
         except requests.HTTPError as exc:
-            status = getattr(getattr(exc, "response", None), "status_code", None)
-            detail = f" (HTTP {status})" if status else ""
+            failed_response = getattr(exc, "response", None)
+            status = getattr(failed_response, "status_code", None)
+            reason = None
+            if failed_response is not None:
+                try:
+                    error_payload = failed_response.json()
+                except (ValueError, AttributeError):
+                    error_payload = {}
+                if isinstance(error_payload, dict):
+                    error = error_payload.get("error")
+                    rows = error.get("errors") if isinstance(error, dict) else None
+                    if isinstance(rows, list):
+                        for row in rows:
+                            candidate = row.get("reason") if isinstance(row, dict) else None
+                            if isinstance(candidate, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", candidate):
+                                reason = candidate
+                                break
+            details = []
+            if status:
+                details.append(f"HTTP {status}")
+            if reason:
+                details.append(f"reason={reason}")
+            detail = f" ({'; '.join(details)})" if details else ""
             raise DriveUploadError(f"Google Drive result storage request failed{detail}.") from exc
         except (requests.RequestException, ValueError) as exc:
             raise DriveUploadError("Google Drive result storage request failed (network or invalid response).") from exc

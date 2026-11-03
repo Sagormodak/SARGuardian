@@ -790,6 +790,55 @@ def _configure_earthdata_credentials() -> None:
     )
     os.chmod(netrc_path, 0o600)
 
+def _diagnose_alternate_drive_parent(drive: DriveClient, selected_folder_id: str, selected_source: str) -> None:
+    """Check the legacy alias for diagnosis only; never silently switch storage folders."""
+    alternate_source = (
+        "GOOGLE_DRIVE_FOLDER_ID"
+        if selected_source == "GOOGLE_DRIVE_PARENT_FOLDER_ID"
+        else "GOOGLE_DRIVE_PARENT_FOLDER_ID"
+    )
+    alternate_id = os.environ.get(alternate_source, "").strip()
+    if not alternate_id:
+        _log_worker_stage(
+            "drive_parent_folder_alias_diagnostic",
+            "SKIP",
+            candidate_variable=alternate_source,
+            reason="alternate_variable_not_configured",
+        )
+        return
+    if alternate_id == selected_folder_id:
+        _log_worker_stage(
+            "drive_parent_folder_alias_diagnostic",
+            "SKIP",
+            candidate_variable=alternate_source,
+            reason="same_folder_id_as_selected",
+        )
+        return
+
+    _log_worker_stage(
+        "drive_parent_folder_alias_diagnostic",
+        "START",
+        candidate_variable=alternate_source,
+        candidate_differs_from_selected=True,
+    )
+    try:
+        drive.verify_parent_folder(alternate_id)
+    except DriveUploadError as exc:
+        _log_worker_stage(
+            "drive_parent_folder_alias_diagnostic",
+            "FAIL",
+            candidate_variable=alternate_source,
+            error=str(exc),
+        )
+    else:
+        _log_worker_stage(
+            "drive_parent_folder_alias_diagnostic",
+            "PASS",
+            candidate_variable=alternate_source,
+            diagnostic="alternate_alias_is_accessible_but_was_not_selected",
+        )
+
+
 def _ensure_credentials() -> None:
     _log_worker_stage("earthdata_credentials", "START")
     try:
@@ -854,10 +903,11 @@ def _ensure_credentials() -> None:
     try:
         drive.verify_parent_folder(config.parent_folder_id)
     except DriveUploadError as exc:
+        _diagnose_alternate_drive_parent(drive, config.parent_folder_id, folder_source)
         _log_worker_stage("drive_parent_folder_access", "FAIL", error=str(exc))
         raise WorkerFailure(
             "PRIVATE_STORAGE_PARENT_FOLDER_UNAVAILABLE",
-            "The configured Google Drive parent folder is not accessible or is not a folder.",
+            "The configured Google Drive parent folder is not accessible or is not a folder; inspect the primary and alias diagnostic stages.",
         ) from None
     _log_worker_stage("drive_parent_folder_access", "PASS")
 
@@ -1046,7 +1096,7 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
             name = product["granule_name"]
             run_step("exact-product download", [
                 sys.executable, "download_gcov_product.py", "--catalogue", str(catalogue_for_download),
-                "--granule-name", name, "--out-dir", str(raw_dir), "--read-timeout", "900",
+                "--granule-name", name, "--out-dir", str(raw_dir), 
             ], context={"granule_name": name, "acquisition_date": observed_date})
             product_path = raw_dir / f"{name}.h5"
             inventory_path = raw_dir / f"{name}.gcov_inventory.json"
