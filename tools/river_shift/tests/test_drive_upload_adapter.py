@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 
-from drive_upload_adapter import _md5_file
+import pytest
+import requests
+
+from drive_upload_adapter import DriveClient, DriveUploadError, _md5_file
 
 
 def test_drive_md5_checksum_streams_file_and_matches_google_drive_checksum(tmp_path, monkeypatch):
@@ -16,3 +19,106 @@ def test_drive_md5_checksum_streams_file_and_matches_google_drive_checksum(tmp_p
     monkeypatch.setattr(type(path), "read_bytes", reject_read_bytes)
 
     assert _md5_file(path) == hashlib.md5(payload).hexdigest()
+
+
+class FakeResponse:
+    def __init__(self, status_code, *, headers=None, payload=None):
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.payload = payload or {}
+        self.closed = False
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self.payload
+
+    def close(self):
+        self.closed = True
+
+
+class FakeSession:
+    def __init__(self, *, request_response, put_responses):
+        self.request_response = request_response
+        self.put_responses = list(put_responses)
+        self.request_calls = []
+        self.put_calls = []
+
+    def request(self, method, url, **kwargs):
+        self.request_calls.append((method, url, kwargs))
+        return self.request_response
+
+    def put(self, url, **kwargs):
+        self.put_calls.append((url, kwargs))
+        result = self.put_responses.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+
+def _drive_for_upload(session):
+    drive = DriveClient.__new__(DriveClient)
+    drive.session = session
+    drive.access_token = "test-access-token"
+    return drive
+
+
+def test_resumable_upload_respects_partial_308_acknowledgement(monkeypatch, tmp_path):
+    monkeypatch.setattr("drive_upload_adapter.RESUMABLE_CHUNK_BYTES", 8)
+    path = tmp_path / "artifact.bin"
+    path.write_bytes(b"abcdefgh")
+    final = {"id": "drive-file-1", "name": path.name, "size": "8", "md5Checksum": hashlib.md5(b"abcdefgh").hexdigest()}
+    session = FakeSession(
+        request_response=FakeResponse(200, headers={"Location": "https://www.googleapis.com/upload/session"}),
+        put_responses=[
+            FakeResponse(308, headers={"Range": "bytes=0-3"}),
+            FakeResponse(201, payload=final),
+        ],
+    )
+
+    result = _drive_for_upload(session)._upload_resumable(path, {"name": path.name}, "POST", "https://www.googleapis.com/upload/drive/v3/files")
+
+    assert result["id"] == "drive-file-1"
+    assert session.put_calls[0][1]["headers"]["Content-Range"] == "bytes 0-7/8"
+    assert session.put_calls[1][1]["headers"]["Content-Range"] == "bytes 4-7/8"
+    assert session.put_calls[1][1]["data"] == b"efgh"
+
+
+def test_resumable_upload_queries_server_offset_after_ambiguous_network_error(monkeypatch, tmp_path):
+    monkeypatch.setattr("drive_upload_adapter.RESUMABLE_CHUNK_BYTES", 8)
+    monkeypatch.setattr("drive_upload_adapter.time.sleep", lambda _seconds: None)
+    path = tmp_path / "artifact.bin"
+    path.write_bytes(b"abcdefgh")
+    final = {"id": "drive-file-2", "name": path.name, "size": "8", "md5Checksum": hashlib.md5(b"abcdefgh").hexdigest()}
+    session = FakeSession(
+        request_response=FakeResponse(200, headers={"Location": "https://upload.googleapis.com/session"}),
+        put_responses=[
+            requests.ConnectionError("ambiguous network failure"),
+            FakeResponse(308, headers={"Range": "bytes=0-3"}),
+            FakeResponse(201, payload=final),
+        ],
+    )
+
+    result = _drive_for_upload(session)._upload_resumable(path, {"name": path.name}, "POST", "https://www.googleapis.com/upload/drive/v3/files")
+
+    assert result["id"] == "drive-file-2"
+    assert session.put_calls[0][1]["headers"]["Content-Range"] == "bytes 0-7/8"
+    assert session.put_calls[1][1]["headers"]["Content-Range"] == "bytes */8"
+    assert session.put_calls[1][1]["data"] == b""
+    assert session.put_calls[2][1]["headers"]["Content-Range"] == "bytes 4-7/8"
+    assert session.put_calls[2][1]["data"] == b"efgh"
+
+
+def test_resumable_upload_rejects_untrusted_session_url(tmp_path):
+    path = tmp_path / "artifact.bin"
+    path.write_bytes(b"data")
+    session = FakeSession(
+        request_response=FakeResponse(200, headers={"Location": "https://attacker.example/upload/session"}),
+        put_responses=[],
+    )
+
+    with pytest.raises(DriveUploadError, match="untrusted resumable upload URL"):
+        _drive_for_upload(session)._upload_resumable(path, {"name": path.name}, "POST", "https://www.googleapis.com/upload/drive/v3/files")
+
