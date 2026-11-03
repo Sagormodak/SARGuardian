@@ -93,7 +93,7 @@ def configure(monkeypatch, store: RiverShiftStore, *, owner: str = "river-user")
     })())
     monkeypatch.setattr(river_module, "_discover_manifest", lambda _payload: ({
         "schema_version": 1,
-        "unique_dates": ["2026-08-01", "2026-08-13", "2026-08-25", "2026-09-06"],
+        "unique_dates": ["2026-08-01", "2026-08-13", "2026-08-25", "2026-09-06", "2026-09-18"],
         "products": [{"granule_name": f"NISAR_L2_GCOV_{i:02d}"} for i in range(4)],
     }, [f"NISAR_L2_GCOV_{i:02d}" for i in range(4)]))
     monkeypatch.setattr(river_module, "_dispatch", lambda *_args: None)
@@ -125,6 +125,153 @@ def test_create_river_shift_job_is_owner_scoped_and_idempotent(monkeypatch) -> N
     app.dependency_overrides[get_current_user] = lambda: {"uid": "another-user"}
     hidden = api.get(f"/api/river-shift/jobs/{job['id']}")
     assert hidden.status_code == 404
+
+
+
+
+def test_compact_iso_and_filename_acquisition_times_normalize_to_utc_dates() -> None:
+    assert river_module._acquisition_date("20260627T124243") == "2026-06-27"
+    assert river_module._acquisition_date("2026-06-27T12:42:43.000Z") == "2026-06-27"
+    assert river_module._acquisition_date("2026-06-27") == "2026-06-27"
+    assert river_module._acquisition_date(None, "NISAR_L2_PR_GCOV_024_019_D_076_4005_DHDH_A_20260627T124243_20260627T124249_P05023_N_P_J_001") == "2026-06-27"
+    assert river_module._acquisition_date("2026-06-27T23:30:00-02:00") == "2026-06-28"
+    assert river_module._acquisition_date("not-a-date") is None
+
+
+def test_discovery_manifest_counts_compact_timestamps_and_preserves_selected_filters(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    records = [
+        {"granule_name": f"scene-{index}", "start_time_utc": stamp}
+        for index, stamp in enumerate((
+            "20260802T124243", "20260802T124243",
+            "20260814T232134", "20260826T124242", "20260907T232134", "20260919T124242",
+        ))
+    ]
+    class Product:
+        def __init__(self, value):
+            self.value = value
+        def model_dump(self, mode="json"):
+            return self.value
+
+    seen = {}
+    def fake_search(request):
+        seen.update({
+            "polarization": request.main_band_polarization,
+            "direction": request.flight_direction,
+            "coverage": request.frame_coverage,
+            "maturity": request.maturity,
+            "max_results": request.max_results,
+        })
+        return SimpleNamespace(
+            products=[Product(row) for row in records],
+            query={"collection_short_names": ["NISAR_L2_GCOV_PROVISIONAL_V1"]},
+        )
+
+    monkeypatch.setattr(river_module, "search_gcov_catalogue", fake_search)
+    request = river_module.CreateRiverShiftJobRequest.model_validate(payload() | {
+        "main_band_polarization": "HH+HV",
+        "flight_direction": "DESCENDING",
+        "frame_coverage": "FULL",
+    })
+
+    manifest, names = river_module._discover_manifest(request)
+
+    assert manifest["unique_dates"] == ["2026-08-02", "2026-08-14", "2026-08-26", "2026-09-07", "2026-09-19"]
+    assert len(names) == 6
+    assert seen == {
+        "polarization": "HH+HV",
+        "direction": "DESCENDING",
+        "coverage": "FULL",
+        "maturity": "PROVISIONAL",
+        "max_results": 100,
+    }
+    assert manifest["discovery_filters"] == {
+        "main_band_polarization": "HH+HV",
+        "flight_direction": "DESCENDING",
+        "frame_coverage": "FULL",
+    }
+
+
+def test_dispatch_payload_includes_exact_discovery_filters(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    captured = {}
+    class Response:
+        status = 204
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(river_module, "urlopen", fake_urlopen)
+    settings = SimpleNamespace(
+        river_shift_actions_enabled=True,
+        river_shift_github_actions_repository="moshiour0/SARGuardian-backend",
+        river_shift_github_actions_workflow="river-shift-gcov-process.yml",
+        river_shift_github_actions_ref="main",
+        river_shift_github_actions_token="server-token",
+        github_api_url="https://api.github.com",
+        river_shift_public_api_url="https://api.example.test",
+    )
+    request_snapshot = payload() | {
+        "main_band_polarization": "HH+HV",
+        "flight_direction": "DESCENDING",
+        "frame_coverage": "FULL",
+    }
+
+    river_module._dispatch(settings, uuid4(), request_snapshot, ["granule-1"], "f" * 64)
+
+    inputs = captured["body"]["inputs"]
+    assert captured["body"]["ref"] == "main"
+    assert inputs["main_band_polarization"] == "HH+HV"
+    assert inputs["flight_direction"] == "DESCENDING"
+    assert inputs["frame_coverage"] == "FULL"
+    assert inputs["granule_names_json"] == '["granule-1"]'
+
+
+
+def test_dispatch_transition_failure_does_not_leave_a_stuck_queued_job(monkeypatch) -> None:
+    store = RiverShiftStore()
+    api = configure(monkeypatch, store)
+    original_update = store.update_river_shift_job
+
+    def fail_transition(job_id, values, *, expected_state=None, expected_sequence=None):
+        if values.get("state") == river_module.JobState.DISPATCHING.value:
+            raise river_module.PersistenceError("simulated dispatch-state persistence failure")
+        return original_update(job_id, values, expected_state=expected_state, expected_sequence=expected_sequence)
+
+    monkeypatch.setattr(store, "update_river_shift_job", fail_transition)
+    response = api.post("/api/river-shift/jobs", json=payload())
+
+    assert response.status_code == 503
+    assert len(store.rows) == 1
+    job = next(iter(store.rows.values()))
+    assert job["state"] == river_module.JobState.FAILED.value
+    assert job["stage"] == "dispatch_failed"
+    assert job["error_code"] == "RIVERSHIFT_DISPATCH_FAILED"
+
+
+
+def test_river_shift_requires_one_strictly_pre_event_and_three_strictly_post_event_dates(monkeypatch) -> None:
+    store = RiverShiftStore()
+    api = configure(monkeypatch, store)
+    monkeypatch.setattr(river_module, "_discover_manifest", lambda _payload: ({
+        "unique_dates": ["2026-08-01", "2026-08-13", "2026-08-20", "2026-08-25", "2026-09-06"],
+        "products": [{"granule_name": f"scene-{index}"} for index in range(5)],
+    }, [f"scene-{index}" for index in range(5)]))
+
+    response = api.post("/api/river-shift/jobs", json=payload())
+
+    assert response.status_code == 422
+    assert "strictly before" in response.json()["detail"]
+    assert store.rows == {}
 
 
 def test_river_shift_requires_four_observation_dates_before_job_creation(monkeypatch) -> None:

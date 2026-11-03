@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createQueuedJob,
+  createRiverShiftJob,
   downloadDisplacementArtifact,
   getDisplacementJob,
   getInteractiveDashboardHtml,
@@ -391,6 +392,51 @@ describe('NISAR catalogue preflight API contract', () => {
     await expect(createQueuedJob('preflight-1', 'sarguardian-idempotency-001', null)).rejects.toThrow('Sign in');
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('submits the exact RiverShift discovery filters with the authenticated processing request', async () => {
+    const job = { id: 'river-job-1', state: 'dispatching' };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => job });
+    vi.stubGlobal('fetch', fetchMock);
+    const jobUser = { getIdToken: vi.fn().mockResolvedValue('firebase-id-token') };
+
+    await expect(createRiverShiftJob({
+      aoiWkt: 'POLYGON ((89 25, 89.1 25, 89.1 25.1, 89 25))',
+      startDate: '2026-06-20',
+      endDate: '2026-09-18',
+      eventDate: '2026-07-23',
+      maturity: 'PROVISIONAL',
+      mainBandPolarization: 'HH+HV',
+      flightDirection: 'DESCENDING',
+      frameCoverage: 'FULL',
+      frequency: 'frequencyA',
+      covarianceTerm: 'HHHH',
+      thresholdMethod: 'otsu',
+      idempotencyKey: 'river-shift-request-0001',
+    }, jobUser)).resolves.toEqual(job);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/api/river-shift/jobs');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      aoi_wkt: 'POLYGON ((89 25, 89.1 25, 89.1 25.1, 89 25))',
+      start_date: '2026-06-20',
+      end_date: '2026-09-18',
+      event_date: '2026-07-23',
+      maturity: 'PROVISIONAL',
+      main_band_polarization: 'HH+HV',
+      flight_direction: 'DESCENDING',
+      frame_coverage: 'FULL',
+      frequency: 'frequencyA',
+      covariance_term: 'HHHH',
+      threshold_method: 'otsu',
+      threshold_db: null,
+      idempotency_key: 'river-shift-request-0001',
+    });
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer firebase-id-token',
+    });
+  });
+
   it('restores the most recent River Shift jobs through an owner-authenticated no-store request', async () => {
     const jobs = [{ id: 'river-job-1', state: 'running' }];
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => jobs });

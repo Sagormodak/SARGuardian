@@ -21,7 +21,7 @@ TIMEOUT_SECONDS = 25
 EARTH_RADIUS_METERS = 6_371_000.0
 
 Maturity = Literal["BETA", "PROVISIONAL", "ALL"]
-Polarization = Literal["HH", "HH+HV", "HH+VV", "HH+HV+VH+VV", "VV", "VV+VH", "LH+LV", "RH+RV"]
+Polarization = Literal["HH", "HH+HV", "HH+HV+VH+VV", "VV", "VV+VH", "LH+LV", "RH+RV"]
 FlightDirection = Literal["ASCENDING", "DESCENDING"]
 FrameCoverage = Literal["FULL", "PARTIAL", "ALL"]
 
@@ -232,7 +232,7 @@ def _product(row: dict[str, Any]) -> RiverShiftProduct | None:
         polarization_code=parts["polarization_code"],
         main_band_polarization=_first_string(row, ("mainBandPolarization", "polarization")) or {
             "SH": "HH", "SV": "VV", "DH": "HH+HV", "DV": "VV+VH",
-            "CL": "LH+LV", "CR": "RH+RV",
+            "QP": "HH+HV+VH+VV", "CL": "LH+LV", "CR": "RH+RV",
         }.get((parts["polarization_code"] or "")[:2]),
         frame_coverage=coverage,
         size_mb=size_mb,
@@ -327,7 +327,7 @@ def _umm_product(item: dict[str, Any], maturity: str) -> RiverShiftProduct | Non
 
     polarization = {
         "SH": "HH", "SV": "VV", "DH": "HH+HV", "DV": "VV+VH",
-        "CL": "LH+LV", "CR": "RH+RV",
+        "QP": "HH+HV+VH+VV", "CL": "LH+LV", "CR": "RH+RV",
     }.get((parts["polarization_code"] or "")[:2])
 
     size_mb = None

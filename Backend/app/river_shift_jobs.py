@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import mimetypes
 import re
 import tempfile
@@ -27,11 +28,14 @@ from .persistence import (
     PersistenceError,
     get_job_store,
 )
-from .river_shift import RiverShiftCatalogRequest, search_gcov_catalogue
+from .river_shift import (
+    FlightDirection, FrameCoverage, Polarization, RiverShiftCatalogRequest, search_gcov_catalogue,
+)
 from science_adapter.geometry import validate_wkt
 from science_adapter.upload_to_drive import DriveUploadError, download_private_result_to_path
 
 router = APIRouter(prefix="/api/river-shift", tags=["RiverShift"])
+logger = logging.getLogger(__name__)
 MAX_GITHUB_INPUT_BYTES = 60_000
 MAX_CALLBACK_BYTES = 2_000_000
 MAX_ARTIFACT_BYTES = 250 * 1024 * 1024
@@ -46,6 +50,9 @@ class CreateRiverShiftJobRequest(BaseModel):
     end_date: date
     event_date: date
     maturity: Literal["BETA", "PROVISIONAL"] = "PROVISIONAL"
+    main_band_polarization: Polarization | None = None
+    flight_direction: FlightDirection | None = None
+    frame_coverage: FrameCoverage = "ALL"
     frequency: Literal["frequencyA", "frequencyB"] = "frequencyA"
     covariance_term: Literal["HHHH", "HVHV", "VVVV", "VHVH", "RHRH", "RVRV"] = "HHHH"
     threshold_method: Literal["otsu", "manual"] = "otsu"
@@ -163,6 +170,35 @@ def request_fingerprint(request_snapshot: dict[str, Any], manifest_snapshot: dic
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _acquisition_date(value: Any, granule_name: Any = None) -> str | None:
+    """Normalize CMR ISO and NISAR filename timestamps to one UTC calendar date."""
+    candidates: list[str] = []
+    if isinstance(value, str) and value.strip():
+        candidates.append(value.strip())
+    if isinstance(granule_name, str):
+        parts = granule_name.removesuffix(".h5").split("_")
+        if len(parts) == 18 and parts[0] == "NISAR" and parts[1] == "L2" and parts[3] == "GCOV":
+            candidates.append(parts[11])
+
+    for candidate in candidates:
+        compact = re.fullmatch(r"(\d{8}T\d{6})(?:\.\d+)?Z?", candidate)
+        if compact:
+            try:
+                return datetime.strptime(compact.group(1), "%Y%m%dT%H%M%S").date().isoformat()
+            except ValueError:
+                continue
+        try:
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
+                return date.fromisoformat(candidate).isoformat()
+            parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(UTC)
+            return parsed.date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
 def _discover_manifest(payload: CreateRiverShiftJobRequest) -> tuple[dict[str, Any], list[str]]:
     aoi = validate_wkt(payload.aoi_wkt)
     catalogue = search_gcov_catalogue(RiverShiftCatalogRequest(
@@ -170,16 +206,20 @@ def _discover_manifest(payload: CreateRiverShiftJobRequest) -> tuple[dict[str, A
         start_date=payload.start_date,
         end_date=payload.end_date,
         maturity=payload.maturity,
-        frame_coverage="ALL",
+        main_band_polarization=payload.main_band_polarization,
+        flight_direction=payload.flight_direction,
+        frame_coverage=payload.frame_coverage,
         max_results=100,
     ))
     products = [item.model_dump(mode="json") for item in catalogue.products]
     names = sorted({str(item["granule_name"]) for item in products if item.get("granule_name")})
-    dates = sorted({
-        str(item.get("start_time_utc") or "")[:10]
+    date_values = {
+        observed
         for item in products
-        if isinstance(item.get("start_time_utc"), str) and len(str(item.get("start_time_utc"))) >= 10
-    })
+        if (observed := _acquisition_date(item.get("start_time_utc"), item.get("granule_name"))) is not None
+        and payload.start_date.isoformat() <= observed <= payload.end_date.isoformat()
+    }
+    dates = sorted(date_values)
     if len(dates) < 4:
         raise HTTPException(
             status_code=422,
@@ -192,6 +232,11 @@ def _discover_manifest(payload: CreateRiverShiftJobRequest) -> tuple[dict[str, A
         "source": "NASA CMR UMM-G / ASF DAAC",
         "endpoint": catalogue.query.get("endpoint"),
         "collection_short_names": catalogue.query.get("collection_short_names"),
+        "discovery_filters": {
+            "main_band_polarization": payload.main_band_polarization,
+            "flight_direction": payload.flight_direction,
+            "frame_coverage": payload.frame_coverage,
+        },
         "reported_cmr_hits": catalogue.query.get("reported_cmr_hits"),
         "product_count": len(products),
         "unique_dates": dates,
@@ -216,6 +261,9 @@ def _dispatch(settings: Any, job_id: UUID, request_snapshot: dict[str, Any], gra
         "end_date": request_snapshot["end_date"],
         "event_date": request_snapshot["event_date"],
         "maturity": request_snapshot["maturity"],
+        "main_band_polarization": request_snapshot.get("main_band_polarization") or "",
+        "flight_direction": request_snapshot.get("flight_direction") or "",
+        "frame_coverage": request_snapshot.get("frame_coverage", "ALL"),
         "frequency": request_snapshot["frequency"],
         "covariance_term": request_snapshot["covariance_term"],
         "threshold_method": request_snapshot["threshold_method"],
@@ -241,6 +289,34 @@ def _dispatch(settings: Any, job_id: UUID, request_snapshot: dict[str, Any], gra
         raise RuntimeError(f"GitHub Actions rejected RiverShift dispatch (HTTP {exc.code}).") from None
     except (URLError, TimeoutError):
         raise RuntimeError("Could not reach GitHub Actions to dispatch RiverShift processing.") from None
+
+
+def _mark_dispatch_failure(store: Any, job_id: UUID, message: str) -> bool:
+    """Mark a failed submission terminal without overwriting a worker callback."""
+    for expected_state in (JobState.DISPATCHING.value, JobState.QUEUED.value):
+        try:
+            store.update_river_shift_job(
+                job_id,
+                {
+                    "state": JobState.FAILED.value,
+                    "stage": "dispatch_failed",
+                    "error_code": "RIVERSHIFT_DISPATCH_FAILED",
+                    "error_message": message[:500],
+                },
+                expected_state=expected_state,
+                expected_sequence=0,
+            )
+            return True
+        except PersistenceConflictError:
+            # The transition may have committed despite a transport error, or
+            # a worker callback may already have advanced the state. Try the
+            # other pre-worker state, then leave any later state untouched.
+            continue
+        except PersistenceError:
+            logger.exception("RiverShift dispatch failure could not be persisted for job %s", job_id)
+            return False
+    logger.warning("RiverShift job %s changed state while dispatch failure was being recorded", job_id)
+    return False
 
 
 def callback_signature_is_valid(secret: str, body: bytes, signature: str | None) -> bool:
@@ -308,6 +384,7 @@ def create_river_shift_job(payload: CreateRiverShiftJobRequest, user: dict = Dep
     except HTTPException:
         raise
     except Exception:
+        logger.exception("RiverShift NASA CMR preflight failed")
         raise HTTPException(status_code=502, detail="NASA CMR discovery failed. No RiverShift processing job was dispatched.") from None
 
     unique_dates = manifest.get("unique_dates") if isinstance(manifest, dict) else None
@@ -319,6 +396,21 @@ def create_river_shift_job(payload: CreateRiverShiftJobRequest, user: dict = Dep
         raise HTTPException(
             status_code=422,
             detail="RiverShift processing requires at least four distinct catalogue acquisition dates for the requested AOI and window.",
+        )
+    # Enforce this at the API boundary after discovery, not inside the
+    # catalogue helper, so every dispatch path and the contract tests exercise
+    # the same no-job-before-valid-event-window rule.
+    event_key = payload.event_date.isoformat()
+    pre_event_dates = [value for value in valid_dates if value < event_key]
+    post_event_dates = [value for value in valid_dates if value > event_key]
+    if not pre_event_dates or len(post_event_dates) < 3:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "The requested event date is not bracketed by enough distinct NISAR acquisitions. "
+                "RiverShift needs at least one comparable acquisition strictly before the event date "
+                "and three strictly after it; same-calendar-day acquisitions are not assumed to be post-event."
+            ),
         )
     if not isinstance(granule_names, list) or not granule_names or len(granule_names) > 100:
         raise HTTPException(
@@ -371,17 +463,8 @@ def create_river_shift_job(payload: CreateRiverShiftJobRequest, user: dict = Dep
         )
         _dispatch(settings, job_id, request_snapshot, granule_names, fingerprint)
     except Exception as exc:
-        try:
-            store.update_river_shift_job(
-                job_id,
-                {"state": JobState.FAILED.value, "stage": "dispatch_failed",
-                 "error_code": "RIVERSHIFT_DISPATCH_FAILED",
-                 "error_message": str(exc)[:500]},
-                expected_state=JobState.DISPATCHING.value,
-                expected_sequence=0,
-            )
-        except PersistenceError:
-            pass
+        logger.exception("RiverShift Actions dispatch failed for job %s", job_id)
+        _mark_dispatch_failure(store, job_id, str(exc))
         raise HTTPException(status_code=503, detail=f"RiverShift Actions dispatch failed: {str(exc)[:300]}") from None
     return _response(created)
 

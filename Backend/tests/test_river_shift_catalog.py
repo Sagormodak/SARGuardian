@@ -127,6 +127,29 @@ def test_search_uses_official_cmr_collection_and_returns_catalogue_only_metadata
     assert product.size_mb == 100.0
 
 
+
+def test_quad_polarization_maps_to_all_co_and_cross_pol_channels(monkeypatch):
+    item = _umm_item()
+    quad_name = GRANULE.replace("_DHDH_", "_QPDH_")
+    item["umm"]["GranuleUR"] = quad_name
+    item["umm"]["TemporalExtents"] = []
+    item["umm"]["RelatedUrls"][0]["URL"] = (
+        "https://nisar.asf.earthdatacloud.nasa.gov/NISAR/"
+        f"NISAR_L2_GCOV_PROVISIONAL_V1/{quad_name}/{quad_name}.h5"
+    )
+
+    def fake_urlopen(_request, timeout):
+        return _FakeResponse({"hits": 1, "items": [item]})
+
+    monkeypatch.setattr("app.river_shift.urllib.request.urlopen", fake_urlopen)
+    result = search_gcov_catalogue(_request())
+
+    assert result.product_count == 1
+    assert result.products[0].polarization_code == "QPDH"
+    assert result.products[0].main_band_polarization == "HH+HV+VH+VV"
+    assert result.products[0].start_time_utc == "20260718T155041"
+
+
 def test_search_all_maturity_queries_beta_and_provisional_separately(monkeypatch):
     captured: list[str] = []
 
