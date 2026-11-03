@@ -692,7 +692,8 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     if (
       !currentJobFrameMetadata
       || !currentJobFrame
-      || currentJobFrame.date !== currentJobFrameMetadata.date
+      || jobFrameJobId !== riverJobId
+      || jobFrameDate !== currentJobFrameMetadata.date
     ) return;
     const timer = window.setTimeout(() => {
       setJobTimeSeriesIndex((index) => (index + 1) % jobTimeSeriesFrames.length);
@@ -702,7 +703,8 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     jobTimeSeriesPlaying,
     jobTimeSeriesFrames.length,
     currentJobFrameMetadata?.date,
-    currentJobFrame?.date,
+    jobFrameJobId,
+    jobFrameDate,
   ]);
 
   const resultType = useMemo(() => report ? report.analysis_type.replace(/_/g, ' ') : 'No result imported', [report]);
