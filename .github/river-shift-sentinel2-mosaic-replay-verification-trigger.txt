@@ -1,0 +1,5 @@
+Temporary trigger marker for the one-off retained-data replay.
+Source NISAR run: 41642281327.
+Replay dates: 2026-07-12 and 2026-09-10.
+Workflow checks out main and uses the latest immutable-sidecar replay helper and baseline-safe Sentinel-2 mosaic implementation.
+No raw NISAR HDF5 download or public scientific artifact publication.
