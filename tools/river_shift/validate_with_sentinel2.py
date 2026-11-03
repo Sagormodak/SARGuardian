@@ -393,6 +393,11 @@ def _read_cross_sensor_arrays(
     items = [item] if isinstance(item, dict) else list(item)
     if not items:
         raise CrosscheckError("At least one Sentinel-2 tile is required for raster alignment.")
+    datatake_groups = {_datatake_group_key(row) for row in items}
+    if len(datatake_groups) != 1:
+        raise CrosscheckError(
+            "A Sentinel-2 mosaic may contain only one platform, datatake and acquisition date."
+        )
     with rasterio.open(nisar_path) as nisar:
         if nisar.count < 1 or nisar.crs is None:
             raise CrosscheckError("NISAR mask must be a single-band georeferenced raster.")
