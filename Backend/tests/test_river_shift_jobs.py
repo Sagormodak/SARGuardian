@@ -314,3 +314,28 @@ def test_river_shift_allows_only_one_active_job_per_account_but_keeps_idempotent
     assert "already has an active RiverShift job" in competing.json()["detail"]
     assert first.json()["id"] in competing.json()["detail"]
     assert len(store.rows) == 1
+
+
+def test_database_active_job_conflict_is_returned_as_http_409(monkeypatch) -> None:
+    class ConcurrentConflictStore(RiverShiftStore):
+        def create_river_shift_job(self, values):
+            raise river_module.PersistenceConflictError("concurrent active job insert")
+
+    store = ConcurrentConflictStore()
+    api = configure(monkeypatch, store)
+    response = api.post("/api/river-shift/jobs", json=payload())
+    assert response.status_code == 409
+    assert "already has an active RiverShift job" in response.json()["detail"]
+
+
+def test_river_shift_migration_enforces_one_active_job_per_owner() -> None:
+    from pathlib import Path
+
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "supabase"
+        / "migrations"
+        / "20261103100000_river_shift_jobs.sql"
+    ).read_text(encoding="utf-8")
+    assert "create unique index river_shift_jobs_one_active_per_owner_idx" in migration.lower()
+    assert "where state in ('queued', 'dispatching', 'running')" in migration.lower()
