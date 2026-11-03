@@ -5,6 +5,10 @@ import hmac
 import json
 from datetime import UTC, datetime
 from uuid import uuid4
+from io import BytesIO
+from urllib.error import HTTPError
+
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -230,10 +234,28 @@ def test_dispatch_payload_includes_exact_discovery_filters(monkeypatch) -> None:
 
     inputs = captured["body"]["inputs"]
     assert captured["body"]["ref"] == "main"
+    assert set(inputs) == {
+        "job_id", "aoi_wkt", "start_date", "end_date", "event_date", "maturity",
+        "main_band_polarization", "flight_direction", "frame_coverage",
+        "frequency", "covariance_term", "threshold_method", "threshold_db",
+        "granule_names_json", "request_fingerprint", "callback_url",
+    }
+    assert all(isinstance(value, str) for value in inputs.values())
+    assert inputs["aoi_wkt"] == request_snapshot["aoi_wkt"]
+    assert inputs["start_date"] == request_snapshot["start_date"]
+    assert inputs["end_date"] == request_snapshot["end_date"]
+    assert inputs["event_date"] == request_snapshot["event_date"]
+    assert inputs["maturity"] == request_snapshot["maturity"]
+    assert inputs["frequency"] == request_snapshot["frequency"]
+    assert inputs["covariance_term"] == request_snapshot["covariance_term"]
+    assert inputs["threshold_method"] == request_snapshot["threshold_method"]
+    assert inputs["threshold_db"] == ""
     assert inputs["main_band_polarization"] == "HH+HV"
     assert inputs["flight_direction"] == "DESCENDING"
     assert inputs["frame_coverage"] == "FULL"
     assert inputs["granule_names_json"] == '["granule-1"]'
+    assert inputs["request_fingerprint"] == "f" * 64
+    assert inputs["callback_url"] == "https://api.example.test"
 
 
 
@@ -505,3 +527,44 @@ def test_river_shift_migration_enforces_one_active_job_per_owner() -> None:
     assert "where state in ('queued', 'dispatching', 'running')" in migration.lower()
     assert "to_jsonb(new) - 'updated_at'" in migration.lower()
     assert "terminal rivershift jobs are immutable" in migration.lower()
+
+def test_dispatch_surfaces_github_validation_message_without_exposing_credentials(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    settings = SimpleNamespace(
+        river_shift_actions_enabled=True,
+        river_shift_github_actions_repository="moshiour0/SARGuardian-backend",
+        river_shift_github_actions_workflow="river-shift-gcov-process.yml",
+        river_shift_github_actions_ref="main",
+        river_shift_github_actions_token="server-token-must-not-leak",
+        github_api_url="https://api.github.com",
+        river_shift_public_api_url="https://api.example.test",
+    )
+    request_snapshot = payload() | {
+        "main_band_polarization": None,
+        "flight_direction": None,
+        "frame_coverage": "ALL",
+    }
+    response_body = json.dumps({
+        "message": "Unexpected inputs provided: invalid workflow_dispatch input"
+    }).encode("utf-8")
+
+    def reject_dispatch(request, timeout):
+        raise HTTPError(
+            request.full_url,
+            422,
+            "Unprocessable Entity",
+            {},
+            BytesIO(response_body),
+        )
+
+    monkeypatch.setattr(river_module, "urlopen", reject_dispatch)
+    with pytest.raises(RuntimeError) as captured:
+        river_module._dispatch(settings, uuid4(), request_snapshot, ["granule-1"], "f" * 64)
+
+    message = str(captured.value)
+    assert "HTTP 422" in message
+    assert "Unexpected inputs provided" in message
+    assert "server-token-must-not-leak" not in message
+    assert response_body.decode("utf-8") not in message
+
