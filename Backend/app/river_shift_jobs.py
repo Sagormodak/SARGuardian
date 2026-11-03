@@ -7,7 +7,7 @@ import mimetypes
 import re
 from datetime import UTC, date, datetime
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from urllib.request import Request as UrlRequest, urlopen
 from uuid import UUID, uuid4
 from typing import Any, Literal
@@ -348,6 +348,110 @@ def create_river_shift_job(payload: CreateRiverShiftJobRequest, user: dict = Dep
     return _response(created)
 
 
+def _github_get_json(settings: Any, url: str) -> dict[str, Any] | None:
+    http_request = UrlRequest(url, headers={
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {settings.river_shift_github_actions_token}",
+        "X-GitHub-Api-Version": "2022-11-28",
+    })
+    try:
+        with urlopen(http_request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _find_workflow_run(settings: Any, job_id: UUID) -> dict[str, Any] | None:
+    workflow = quote(settings.river_shift_github_actions_workflow, safe="")
+    url = (
+        f"{settings.github_api_url}/repos/{settings.river_shift_github_actions_repository}"
+        f"/actions/workflows/{workflow}/runs?event=workflow_dispatch&per_page=100"
+    )
+    payload = _github_get_json(settings, url)
+    rows = payload.get("workflow_runs") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return None
+    expected_title = f"RiverShift {job_id}"
+    for row in rows:
+        if isinstance(row, dict) and row.get("display_title") == expected_title:
+            return row
+    return None
+
+
+def _refresh_workflow_state(store: Any, record: dict[str, Any]) -> dict[str, Any]:
+    state = str(record.get("state"))
+    if state not in {JobState.DISPATCHING.value, JobState.RUNNING.value}:
+        return record
+    try:
+        settings = get_settings()
+        if not settings.river_shift_actions_enabled:
+            return record
+        run = None
+        run_id = record.get("github_run_id")
+        if isinstance(run_id, str) and run_id.isdigit():
+            run = _github_get_json(
+                settings,
+                f"{settings.github_api_url}/repos/{settings.river_shift_github_actions_repository}/actions/runs/{run_id}",
+            )
+        if run is None:
+            run = _find_workflow_run(settings, UUID(str(record["id"])))
+        updates: dict[str, Any] = {}
+        if run is None:
+            if state == JobState.DISPATCHING.value:
+                created_raw = record.get("created_at")
+                try:
+                    created_at = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00"))
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=UTC)
+                except (TypeError, ValueError):
+                    return record
+                timeout = int(getattr(settings, "displacement_dispatch_timeout_seconds", 3600))
+                age_seconds = (datetime.now(UTC) - created_at.astimezone(UTC)).total_seconds()
+                if age_seconds > timeout:
+                    updates = {
+                        "state": JobState.FAILED.value,
+                        "stage": "workflow_start_timeout",
+                        "error_code": "RIVERSHIFT_WORKFLOW_START_TIMEOUT",
+                        "error_message": "The RiverShift GitHub Actions workflow did not report a start before the configured timeout.",
+                    }
+            if not updates:
+                return record
+        else:
+            run_number = run.get("id")
+            run_url = run.get("html_url")
+            status = run.get("status")
+            conclusion = run.get("conclusion")
+            if isinstance(run_number, (int, str)) and str(run_number).isdigit():
+                updates["github_run_id"] = str(run_number)
+            if isinstance(run_url, str) and run_url.startswith("https://github.com/"):
+                updates["github_run_url"] = run_url
+            if status == "completed":
+                updates.update({
+                    "state": JobState.FAILED.value,
+                    "stage": "terminal_validation_failed",
+                    "error_code": "WORKER_CALLBACK_MISSING" if conclusion == "success" else "GITHUB_ACTIONS_WORKER_FAILED",
+                    "error_message": (
+                        "GitHub Actions completed without a verified RiverShift result callback."
+                        if conclusion == "success"
+                        else "GitHub Actions reported a terminal RiverShift worker failure."
+                    ),
+                })
+            if not updates:
+                return record
+        return store.update_river_shift_job(
+            UUID(str(record["id"])),
+            updates,
+            expected_state=state,
+            expected_sequence=int(record.get("callback_sequence") or 0),
+        )
+    except (PersistenceConflictError, PersistenceError):
+        return record
+    except Exception:
+        # A transient GitHub API failure must not hide the last durable job state.
+        return record
+
+
 @router.get("/jobs/{job_id}", response_model=RiverShiftJobResponse)
 def get_river_shift_job(job_id: UUID, user: dict = Depends(get_current_user)) -> RiverShiftJobResponse:
     try:
@@ -356,6 +460,7 @@ def get_river_shift_job(job_id: UUID, user: dict = Depends(get_current_user)) ->
         raise HTTPException(status_code=503, detail="Could not read the RiverShift processing job.") from None
     if not record:
         raise HTTPException(status_code=404, detail="RiverShift job was not found for this account.")
+    record = _refresh_workflow_state(_store(), record)
     return _response(record)
 
 
