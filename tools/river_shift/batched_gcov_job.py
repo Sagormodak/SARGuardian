@@ -108,7 +108,9 @@ def _write_batch_outputs(batches: list[list[dict[str, Any]]], sequence: int, tot
 
 def _prepare_job(request: dict[str, Any], callbacks: JobCallbacks) -> None:
     started = time.monotonic()
-    output_dir = Path(os.environ.get("RIVERSHIFT_PREPARE_OUTPUT_DIR", "prepared-output"))
+    # Child scripts execute with cwd=tools/river_shift; make output paths absolute
+    # so discovery writes into the root-level folder uploaded by Actions.
+    output_dir = Path(os.environ.get("RIVERSHIFT_PREPARE_OUTPUT_DIR", "prepared-output")).resolve()
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True)
@@ -359,11 +361,15 @@ def _write_product_failure(
     result = {
         "schema_version": 1,
         "status": "FAIL",
+        "job_id": os.environ.get("RIVERSHIFT_JOB_ID"),
+        "request_fingerprint": os.environ.get("RIVERSHIFT_REQUEST_FINGERPRINT"),
         "granule_name": granule_name,
         "acquisition_date": acquisition_date,
         "batch_number": batch_number,
         "product_index": product_index,
         "total_products": total_products,
+        "retry_attempt": int(os.environ.get("RIVERSHIFT_RETRY_ATTEMPT", "0") or 0),
+        "attempt_number": int(os.environ.get("RIVERSHIFT_RETRY_ATTEMPT", "0") or 0) + 1,
         "error_code": code,
         "error_message": message[:500],
         "failed_stage": failed_stage,
@@ -378,6 +384,8 @@ def _write_product_failure(
         batch_number=batch_number,
         product_index=product_index,
         total_products=total_products,
+        retry_attempt=result["retry_attempt"],
+        attempt_number=result["attempt_number"],
         error_code=code,
         failed_stage=failed_stage,
         error_message=message[:500],
@@ -394,6 +402,8 @@ def _run_product_worker() -> int:
     batch_count = int(os.environ.get("RIVERSHIFT_BATCH_COUNT", "0") or 0)
     product_index = int(os.environ.get("RIVERSHIFT_PRODUCT_INDEX", "0") or 0)
     total_products = int(os.environ.get("RIVERSHIFT_TOTAL_PRODUCTS", "0") or 0)
+    retry_attempt = int(os.environ.get("RIVERSHIFT_RETRY_ATTEMPT", "0") or 0)
+    attempt_number = retry_attempt + 1
     if not granule_name or not acquisition_date:
         raise WorkerFailure("INVALID_REQUEST", "A matrix job requires an exact granule name and acquisition date.")
     if not re.fullmatch(r"[A-Za-z0-9_.-]{10,250}", granule_name):
@@ -411,9 +421,12 @@ def _run_product_worker() -> int:
         "batch_count": batch_count,
         "product_index": product_index,
         "total_products": total_products,
+        "retry_attempt": retry_attempt,
+        "attempt_number": attempt_number,
     }
+    wave_label = "delayed retry wave" if retry_attempt else f"batch {batch_number:02d}/{batch_count:02d}"
     print(
-        f"::group::RiverShift batch {batch_number:02d}/{batch_count:02d} · "
+        f"::group::RiverShift {wave_label} · attempt {attempt_number}/2 · "
         f"product {product_index}/{total_products} · {acquisition_date} · {granule_name}",
         flush=True,
     )
@@ -665,6 +678,91 @@ def _load_product_results(results_dir: Path) -> dict[str, dict[str, Any]]:
     return results
 
 
+def _product_result_problem(
+    prepared: dict[str, Any],
+    row: dict[str, Any],
+    result: dict[str, Any] | None,
+    results_dir: Path,
+) -> str | None:
+    """Return why a product result is unusable; None means fully verified PASS."""
+    name = row["granule_name"]
+    if not isinstance(result, dict):
+        return "WORKER_RESULT_MISSING"
+    if (
+        result.get("job_id") != prepared["job_id"]
+        or result.get("request_fingerprint") != prepared["request_fingerprint"]
+        or result.get("granule_name") != name
+        or result.get("acquisition_date") != row["acquisition_date"]
+    ):
+        return "WORKER_RESULT_IDENTITY_INVALID"
+    if result.get("status") != "PASS":
+        return str(result.get("error_code") or "PRODUCT_WORKER_FAILED")
+
+    required = {
+        f"{name}.tif",
+        f"{name}.metadata.json",
+        f"{name}.download.json",
+        f"{name}.gcov_inventory.json",
+    }
+    verified: set[str] = set()
+    for item in result.get("files", []):
+        if not isinstance(item, dict):
+            continue
+        filename = item.get("name")
+        digest = item.get("sha256")
+        if (
+            not isinstance(filename, str)
+            or Path(filename).name != filename
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        ):
+            continue
+        source = results_dir / name / filename
+        try:
+            if source.is_file() and sha256_file(source) == digest:
+                verified.add(filename)
+        except OSError:
+            continue
+    if not required.issubset(verified):
+        return "PRODUCT_ARTIFACT_MISSING_OR_CHECKSUM_INVALID"
+    return None
+
+
+def _retry_matrix(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    total = len(rows)
+    return {
+        "include": [
+            {
+                "granule_name": row["granule_name"],
+                "acquisition_date": row["acquisition_date"],
+                "batch_number": MAX_BATCHES + 1,
+                "batch_count": 1,
+                "product_index": index,
+                "total_products": total,
+                "retry_attempt": 1,
+            }
+            for index, row in enumerate(rows, start=1)
+        ]
+    }
+
+
+def _select_retry_rows(
+    prepared: dict[str, Any],
+    first_attempt_results: dict[str, dict[str, Any]],
+    first_attempt_dir: Path,
+) -> list[dict[str, Any]]:
+    rows = []
+    for name in prepared["selected_product_names"]:
+        row = {"granule_name": name, "acquisition_date": prepared["date_by_name"][name]}
+        problem = _product_result_problem(
+            prepared, row, first_attempt_results.get(name), first_attempt_dir
+        )
+        if problem:
+            row["first_attempt_failure"] = problem
+            rows.append(row)
+    return rows
+
+
 def _report_batch() -> None:
     prepared_dir = Path(os.environ.get("RIVERSHIFT_PREPARED_DIR", "prepared"))
     prepared = _read_json(prepared_dir / "prepared.json", "prepared selection")
@@ -744,6 +842,103 @@ def _report_batch() -> None:
     _write_output("batch_failure_count", str(failed))
 
 
+def _prepare_retry_wave() -> None:
+    prepared_dir = Path(os.environ.get("RIVERSHIFT_PREPARED_DIR", "prepared"))
+    prepared = _read_json(prepared_dir / "prepared.json", "prepared selection")
+    first_dir = Path(os.environ.get("RIVERSHIFT_PRODUCT_ARTIFACTS_DIR", "product-artifacts"))
+    first_results = _load_product_results(first_dir)
+    retry_rows = _select_retry_rows(prepared, first_results, first_dir)
+    matrix = _retry_matrix(retry_rows)
+    _write_json(Path("retry-plan") / "retry-products.json", {
+        "job_id": prepared["job_id"],
+        "request_fingerprint": prepared["request_fingerprint"],
+        "retry_attempt": 1,
+        "products": retry_rows,
+    })
+    for row in retry_rows:
+        _log_worker_stage(
+            "delayed_retry_queue", "QUEUE",
+            granule_name=row["granule_name"],
+            acquisition_date=row["acquisition_date"],
+            first_attempt_failure=row["first_attempt_failure"],
+            retry_attempt=1,
+        )
+    _log_worker_stage(
+        "delayed_retry_plan", "PASS",
+        first_attempt_product_count=len(prepared["selected_product_names"]),
+        retry_queue_count=len(retry_rows),
+        retry_max_parallel=15,
+        retry_policy="one retry wave after every first-attempt batch has completed",
+    )
+    _write_output("retry_matrix", json.dumps(matrix, separators=(",", ":")))
+    _write_output("retry_count", str(len(retry_rows)))
+
+
+def _report_retry_wave() -> None:
+    prepared_dir = Path(os.environ.get("RIVERSHIFT_PREPARED_DIR", "prepared"))
+    prepared = _read_json(prepared_dir / "prepared.json", "prepared selection")
+    first_dir = Path(os.environ.get("RIVERSHIFT_PRODUCT_ARTIFACTS_DIR", "product-artifacts"))
+    retry_dir = Path(os.environ.get("RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR", "retry-product-artifacts"))
+    first_results = _load_product_results(first_dir)
+    retry_results = _load_product_results(retry_dir)
+    retry_rows = _select_retry_rows(prepared, first_results, first_dir)
+    passed = 0
+    failed = 0
+    for row in retry_rows:
+        result = retry_results.get(row["granule_name"])
+        problem = _product_result_problem(prepared, row, result, retry_dir)
+        if problem is None:
+            passed += 1
+            _log_worker_stage(
+                "delayed_retry_reconciliation", "PASS",
+                granule_name=row["granule_name"],
+                acquisition_date=row["acquisition_date"],
+                retry_attempt=1,
+                source_sha256=result.get("source_sha256"),
+                raster_sha256=result.get("raster_sha256"),
+            )
+        else:
+            failed += 1
+            _log_worker_stage(
+                "delayed_retry_reconciliation", "FAIL",
+                granule_name=row["granule_name"],
+                acquisition_date=row["acquisition_date"],
+                retry_attempt=1,
+                first_attempt_failure=row["first_attempt_failure"],
+                retry_failure=problem,
+                retry_error_message=(result or {}).get("error_message", "Retry result artifact missing or invalid."),
+            )
+    _log_worker_stage(
+        "delayed_retry_barrier", "PASS" if failed == 0 else "WARN",
+        queued=len(retry_rows),
+        passed=passed,
+        failed=failed,
+        retries_per_product=1,
+        further_automatic_retries=0,
+    )
+    sequence = int(os.environ.get("RIVERSHIFT_CALLBACK_SEQUENCE", "0") or 0)
+    callbacks = JobCallbacks(
+        prepared["job_id"],
+        prepared["request_fingerprint"],
+        os.environ["RIVERSHIFT_CALLBACK_URL"],
+        initial_sequence=sequence,
+    )
+    callbacks.send(
+        "running",
+        "delayed_retry_wave_completed",
+        result_summary={
+            "retry_count": len(retry_rows),
+            "retry_success_count": passed,
+            "retry_failure_count": failed,
+            "retries_per_product": 1,
+            "further_automatic_retries": 0,
+        },
+    )
+    _write_output("callback_sequence", str(callbacks.sequence))
+    _write_output("retry_success_count", str(passed))
+    _write_output("retry_failure_count", str(failed))
+
+
 def _verify_and_stage_product_results(
     prepared: dict[str, Any],
     product_artifacts_dir: Path,
@@ -751,7 +946,16 @@ def _verify_and_stage_product_results(
 ) -> tuple[dict[str, list[Path]], Path]:
     expected_names = prepared["selected_product_names"]
     expected = set(expected_names)
-    results = _load_product_results(product_artifacts_dir)
+    first_results = _load_product_results(product_artifacts_dir)
+    retry_dir = Path(os.environ.get("RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR", "retry-product-artifacts"))
+    retry_results = _load_product_results(retry_dir)
+    results = dict(first_results)
+    result_dirs = {name: product_artifacts_dir for name in first_results}
+    # A delayed retry result supersedes the first-attempt result for that exact granule.
+    for name, retry_result in retry_results.items():
+        if name in expected:
+            results[name] = retry_result
+            result_dirs[name] = retry_dir
     missing = sorted(expected - set(results))
     failures = []
     product_rasters: dict[str, Path] = {}
@@ -798,7 +1002,7 @@ def _verify_and_stage_product_results(
                 or len(expected_digest) != 64
             ):
                 continue
-            source = product_artifacts_dir / name / filename
+            source = result_dirs.get(name, product_artifacts_dir) / name / filename
             if not source.is_file() or sha256_file(source) != expected_digest:
                 failures.append(f"{name}: {filename} is missing or its SHA-256 does not match.")
                 verified_files = {}
@@ -1138,6 +1342,18 @@ def main() -> int:
         if phase == "report-batch":
             _log_worker_stage("worker_startup", "START", phase=phase)
             _report_batch()
+            _log_worker_stage("worker_completion", "PASS", phase=phase)
+            return 0
+
+        if phase == "prepare-retry":
+            _log_worker_stage("worker_startup", "START", phase=phase)
+            _prepare_retry_wave()
+            _log_worker_stage("worker_completion", "PASS", phase=phase)
+            return 0
+
+        if phase == "report-retry":
+            _log_worker_stage("worker_startup", "START", phase=phase)
+            _report_retry_wave()
             _log_worker_stage("worker_completion", "PASS", phase=phase)
             return 0
 

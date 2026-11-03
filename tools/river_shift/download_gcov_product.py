@@ -143,14 +143,28 @@ def download_product(product: dict, output_dir: Path) -> dict:
     earthaccess = _load_earthaccess()
 
     token = os.environ.get("EARTHDATA_TOKEN", "").strip()
+    retry_wave = os.environ.get("RIVERSHIFT_RETRY_ATTEMPT", "0").strip() == "1"
     auth_mode = "bearer_token" if token else "username_password"
     print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
         "stage": "earthdata_login",
         "status": "START",
         "auth_mode": auth_mode,
+        "attempt_number": 2 if retry_wave else 1,
+        "delayed_retry_wave": retry_wave,
     }), flush=True)
     try:
-        earthaccess.login(strategy="environment")
+        # On the first wave, a rejected token fails this product and is queued.
+        # Switch to the password session only when that product reaches the delayed retry wave.
+        if retry_wave and token and os.environ.get("EARTHDATA_USERNAME", "").strip() and os.environ.get("EARTHDATA_PASSWORD", ""):
+            print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+                "stage": "delayed_retry_password_authentication",
+                "status": "START",
+            }), flush=True)
+            if not _reauthenticate_with_username_password(earthaccess):
+                raise RuntimeError("username_password_retry_not_configured")
+            auth_mode = "username_password_delayed_retry"
+        else:
+            earthaccess.login(strategy="environment")
     except Exception as exc:
         print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
             "stage": "earthdata_login",
@@ -230,60 +244,25 @@ def download_product(product: dict, output_dir: Path) -> dict:
                 threads=1,
                 show_progress=False,
             )
-        except Exception as first_error:
-            denied_status = _earthdata_http_auth_rejection(first_error)
-            if denied_status not in {401, 403}:
-                print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
-                    "stage": "earthaccess_download",
-                    "status": "FAIL",
-                    "error_type": type(first_error).__name__,
-                }), flush=True)
-                raise RuntimeError(
-                    "earthaccess could not download the exact NISAR GCOV granule; inspect the network/download diagnostics."
-                ) from None
-
+        except Exception as download_error:
+            denied_status = _earthdata_http_auth_rejection(download_error)
             print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
-                "stage": "earthdata_password_fallback",
-                "status": "START",
-                "reason": f"HTTP_{denied_status}",
+                "stage": "earthaccess_download",
+                "status": "FAIL",
+                "error_type": type(download_error).__name__,
+                "http_status": denied_status,
+                "attempt_number": 2 if retry_wave else 1,
+                "delayed_retry_wave": retry_wave,
+                "immediate_retry_performed": False,
             }), flush=True)
-            try:
-                if not _reauthenticate_with_username_password(earthaccess):
-                    raise RuntimeError("username_password_fallback_not_configured")
-                fallback_candidates = earthaccess.search_data(
-                    short_name=collection,
-                    granule_name=expected_name,
-                    downloadable=True,
-                    count=2,
-                )
-                exact_matches = [
-                    row for row in (fallback_candidates or [])
-                    if _earthaccess_granule_name(row) == expected_name
-                ]
-                if len(exact_matches) != 1:
-                    raise RuntimeError("exact_cmr_match_changed_after_authentication_fallback")
-                shutil.rmtree(temporary_dir, ignore_errors=True)
-                temporary_dir.mkdir(parents=True, exist_ok=False)
-                downloaded_paths = earthaccess.download(
-                    exact_matches,
-                    local_path=str(temporary_dir),
-                    threads=1,
-                    show_progress=False,
-                )
-            except Exception as fallback_error:
-                print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
-                    "stage": "earthdata_password_fallback",
-                    "status": "FAIL",
-                    "error_type": type(fallback_error).__name__,
-                }), flush=True)
+            if denied_status in {401, 403} and not retry_wave:
                 raise RuntimeError(
-                    "Earthdata rejected the pre-generated token and the username/password fallback could not download the exact GCOV granule."
+                    "Earthdata rejected this product download with HTTP "
+                    f"{denied_status}; the product is queued for the single delayed retry wave after all first-attempt batches finish."
                 ) from None
-            print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
-                "stage": "earthdata_password_fallback",
-                "status": "PASS",
-                "auth_mode": "username_password_fallback",
-            }), flush=True)
+            raise RuntimeError(
+                "The exact NISAR GCOV product download failed on this attempt; no immediate re-download was performed."
+            ) from None
 
         paths = [Path(item).resolve() for item in (downloaded_paths or [])]
         if len(paths) != 1:
