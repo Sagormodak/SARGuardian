@@ -246,15 +246,6 @@ class DriveClient:
         if not isinstance(email, str) or email.lower() != EXPECTED_DRIVE_ACCOUNT:
             raise DriveUploadError("Google Drive authenticated account does not match the configured SARGuardian storage account.")
 
-    def verify_parent_folder(self, folder_id: str) -> None:
-        payload = self._json(
-            "GET",
-            f"{DRIVE_API}/files/{quote(folder_id, safe='')}",
-            params={"fields": "id,mimeType"},
-        )
-        if payload.get("id") != folder_id or payload.get("mimeType") != FOLDER_MIME_TYPE:
-            raise DriveUploadError("Configured Google Drive parent identifier is not an accessible folder.")
-
     def _json(self, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
         # Shared Drive-compatible flags are harmless for My Drive and required
         # when the configured parent folder belongs to a Shared Drive.
@@ -706,14 +697,6 @@ def upload_validated_results(work_dir: Path, *, config: DriveConfig | None = Non
         lambda: DriveClient(drive_config, session=session),
     )
     _run_drive_stage("authenticated_account_verification", client.verify_authenticated_account)
-    _run_drive_stage(
-        "parent_folder_access_verification",
-        lambda: client.verify_parent_folder(client.config.parent_folder_id),
-    )
-    _run_drive_stage(
-        "parent_folder_privacy_verification",
-        lambda: client.require_private_folder(client.config.parent_folder_id),
-    )
     storage_root_folder = _run_drive_stage(
         "river_shift_storage_folder_find_or_create",
         lambda: client.find_or_create_folder(

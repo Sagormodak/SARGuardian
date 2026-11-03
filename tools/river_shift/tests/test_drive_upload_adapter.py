@@ -317,8 +317,6 @@ def test_upload_validated_results_uses_one_fixed_root_then_job_specific_folders(
     class FakeDrive:
         config = type("Config", (), {"parent_folder_id": "parent-folder-123"})()
         def verify_authenticated_account(self): pass
-        def verify_parent_folder(self, folder_id):
-            assert folder_id == "parent-folder-123"
         def require_private_folder(self, folder_id): private_checks.append(folder_id)
         def find_or_create_folder(self, name, parent_id):
             folder_calls.append((name, parent_id))
@@ -398,18 +396,6 @@ def test_authenticated_account_verification_requires_established_storage_account
     with pytest.raises(DriveUploadError, match="account does not match"):
         drive.verify_authenticated_account()
 
-
-def test_parent_folder_verification_requires_an_accessible_folder():
-    drive = DriveClient.__new__(DriveClient)
-    drive._json = lambda *_args, **_kwargs: {
-        "id": "parent-folder-123",
-        "mimeType": "application/vnd.google-apps.folder",
-    }
-    drive.verify_parent_folder("parent-folder-123")
-
-    drive._json = lambda *_args, **_kwargs: {"id": "parent-folder-123", "mimeType": "text/plain"}
-    with pytest.raises(DriveUploadError, match="not an accessible folder"):
-        drive.verify_parent_folder("parent-folder-123")
 
 
 def test_drive_stage_logger_emits_pass_and_failure_without_suppressing_errors(capsys):

@@ -41,7 +41,13 @@ MAX_SELECTED_GRANULES = 24
 MAX_GRANULES_PER_DATE = 4
 MAX_WEB_PREVIEW_BYTES = 3_500_000
 
-from drive_upload_adapter import DriveClient, DriveUploadError, load_drive_config, upload_validated_results  # noqa: E402
+from drive_upload_adapter import (
+    DriveClient,
+    DriveUploadError,
+    RIVERSHIFT_STORAGE_FOLDER_NAME,
+    load_drive_config,
+    upload_validated_results,
+)  # noqa: E402
 from river_shift.raster_io import RasterContractError, validate_gcov_series  # noqa: E402
 
 
@@ -846,27 +852,38 @@ def _ensure_credentials() -> None:
         ) from None
     _log_worker_stage("drive_account_verification", "PASS")
 
-    _log_worker_stage("drive_parent_folder_access", "START", folder_variable=folder_source)
+    _log_worker_stage(
+        "drive_parent_folder_access",
+        "START",
+        folder_variable=folder_source,
+        verification_method="list_children_then_find_or_create",
+    )
     try:
-        drive.verify_parent_folder(config.parent_folder_id)
+        storage_root_folder = drive.find_or_create_folder(
+            RIVERSHIFT_STORAGE_FOLDER_NAME, config.parent_folder_id
+        )
     except DriveUploadError as exc:
         _log_worker_stage("drive_parent_folder_access", "FAIL", error=str(exc))
         raise WorkerFailure(
             "PRIVATE_STORAGE_PARENT_FOLDER_UNAVAILABLE",
-            "GOOGLE_DRIVE_PARENT_FOLDER_ID must identify an existing folder accessible to the configured Google Drive account.",
+            "Google Drive could not list or create the fixed RiverShift folder beneath GOOGLE_DRIVE_PARENT_FOLDER_ID; verify that the parent exists and allows folder creation.",
         ) from None
-    _log_worker_stage("drive_parent_folder_access", "PASS")
+    _log_worker_stage(
+        "drive_parent_folder_access",
+        "PASS",
+        folder_name=RIVERSHIFT_STORAGE_FOLDER_NAME,
+    )
 
-    _log_worker_stage("drive_parent_folder_privacy", "START")
+    _log_worker_stage("river_shift_storage_folder_privacy", "START")
     try:
-        drive.require_private_folder(config.parent_folder_id)
+        drive.require_private_folder(storage_root_folder)
     except DriveUploadError as exc:
-        _log_worker_stage("drive_parent_folder_privacy", "FAIL", error=str(exc))
+        _log_worker_stage("river_shift_storage_folder_privacy", "FAIL", error=str(exc))
         raise WorkerFailure(
             "PRIVATE_STORAGE_FOLDER_NOT_PRIVATE",
-            "The configured Google Drive parent folder does not satisfy RiverShift private-storage policy.",
+            "The fixed RiverShift folder does not satisfy the private-storage policy.",
         ) from None
-    _log_worker_stage("drive_parent_folder_privacy", "PASS")
+    _log_worker_stage("river_shift_storage_folder_privacy", "PASS")
 
 
 def _copy_result_files(source_dirs: list[tuple[str, Path]], output_root: Path) -> list[dict[str, str]]:
