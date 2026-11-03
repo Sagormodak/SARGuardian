@@ -354,6 +354,7 @@ def _write_product_failure(
     started: float,
     code: str,
     message: str,
+    failed_stage: str,
 ) -> dict[str, Any]:
     result = {
         "schema_version": 1,
@@ -365,6 +366,7 @@ def _write_product_failure(
         "total_products": total_products,
         "error_code": code,
         "error_message": message[:500],
+        "failed_stage": failed_stage,
         "elapsed_seconds": round(time.monotonic() - started, 3),
         "files": [],
     }
@@ -377,6 +379,8 @@ def _write_product_failure(
         product_index=product_index,
         total_products=total_products,
         error_code=code,
+        failed_stage=failed_stage,
+        error_message=message[:500],
         elapsed_seconds=result["elapsed_seconds"],
     )
     return result
@@ -414,6 +418,7 @@ def _run_product_worker() -> int:
         flush=True,
     )
     _log_worker_stage("product_worker_startup", "START", **context)
+    current_stage = "prepared_manifest_validation"
     try:
         prepared_dir = Path(os.environ.get("RIVERSHIFT_PREPARED_DIR", "prepared"))
         prepared = _read_json(prepared_dir / "prepared.json", "prepared selection")
@@ -435,6 +440,7 @@ def _run_product_worker() -> int:
             raise WorkerFailure("CATALOGUE_CHANGED", "The prepared exact product does not occur exactly once in the selected catalogue.")
         product = product_matches[0]
         request = prepared["request"]
+        current_stage = "earthdata_authentication"
         _log_worker_stage("earthdata_credentials", "START", **context)
         _configure_earthdata_credentials()
         _log_worker_stage("earthdata_credentials", "PASS", authentication_mode="bearer_token_or_netrc", **context)
@@ -449,6 +455,8 @@ def _run_product_worker() -> int:
         raw_dir.mkdir(parents=True)
         raster_dir.mkdir(parents=True)
 
+        current_stage = "exact_product_download"
+        _log_worker_stage("product_download", "START", **context)
         run_step(
             "exact-product download",
             [
@@ -465,12 +473,20 @@ def _run_product_worker() -> int:
             raise WorkerFailure("DOWNLOAD_RECEIPT_MISSING", "The exact download step did not produce the HDF5 file and its checksum receipt.")
         receipt = _read_json(receipt_path, "download receipt")
         _log_worker_stage(
+            "product_download", "PASS",
+            downloaded_bytes=receipt.get("size_bytes"),
+            source_sha256=receipt.get("sha256"),
+            **context,
+        )
+        _log_worker_stage(
             "product_download_receipt", "PASS",
             downloaded_bytes=receipt.get("size_bytes"),
             source_sha256=receipt.get("sha256"),
             **context,
         )
 
+        current_stage = "hdf5_inspection"
+        _log_worker_stage("hdf5_inspection", "START", product_file=f"{granule_name}.h5", **context)
         inventory_path = raw_dir / f"{granule_name}.gcov_inventory.json"
         run_step(
             "NISAR HDF5 inspection",
@@ -482,6 +498,9 @@ def _run_product_worker() -> int:
             context={**context, "stage_index": "2/3"},
         )
         inventory = _read_json(inventory_path, "HDF5 inventory")
+        _log_worker_stage("hdf5_inspection", "PASS", gdal_version=inventory.get("gdal_version"), **context)
+        current_stage = "hdf5_layer_validation"
+        _log_worker_stage("hdf5_layer_validation", "START", requested_frequency=request["frequency"], requested_term=request["term"], **context)
         available = {
             (row.get("frequency"), row.get("term"))
             for row in inventory.get("available_diagonal_terms", [])
@@ -500,6 +519,8 @@ def _run_product_worker() -> int:
             **context,
         )
 
+        current_stage = "aoi_raster_extraction"
+        _log_worker_stage("aoi_raster_extraction", "START", **context)
         raster_path = raster_dir / f"{granule_name}.tif"
         run_step(
             "AOI raster extraction",
@@ -523,6 +544,15 @@ def _run_product_worker() -> int:
         if metadata.get("source_product_sha256") != receipt.get("sha256"):
             raise WorkerFailure("SOURCE_PROVENANCE_INVALID", "The COG source checksum does not match the exact download receipt.")
 
+        _log_worker_stage(
+            "aoi_raster_extraction", "PASS",
+            output_bytes=raster_path.stat().st_size,
+            output_sha256=sha256_file(raster_path),
+            source_sha256=receipt.get("sha256"),
+            **context,
+        )
+        current_stage = "product_artifact_preparation"
+        _log_worker_stage("product_artifact_preparation", "START", **context)
         product_path.unlink(missing_ok=True)
         runner_files = [
             raster_path,
@@ -556,6 +586,12 @@ def _run_product_worker() -> int:
             "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
         }
         _write_json(_product_result_path(output_dir), result)
+        _log_worker_stage(
+            "product_artifact_preparation", "PASS",
+            artifact_file_count=len(files),
+            artifact_bytes=sum(item["bytes"] for item in files),
+            **context,
+        )
         _log_worker_stage("product_worker_completion", "PASS", **{
             **context,
             "download_bytes": result["download_bytes"],
@@ -578,6 +614,7 @@ def _run_product_worker() -> int:
             started=started,
             code=exc.code,
             message=str(exc),
+            failed_stage=current_stage,
         )
         for raw_file in Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())).glob(
             f"river-shift-product-*/raw/{granule_name}.h5"
@@ -597,6 +634,7 @@ def _run_product_worker() -> int:
             started=started,
             code="UNEXPECTED_PRODUCT_ERROR",
             message=f"Unexpected {type(exc).__name__}: {str(exc)[:400]}",
+            failed_stage=current_stage,
         )
         print(f"::error::Unexpected RiverShift product failure · {granule_name}", flush=True)
         return 0
@@ -681,6 +719,7 @@ def _report_batch() -> None:
                 batch_number=batch_number,
                 granule_name=name,
                 acquisition_date=row["acquisition_date"],
+                failed_stage=result.get("failed_stage", "unknown_stage"),
                 error_code=result.get("error_code", "PRODUCT_RESULT_INVALID"),
                 error_message=result.get("error_message", "Product result identity or status validation failed."),
             )
