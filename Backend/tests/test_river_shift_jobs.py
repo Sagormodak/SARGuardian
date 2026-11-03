@@ -4,7 +4,11 @@ import hashlib
 import hmac
 import json
 from datetime import UTC, datetime
+from io import BytesIO
+from urllib.error import HTTPError
 from uuid import uuid4
+
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -230,12 +234,139 @@ def test_dispatch_payload_includes_exact_discovery_filters(monkeypatch) -> None:
 
     inputs = captured["body"]["inputs"]
     assert captured["body"]["ref"] == "main"
+    assert captured["url"] == (
+        "https://api.github.com/repos/moshiour0/SARGuardian-backend"
+        "/actions/workflows/river-shift-gcov-process.yml/dispatches"
+    )
+    assert captured["timeout"] == 20
+    assert set(inputs) == {
+        "job_id", "aoi_wkt", "start_date", "end_date", "event_date", "maturity",
+        "main_band_polarization", "flight_direction", "frame_coverage",
+        "frequency", "covariance_term", "threshold_method", "threshold_db",
+        "granule_names_json", "request_fingerprint", "callback_url",
+    }
+    assert all(isinstance(value, str) for value in inputs.values())
+    assert inputs["job_id"]
+    assert inputs["aoi_wkt"] == request_snapshot["aoi_wkt"]
+    assert inputs["start_date"] == request_snapshot["start_date"]
+    assert inputs["end_date"] == request_snapshot["end_date"]
+    assert inputs["event_date"] == request_snapshot["event_date"]
+    assert inputs["maturity"] == "PROVISIONAL"
+    assert inputs["frequency"] == "frequencyA"
+    assert inputs["covariance_term"] == "HHHH"
+    assert inputs["threshold_method"] == "otsu"
+    assert inputs["threshold_db"] == ""
     assert inputs["main_band_polarization"] == "HH+HV"
     assert inputs["flight_direction"] == "DESCENDING"
     assert inputs["frame_coverage"] == "FULL"
     assert inputs["granule_names_json"] == '["granule-1"]'
+    assert inputs["request_fingerprint"] == "f" * 64
+    assert inputs["callback_url"] == "https://api.example.test"
 
 
+
+
+
+def test_dispatch_http_422_surfaces_only_bounded_public_validation_message(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    settings = SimpleNamespace(
+        river_shift_actions_enabled=True,
+        river_shift_github_actions_repository="moshiour0/SARGuardian-backend",
+        river_shift_github_actions_workflow="river-shift-gcov-process.yml",
+        river_shift_github_actions_ref="main",
+        river_shift_github_actions_token="credential-that-must-never-appear",
+        github_api_url="https://api.github.com",
+        river_shift_public_api_url="https://api.example.test",
+    )
+    submitted_aoi = "POLYGON ((85 27, 85.01 27, 85.01 27.01, 85 27.01, 85 27))"
+    request_snapshot = payload() | {
+        "aoi_wkt": submitted_aoi,
+        "main_band_polarization": None,
+        "flight_direction": None,
+        "frame_coverage": "ALL",
+    }
+    response_body = json.dumps({
+        "message": "Unexpected inputs provided:\n  threshold_db is not valid for this workflow"
+    }).encode("utf-8")
+
+    def reject_dispatch(request, timeout):
+        assert "credential-that-must-never-appear" in request.get_header("Authorization")
+        assert request.data and submitted_aoi.encode("utf-8") in request.data
+        raise HTTPError(
+            request.full_url,
+            422,
+            "Unprocessable Entity",
+            {},
+            BytesIO(response_body),
+        )
+
+    monkeypatch.setattr(river_module, "urlopen", reject_dispatch)
+    with pytest.raises(RuntimeError) as captured:
+        river_module._dispatch(settings, uuid4(), request_snapshot, ["granule-1"], "f" * 64)
+
+    message = str(captured.value)
+    assert "HTTP 422" in message
+    assert "Unexpected inputs provided: threshold_db is not valid for this workflow" in message
+    assert "\n" not in message
+    assert "credential-that-must-never-appear" not in message
+    assert submitted_aoi not in message
+    assert response_body.decode("utf-8") not in message
+    assert len(message) < 400
+
+
+def test_dispatch_http_422_without_json_message_remains_sanitized(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    settings = SimpleNamespace(
+        river_shift_actions_enabled=True,
+        river_shift_github_actions_repository="moshiour0/SARGuardian-backend",
+        river_shift_github_actions_workflow="river-shift-gcov-process.yml",
+        river_shift_github_actions_ref="main",
+        river_shift_github_actions_token="server-token",
+        github_api_url="https://api.github.com",
+        river_shift_public_api_url="https://api.example.test",
+    )
+
+    def reject_dispatch(request, timeout):
+        raise HTTPError(
+            request.full_url, 422, "Unprocessable Entity", {},
+            BytesIO(b"not-json: server-token and submitted AOI must not be copied"),
+        )
+
+    monkeypatch.setattr(river_module, "urlopen", reject_dispatch)
+    with pytest.raises(RuntimeError) as captured:
+        river_module._dispatch(
+            settings, uuid4(), payload() | {"main_band_polarization": None, "flight_direction": None},
+            ["granule-1"], "f" * 64,
+        )
+
+    assert str(captured.value) == "GitHub Actions rejected RiverShift dispatch (HTTP 422)."
+    assert "server-token" not in str(captured.value)
+    assert "submitted AOI" not in str(captured.value)
+
+
+def test_dispatch_failure_response_and_persisted_job_keep_safe_github_reason(monkeypatch) -> None:
+    store = RiverShiftStore()
+    api = configure(monkeypatch, store)
+
+    def fail_dispatch(*_args):
+        raise RuntimeError(
+            "GitHub Actions rejected RiverShift dispatch (HTTP 422): Unexpected inputs provided: threshold_db"
+        )
+
+    monkeypatch.setattr(river_module, "_dispatch", fail_dispatch)
+    response = api.post("/api/river-shift/jobs", json=payload())
+
+    assert response.status_code == 503
+    assert "HTTP 422" in response.json()["detail"]
+    assert "Unexpected inputs provided: threshold_db" in response.json()["detail"]
+    assert len(store.rows) == 1
+    job = next(iter(store.rows.values()))
+    assert job["state"] == river_module.JobState.FAILED.value
+    assert job["stage"] == "dispatch_failed"
+    assert "Unexpected inputs provided: threshold_db" in job["error_message"]
+    assert "server-token" not in job["error_message"]
 
 def test_dispatch_transition_failure_does_not_leave_a_stuck_queued_job(monkeypatch) -> None:
     store = RiverShiftStore()
