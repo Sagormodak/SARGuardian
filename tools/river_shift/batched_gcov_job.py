@@ -80,9 +80,8 @@ def _write_output(name: str, value: str) -> None:
         stream.write(f"{name}<<{delimiter}\n{value}\n{delimiter}\n")
 
 
-def _batch_matrix(rows: list[dict[str, Any]], batch_number: int, batch_count: int) -> dict[str, Any]:
+def _batch_matrix(rows: list[dict[str, Any]], batch_number: int, batch_count: int, total_products: int) -> dict[str, Any]:
     include = []
-    total = len(rows)
     for position, row in enumerate(rows, start=1):
         include.append({
             "granule_name": row["granule_name"],
@@ -90,7 +89,7 @@ def _batch_matrix(rows: list[dict[str, Any]], batch_number: int, batch_count: in
             "batch_number": batch_number,
             "batch_count": batch_count,
             "product_index": ((batch_number - 1) * BATCH_SIZE) + position,
-            "total_products": total,
+            "total_products": total_products,
         })
     return {"include": include}
 
@@ -99,7 +98,7 @@ def _write_batch_outputs(batches: list[list[dict[str, Any]]], sequence: int, tot
     batch_count = len(batches)
     for index in range(MAX_BATCHES):
         rows = batches[index] if index < batch_count else []
-        matrix = _batch_matrix(rows, index + 1, batch_count)
+        matrix = _batch_matrix(rows, index + 1, batch_count, total_products)
         _write_output(f"batch_{index + 1}_matrix", json.dumps(matrix, separators=(",", ":")))
         _write_output(f"batch_{index + 1}_count", str(len(rows)))
     _write_output("batch_count", str(batch_count))
