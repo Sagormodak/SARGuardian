@@ -356,4 +356,4 @@ def test_river_shift_migration_enforces_one_active_job_per_owner() -> None:
     assert "create unique index river_shift_jobs_one_active_per_owner_idx" in migration.lower()
     assert "where state in ('queued', 'dispatching', 'running')" in migration.lower()
     assert "to_jsonb(new) - 'updated_at'" in migration.lower()
-    assert "terminal river_shift jobs are immutable" in migration.lower()
+    assert "terminal rivershift jobs are immutable" in migration.lower()
