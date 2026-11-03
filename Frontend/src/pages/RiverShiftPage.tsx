@@ -753,7 +753,9 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
             <div className="rs-fields-two">
               <label className="rs-field"><span>Start date</span><input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required /></label>
               <label className="rs-field"><span>End date</span><input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} required /></label>
-              <label className="rs-field"><span>Event date · from independent record</span><input type="date" value={eventDate} onChange={(event) => setEventDate(event.target.value)} min={startDate} max={endDate} /></label>
+              <label className="rs-field"><span>Event date · from independent record</span><input type="date" value={eventDate} onChange={(event) => setEventDate(event.target.value)} min={startDate} max={endDate} />
+                <small>Event comparison needs at least one compatible acquisition strictly before this date and three strictly after it. A same-calendar-day acquisition is not assumed to be post-event.</small>
+              </label>
               <label className="rs-field"><span>Processing maturity</span>
                 <select value={maturity} onChange={(event) => setMaturity(event.target.value as typeof maturity)}>
                   <option value="PROVISIONAL">PROVISIONAL</option><option value="BETA">BETA</option><option value="ALL">ALL (audit only)</option>
