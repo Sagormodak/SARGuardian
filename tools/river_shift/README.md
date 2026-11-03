@@ -14,12 +14,13 @@ This folder provides a first local scientific workflow:
 8. Measure signed bankline displacement along independently digitised transects.
 9. Audit whether at least three compatible GCOV dates cover the AOI sufficiently.
 10. Export an observed-date water time series for discrete, evidence-preserving dashboard playback.
+11. Optionally compare a NISAR binary water mask with Copernicus Sentinel-2 L2A SCL and MNDWI water screens.
 
 The separate GitHub Actions worker in `process_gcov_job.py` runs the selected AOI/date request through catalogue review, exact-product downloads, HDF5 validation, raster extraction, flood and persistent-change screening, observed-date playback and private result storage. It uses the AOI and date window supplied by the signed job request; no Bangladesh study polygon is substituted. A result remains provisional until independent review evidence is recorded.
 
 Processing is limited by NISAR coverage, the AOI's available comparable acquisitions, the backend's 1,000 km² AOI ceiling and the worker resource limits. The API and worker require at least four distinct matching acquisition dates; the compatibility audit also requires at least 90% catalogue footprint coverage per selected date. The worker then selects up to twelve actual dates and at most twenty-four granules. These are acquisition dates, not daily measurements. A location with insufficient NISAR observations returns a no-result explanation instead of a simulated layer.
 
-See `docs/RIVERSHIFT_PROCESSING_SETUP.md` for the GitHub and backend settings required before live job dispatch can run.
+See `docs/RIVERSHIFT_PROCESSING_SETUP.md` for the GitHub and backend settings required before live job dispatch can run. The optional independent-source comparison is documented in `README_11_validate_with_sentinel2.md`; it is not part of the default worker run.
 
 ## Private Google Drive result storage
 Configure only the existing parent folder through the GitHub Actions secret `GOOGLE_DRIVE_PARENT_FOLDER_ID`. The worker automatically creates the fixed `RiverShift` folder directly beneath that parent when it is first needed, and reuses that same folder on subsequent runs. Each job is isolated in a UUID-named child folder beneath `RiverShift`; its manifest and output hierarchy remain inside that job folder. The configured parent must already exist and be accessible to the authenticated storage account; the worker cannot create a child folder if the parent itself returns `notFound`.
