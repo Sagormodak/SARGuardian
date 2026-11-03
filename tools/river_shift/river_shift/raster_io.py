@@ -220,6 +220,20 @@ def validate_gcov_series(
                 raise RasterContractError(f"GCOV metadata sidecar field {key} must be text.")
         if not re.fullmatch(r"[0-9a-fA-F]{64}", record["source_product_sha256"]):
             raise RasterContractError("GCOV metadata sidecar source_product_sha256 must be a 64-character SHA-256.")
+        source_names = record.get("source_granule_names", [record["source_granule_name"]])
+        source_hashes = record.get("source_granule_sha256", [record["source_product_sha256"]])
+        if (
+            not isinstance(source_names, list)
+            or not source_names
+            or not all(isinstance(name, str) and name for name in source_names)
+            or not isinstance(source_hashes, list)
+            or len(source_hashes) != len(source_names)
+            or not all(isinstance(digest, str) and re.fullmatch(r"[0-9a-fA-F]{64}", digest) for digest in source_hashes)
+            or record["source_granule_name"] != "+".join(source_names)
+        ):
+            raise RasterContractError("GCOV metadata sidecar must preserve matching source granule names and individual SHA-256 values.")
+        record["source_granule_names"] = source_names
+        record["source_granule_sha256"] = source_hashes
         if not re.fullmatch(r"[0-9a-fA-F]{64}", record["output_cog_sha256"]):
             raise RasterContractError("GCOV metadata sidecar output_cog_sha256 must be a 64-character SHA-256.")
         raster_path = Path(input_path).resolve()
