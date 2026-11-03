@@ -294,7 +294,7 @@ def _dispatch(settings: Any, job_id: UUID, request_snapshot: dict[str, Any], gra
         try:
             error_payload = json.loads(exc.read(16_384).decode("utf-8", errors="replace"))
             if isinstance(error_payload, dict) and isinstance(error_payload.get("message"), str):
-                detail = re.sub(r"\\s+", " ", error_payload["message"]).strip()
+                detail = re.sub(r"\s+", " ", error_payload["message"]).strip()
                 detail = detail[:240]
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
             detail = ""
