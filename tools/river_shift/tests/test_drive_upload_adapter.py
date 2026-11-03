@@ -8,6 +8,7 @@ import requests
 
 from drive_upload_adapter import (
     DRIVE_API,
+    RIVERSHIFT_STORAGE_FOLDER_NAME,
     DriveClient,
     DriveUploadError,
     _md5_file,
@@ -15,6 +16,7 @@ from drive_upload_adapter import (
     _parse_refresh_token,
     _run_drive_stage,
     load_drive_config,
+    upload_validated_results,
 )
 
 
@@ -236,18 +238,122 @@ def test_oauth_client_parser_accepts_working_uploader_formats(document, expected
     assert credential_format == expected_format
 
 
-def test_load_drive_config_accepts_token_json_and_prefers_canonical_parent_folder():
+def test_load_drive_config_uses_only_parent_folder_id():
     config = load_drive_config({
         "GOOGLE_DRIVE_OAUTH_CLIENT_JSON": json.dumps({
             "client_id": "client-id",
             "client_secret": "client-secret",
         }),
         "GOOGLE_DRIVE_REFRESH_TOKEN": json.dumps({"refresh_token": "refresh-token"}),
-        "GOOGLE_DRIVE_FOLDER_ID": "folder-alias-123",
         "GOOGLE_DRIVE_PARENT_FOLDER_ID": "canonical-parent-123",
     })
     assert config.refresh_token == "refresh-token"
     assert config.parent_folder_id == "canonical-parent-123"
+
+
+def test_load_drive_config_requires_parent_folder_id():
+    with pytest.raises(DriveUploadError, match="GOOGLE_DRIVE_PARENT_FOLDER_ID"):
+        load_drive_config({
+            "GOOGLE_DRIVE_OAUTH_CLIENT_JSON": json.dumps({
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+            }),
+            "GOOGLE_DRIVE_REFRESH_TOKEN": "refresh-token",
+        })
+
+
+def test_find_or_create_rivershift_folder_reuses_existing_folder():
+    drive = DriveClient.__new__(DriveClient)
+    calls = []
+    drive._find_named_file = lambda name, parent_id, mime_type: (
+        calls.append((name, parent_id, mime_type)) or "existing-rivershift-folder"
+    )
+    drive._json = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("an existing fixed folder must be reused, not recreated")
+    )
+    folder_id = drive.find_or_create_folder(RIVERSHIFT_STORAGE_FOLDER_NAME, "parent-folder-123")
+    assert folder_id == "existing-rivershift-folder"
+    assert calls == [("RiverShift", "parent-folder-123", "application/vnd.google-apps.folder")]
+
+
+def test_find_or_create_rivershift_folder_creates_under_parent():
+    drive = DriveClient.__new__(DriveClient)
+    drive._find_named_file = lambda *_args: None
+    requests_seen = []
+    def create(method, url, **kwargs):
+        requests_seen.append((method, url, kwargs))
+        return {"id": "created-rivershift-folder"}
+    drive._json = create
+    folder_id = drive.find_or_create_folder(RIVERSHIFT_STORAGE_FOLDER_NAME, "parent-folder-123")
+    assert folder_id == "created-rivershift-folder"
+    method, url, kwargs = requests_seen[0]
+    assert method == "POST"
+    assert url == f"{DRIVE_API}/files"
+    assert kwargs["json"] == {
+        "name": "RiverShift",
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": ["parent-folder-123"],
+    }
+
+
+def test_upload_validated_results_uses_one_fixed_root_then_job_specific_folders(tmp_path, monkeypatch):
+    import drive_upload_adapter as adapter
+
+    job_id = "12345678-1234-4234-8234-123456789abc"
+    output_path = tmp_path / "outputs" / "time-series" / "change.json"
+    output_path.parent.mkdir(parents=True)
+    output_path.write_text('{"change":"provisional"}', encoding="utf-8")
+    manifest = {
+        "status": "succeeded",
+        "job_id": job_id,
+        "validated_outputs": [{
+            "path": "outputs/time-series/change.json",
+            "sha256": hashlib.sha256(output_path.read_bytes()).hexdigest(),
+        }],
+    }
+    (tmp_path / "result-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    folder_calls, private_checks, upload_calls = [], [], []
+
+    class FakeDrive:
+        config = type("Config", (), {"parent_folder_id": "parent-folder-123"})()
+        def verify_authenticated_account(self): pass
+        def verify_parent_folder(self, folder_id):
+            assert folder_id == "parent-folder-123"
+        def require_private_folder(self, folder_id): private_checks.append(folder_id)
+        def find_or_create_folder(self, name, parent_id):
+            folder_calls.append((name, parent_id))
+            return {
+                "RiverShift": "rivershift-root-id",
+                job_id: "job-folder-id",
+                "outputs": "outputs-folder-id",
+                "time-series": "timeseries-folder-id",
+            }[name]
+        def upload_file(self, path, parent_id):
+            upload_calls.append((path.name, parent_id))
+            digest = hashlib.md5(path.read_bytes()).hexdigest()
+            return {
+                "drive_file_id": f"id-{len(upload_calls)}",
+                "name": path.name,
+                "bytes": path.stat().st_size,
+                "md5": digest,
+                "remote_md5": digest,
+                "status": "PASS",
+                "reused": False,
+            }
+
+    fake_drive = FakeDrive()
+    monkeypatch.setattr(adapter, "DriveClient", lambda *_args, **_kwargs: fake_drive)
+    result = upload_validated_results(tmp_path, config=object())
+    assert folder_calls == [
+        ("RiverShift", "parent-folder-123"),
+        (job_id, "rivershift-root-id"),
+        ("outputs", "job-folder-id"),
+        ("time-series", "outputs-folder-id"),
+    ]
+    assert "rivershift-root-id" in private_checks
+    assert result["storage_root_folder_name"] == "RiverShift"
+    assert result["storage_root_folder_id"] == "rivershift-root-id"
+    assert result["job_folder_id"] == "job-folder-id"
 
 
 def test_drive_file_list_requests_include_shared_drive_compatibility_flags():

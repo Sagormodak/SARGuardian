@@ -33,6 +33,7 @@ RESUMABLE_CHUNK_BYTES = 8 * 1024 * 1024
 MAX_RETRY_ATTEMPTS = 5
 RETRYABLE_HTTP_STATUSES = {408, 425, 429, 500, 502, 503, 504}
 EXPECTED_DRIVE_ACCOUNT = "sarguardian.org@gmail.com"
+RIVERSHIFT_STORAGE_FOLDER_NAME = "RiverShift"
 
 
 def _log_drive_stage(stage: str, status: str, **details: Any) -> None:
@@ -156,14 +157,11 @@ def load_drive_config(environ: dict[str, str] | None = None) -> DriveConfig:
     values = environ if environ is not None else os.environ
     raw_client = values.get("GOOGLE_DRIVE_OAUTH_CLIENT_JSON", "").strip()
     raw_refresh_token = values.get("GOOGLE_DRIVE_REFRESH_TOKEN", "").strip()
-    # Match the established uploader's canonical variable first. The workflow
-    # continues to provide the alternate name as a backwards-compatible alias.
-    parent_folder_id = (
-        values.get("GOOGLE_DRIVE_PARENT_FOLDER_ID", "").strip()
-        or values.get("GOOGLE_DRIVE_FOLDER_ID", "").strip()
-    )
+    # The parent is the only configured Drive folder. RiverShift creates and
+    # reuses its own fixed child folder beneath this parent automatically.
+    parent_folder_id = values.get("GOOGLE_DRIVE_PARENT_FOLDER_ID", "").strip()
     if not raw_client or not raw_refresh_token or not parent_folder_id:
-        raise DriveUploadError("Google Drive result storage is not fully configured; check GOOGLE_DRIVE_OAUTH_CLIENT_JSON, GOOGLE_DRIVE_REFRESH_TOKEN and GOOGLE_DRIVE_PARENT_FOLDER_ID or GOOGLE_DRIVE_FOLDER_ID.")
+        raise DriveUploadError("Google Drive result storage is not fully configured; check GOOGLE_DRIVE_OAUTH_CLIENT_JSON, GOOGLE_DRIVE_REFRESH_TOKEN and GOOGLE_DRIVE_PARENT_FOLDER_ID.")
     if not FOLDER_ID_PATTERN.fullmatch(parent_folder_id):
         raise DriveUploadError("Configured Google Drive folder identifier is invalid.")
     client_id, client_secret, token_uri, _client_format = _parse_oauth_client(raw_client)
@@ -716,9 +714,20 @@ def upload_validated_results(work_dir: Path, *, config: DriveConfig | None = Non
         "parent_folder_privacy_verification",
         lambda: client.require_private_folder(client.config.parent_folder_id),
     )
+    storage_root_folder = _run_drive_stage(
+        "river_shift_storage_folder_find_or_create",
+        lambda: client.find_or_create_folder(
+            RIVERSHIFT_STORAGE_FOLDER_NAME, client.config.parent_folder_id
+        ),
+        folder_name=RIVERSHIFT_STORAGE_FOLDER_NAME,
+    )
+    _run_drive_stage(
+        "river_shift_storage_folder_privacy_verification",
+        lambda: client.require_private_folder(storage_root_folder),
+    )
     job_folder = _run_drive_stage(
         "job_folder_find_or_create",
-        lambda: client.find_or_create_folder(job_id, client.config.parent_folder_id),
+        lambda: client.find_or_create_folder(job_id, storage_root_folder),
     )
     _run_drive_stage(
         "job_folder_privacy_verification",
@@ -757,6 +766,8 @@ def upload_validated_results(work_dir: Path, *, config: DriveConfig | None = Non
             output_by_path[relative]["drive_file_id"] = receipt["drive_file_id"]
             output_by_path[relative]["remote_verification"] = receipt
     manifest["storage_verification"] = {"status": "PASS", "storage": "google-drive-private",
+                                        "storage_root_folder_name": RIVERSHIFT_STORAGE_FOLDER_NAME,
+                                        "storage_root_folder_id": storage_root_folder,
                                         "job_folder_id": job_folder, "receipts": receipts,
                                         "retained_bytes": sum(item["bytes"] for item in receipts)}
     manifest_path = root / "result-manifest.json"
