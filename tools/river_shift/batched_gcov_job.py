@@ -80,6 +80,14 @@ def _write_output(name: str, value: str) -> None:
         stream.write(f"{name}<<{delimiter}\n{value}\n{delimiter}\n")
 
 
+def _write_step_summary(markdown: str) -> None:
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+    with Path(summary_path).open("a", encoding="utf-8") as stream:
+        stream.write(markdown.rstrip() + "\n")
+
+
 def _batch_matrix(rows: list[dict[str, Any]], batch_number: int, batch_count: int, total_products: int) -> dict[str, Any]:
     include = []
     for position, row in enumerate(rows, start=1):
@@ -394,6 +402,14 @@ def _write_product_failure(
     return result
 
 
+def _product_catalogue_path(prepared_dir: Path) -> Path:
+    """Return an absolute catalogue path for child tools executed with cwd=TOOLS."""
+    catalogue_path = (prepared_dir / "selected-catalogue.json").resolve()
+    if not catalogue_path.is_file():
+        raise WorkerFailure("BATCH_ARTIFACT_INVALID", "The selected catalogue artifact is missing from the prepared workspace.")
+    return catalogue_path
+
+
 def _run_product_worker() -> int:
     started = time.monotonic()
     granule_name = os.environ.get("RIVERSHIFT_GRANULE_NAME", "").strip()
@@ -433,7 +449,7 @@ def _run_product_worker() -> int:
     _log_worker_stage("product_worker_startup", "START", **context)
     current_stage = "prepared_manifest_validation"
     try:
-        prepared_dir = Path(os.environ.get("RIVERSHIFT_PREPARED_DIR", "prepared"))
+        prepared_dir = Path(os.environ.get("RIVERSHIFT_PREPARED_DIR", "prepared")).resolve()
         prepared = _read_json(prepared_dir / "prepared.json", "prepared selection")
         if prepared.get("job_id") != os.environ.get("RIVERSHIFT_JOB_ID"):
             raise WorkerFailure("REQUEST_MISMATCH", "This product runner received a prepared artifact for a different job.")
@@ -444,7 +460,7 @@ def _run_product_worker() -> int:
         if prepared.get("date_by_name", {}).get(granule_name) != acquisition_date:
             raise WorkerFailure("REQUEST_MISMATCH", "The granule acquisition date does not match the prepared observation date.")
 
-        catalogue_path = prepared_dir / "selected-catalogue.json"
+        catalogue_path = _product_catalogue_path(prepared_dir)
         product_matches = [
             row for row in _read_json(catalogue_path, "selected catalogue").get("products", [])
             if row.get("granule_name") == granule_name
@@ -634,7 +650,7 @@ def _run_product_worker() -> int:
         ):
             raw_file.unlink(missing_ok=True)
         print(f"::error::RiverShift product failed: {exc.code} · {granule_name}", flush=True)
-        return 0
+        return 1
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)
         _write_product_failure(
@@ -650,7 +666,7 @@ def _run_product_worker() -> int:
             failed_stage=current_stage,
         )
         print(f"::error::Unexpected RiverShift product failure · {granule_name}", flush=True)
-        return 0
+        return 1
     finally:
         print("::endgroup::", flush=True)
 
@@ -780,11 +796,13 @@ def _report_batch() -> None:
     results = _load_product_results(results_dir)
     passed = 0
     failed = 0
+    failure_details: list[tuple[str, str]] = []
     for row in rows:
         name = row["granule_name"]
         result = results.get(name)
         if not result:
             failed += 1
+            failure_details.append((name, "WORKER_RESULT_MISSING"))
             _log_worker_stage(
                 "batch_product_reconciliation", "FAIL",
                 batch_number=batch_number,
@@ -812,6 +830,7 @@ def _report_batch() -> None:
             )
         else:
             failed += 1
+            failure_details.append((name, str(result.get("error_code") or "PRODUCT_RESULT_INVALID")))
             _log_worker_stage(
                 "batch_product_reconciliation", "FAIL",
                 batch_number=batch_number,
@@ -836,10 +855,35 @@ def _report_batch() -> None:
         os.environ["RIVERSHIFT_CALLBACK_URL"],
         initial_sequence=sequence,
     )
-    callbacks.send("running", f"batch_{batch_number:02d}_completed")
+    callbacks.send(
+        "running",
+        f"batch_{batch_number:02d}_completed",
+        result_summary={
+            "batch_number": batch_number,
+            "expected_product_count": len(rows),
+            "verified_product_count": passed,
+            "failed_or_unverifiable_product_count": failed,
+            "retry_eligible_count": failed,
+        },
+    )
     _write_output("callback_sequence", str(callbacks.sequence))
     _write_output("batch_success_count", str(passed))
     _write_output("batch_failure_count", str(failed))
+    if failed:
+        print(
+            f"::warning::Batch {batch_number} reconciliation found {failed}/{len(rows)} failed or unverifiable products; the failures remain eligible for the delayed retry wave.",
+            flush=True,
+        )
+    detail_rows = "\n".join(
+        f"| {name} | {reason} |" for name, reason in failure_details[:30]
+    ) or "| — | No failed products |"
+    _write_step_summary(
+        f"## Batch {batch_number} reconciliation\n\n"
+        f"- Expected: **{len(rows)}**\n"
+        f"- Verified: **{passed}**\n"
+        f"- Failed/unverifiable: **{failed}**\n\n"
+        "| Product | Outcome |\n|---|---|\n" + detail_rows
+    )
 
 
 def _prepare_retry_wave() -> None:
@@ -870,49 +914,95 @@ def _prepare_retry_wave() -> None:
         retry_max_parallel=15,
         retry_policy="one retry wave after every first-attempt batch has completed",
     )
-    _write_output("retry_matrix", json.dumps(matrix, separators=(",", ":")))
+    retry_matrix_json = json.dumps(matrix, separators=(",", ":"))
+    if len(matrix.get("include", [])) != len(retry_rows):
+        raise WorkerFailure("RETRY_MATRIX_INVALID", "Retry matrix row count does not match the exact retry queue.")
+    retry_names = [row.get("granule_name") for row in matrix["include"]]
+    if len(retry_names) != len(set(retry_names)):
+        raise WorkerFailure("RETRY_MATRIX_INVALID", "Retry matrix contains duplicate granule identities.")
+    _log_worker_stage(
+        "delayed_retry_matrix_output", "PASS",
+        retry_queue_count=len(retry_rows),
+        matrix_include_count=len(matrix["include"]),
+        matrix_json_bytes=len(retry_matrix_json.encode("utf-8")),
+        matrix_sha256=hashlib.sha256(retry_matrix_json.encode("utf-8")).hexdigest(),
+    )
+    _write_output("retry_matrix", retry_matrix_json)
     _write_output("retry_count", str(len(retry_rows)))
+    _write_step_summary(
+        "## Delayed retry queue\n\n"
+        f"- First-attempt products: **{len(prepared['selected_product_names'])}**\n"
+        f"- Retry products queued: **{len(retry_rows)}**\n"
+        "- Automatic retry attempts per product: **1**\n"
+        "- Parallel retry runners: **15 maximum**"
+    )
 
 
 def _report_retry_wave() -> None:
-    prepared_dir = Path(os.environ.get("RIVERSHIFT_PREPARED_DIR", "prepared"))
+    prepared_dir = Path(os.environ.get("RIVERSHIFT_PREPARED_DIR", "prepared")).resolve()
     prepared = _read_json(prepared_dir / "prepared.json", "prepared selection")
     first_dir = Path(os.environ.get("RIVERSHIFT_PRODUCT_ARTIFACTS_DIR", "product-artifacts"))
     retry_dir = Path(os.environ.get("RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR", "retry-product-artifacts"))
     first_results = _load_product_results(first_dir)
     retry_results = _load_product_results(retry_dir)
     retry_rows = _select_retry_rows(prepared, first_results, first_dir)
+    dispatch_status = os.environ.get("RIVERSHIFT_RETRY_DISPATCH_STATUS", "success").strip().lower()
     passed = 0
     failed = 0
-    for row in retry_rows:
-        result = retry_results.get(row["granule_name"])
-        problem = _product_result_problem(prepared, row, result, retry_dir)
-        if problem is None:
-            passed += 1
-            _log_worker_stage(
-                "delayed_retry_reconciliation", "PASS",
-                granule_name=row["granule_name"],
-                acquisition_date=row["acquisition_date"],
-                retry_attempt=1,
-                source_sha256=result.get("source_sha256"),
-                raster_sha256=result.get("raster_sha256"),
-            )
-        else:
-            failed += 1
+    failure_details: list[tuple[str, str]] = []
+
+    if dispatch_status != "success":
+        failed = max(1, len(retry_rows))
+        failure_details.append(("retry matrix handoff", f"RETRY_DISPATCH_{dispatch_status.upper()}"))
+        _log_worker_stage(
+            "delayed_retry_dispatch", "FAIL",
+            retry_dispatch_status=dispatch_status,
+            queued_retry_count=len(retry_rows),
+            further_automatic_retries=0,
+        )
+        for row in retry_rows:
             _log_worker_stage(
                 "delayed_retry_reconciliation", "FAIL",
                 granule_name=row["granule_name"],
                 acquisition_date=row["acquisition_date"],
                 retry_attempt=1,
                 first_attempt_failure=row["first_attempt_failure"],
-                retry_failure=problem,
-                retry_error_message=(result or {}).get("error_message", "Retry result artifact missing or invalid."),
+                retry_failure="RETRY_MATRIX_HANDOFF_FAILED",
+                retry_dispatch_status=dispatch_status,
             )
+    else:
+        for row in retry_rows:
+            result = retry_results.get(row["granule_name"])
+            problem = _product_result_problem(prepared, row, result, retry_dir)
+            if problem is None:
+                passed += 1
+                _log_worker_stage(
+                    "delayed_retry_reconciliation", "PASS",
+                    granule_name=row["granule_name"],
+                    acquisition_date=row["acquisition_date"],
+                    retry_attempt=1,
+                    source_sha256=result.get("source_sha256"),
+                    raster_sha256=result.get("raster_sha256"),
+                )
+            else:
+                failed += 1
+                failure_details.append((row["granule_name"], problem))
+                _log_worker_stage(
+                    "delayed_retry_reconciliation", "FAIL",
+                    granule_name=row["granule_name"],
+                    acquisition_date=row["acquisition_date"],
+                    retry_attempt=1,
+                    first_attempt_failure=row["first_attempt_failure"],
+                    retry_failure=problem,
+                    retry_error_message=(result or {}).get("error_message", "Retry result artifact missing or invalid."),
+                )
+
     _log_worker_stage(
-        "delayed_retry_barrier", "PASS" if failed == 0 else "WARN",
+        "delayed_retry_barrier", "PASS" if failed == 0 else "FAIL",
         queued=len(retry_rows),
         passed=passed,
         failed=failed,
+        retry_dispatch_status=dispatch_status,
         retries_per_product=1,
         further_automatic_retries=0,
     )
@@ -923,21 +1013,57 @@ def _report_retry_wave() -> None:
         os.environ["RIVERSHIFT_CALLBACK_URL"],
         initial_sequence=sequence,
     )
+
+    error_code = None
+    error_message = None
+    callback_state = "running"
+    callback_stage = "delayed_retry_wave_completed"
+    if dispatch_status != "success":
+        callback_state = "failed"
+        callback_stage = "delayed_retry_matrix_handoff_failed"
+        error_code = "RETRY_MATRIX_HANDOFF_FAILED"
+        error_message = (
+            "GitHub Actions did not validate and hand off the retry matrix to the retry workers; "
+            f"retry_dispatch concluded as {dispatch_status}."
+        )
+    elif failed:
+        callback_state = "failed"
+        callback_stage = "delayed_retry_wave_failed"
+        error_code = "PRODUCT_RETRY_FAILED"
+        error_message = f"{failed} delayed retry product(s) failed or were unverifiable."
+
     callbacks.send(
-        "running",
-        "delayed_retry_wave_completed",
+        callback_state,
+        callback_stage,
         result_summary={
             "retry_count": len(retry_rows),
             "retry_success_count": passed,
             "retry_failure_count": failed,
             "retries_per_product": 1,
             "further_automatic_retries": 0,
+            "retry_dispatch_status": dispatch_status,
         },
+        error_code=error_code,
+        error_message=error_message,
     )
     _write_output("callback_sequence", str(callbacks.sequence))
     _write_output("retry_success_count", str(passed))
     _write_output("retry_failure_count", str(failed))
 
+    detail_rows = "\n".join(
+        f"| {name} | {reason} |" for name, reason in failure_details[:30]
+    ) or "| — | No retry required |"
+    _write_step_summary(
+        "## Delayed retry outcome\n\n"
+        f"- Retry dispatch validation: **{dispatch_status}**\n"
+        f"- Queued: **{len(retry_rows)}**\n"
+        f"- Passed: **{passed}**\n"
+        f"- Failed/unverifiable: **{failed}**\n\n"
+        "| Product | Outcome |\n|---|---|\n" + detail_rows
+    )
+    if callback_state == "failed":
+        print(f"::error::Delayed retry processing failed: {error_code} · {error_message}", flush=True)
+        raise WorkerFailure(error_code or "PRODUCT_RETRY_FAILED", error_message or "Delayed retry wave failed.")
 
 def _verify_and_stage_product_results(
     prepared: dict[str, Any],
