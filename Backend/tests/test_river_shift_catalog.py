@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from urllib.parse import parse_qs, urlparse
+from urllib.error import URLError
 
 import pytest
 from fastapi import HTTPException
@@ -79,9 +80,9 @@ def _request(**overrides) -> RiverShiftCatalogRequest:
     values = {
         "coordinates": [
             [89.5, 24.4],
-            [89.8, 24.4],
-            [89.8, 24.7],
-            [89.5, 24.7],
+            [89.55, 24.4],
+            [89.55, 24.45],
+            [89.5, 24.45],
             [89.5, 24.4],
         ],
         "start_date": date(2026, 6, 17),
@@ -165,7 +166,7 @@ def test_search_rejects_open_invalid_or_over_limit_aoi_before_network(monkeypatc
 
 def test_search_reports_cmr_upstream_errors_as_gateway_failures(monkeypatch):
     def fail(*_args, **_kwargs):
-        raise OSError("temporary catalogue outage")
+        raise URLError("temporary catalogue outage")
 
     monkeypatch.setattr("app.river_shift.urllib.request.urlopen", fail)
     with pytest.raises(HTTPException) as raised:
