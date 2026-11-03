@@ -21,11 +21,13 @@ import rasterio
 import requests
 from pyproj import CRS, Transformer
 from rasterio.enums import Resampling
+from rasterio.transform import Affine
 from rasterio.vrt import WarpedVRT
 from rasterio.warp import reproject, transform_bounds
 from rasterio.windows import Window, from_bounds, transform as window_transform
+from shapely import segmentize
 from shapely.geometry import box, shape
-from shapely.ops import transform as transform_geometry
+from shapely.ops import transform as transform_geometry, unary_union
 
 
 STAC_SEARCH_URL = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
@@ -107,7 +109,51 @@ def _item_coverage_fraction(
         return 0.0
 
 
-def select_best_item(
+def _items_coverage_fraction(
+    items: list[dict[str, Any]],
+    aoi_geometry_wgs84: Any,
+    analysis_crs: CRS,
+) -> float:
+    """Measure same-datatake tile union coverage in a densified metric projection."""
+    try:
+        # Densify geographic edges before projection. Without this, a rectangle
+        # projected as one long edge is not identical to two adjacent half-edge
+        # polygons, creating a small artificial gap at MGRS tile boundaries.
+        project = Transformer.from_crs("EPSG:4326", analysis_crs, always_xy=True).transform
+        dense_aoi = segmentize(aoi_geometry_wgs84, max_segment_length=0.001)
+        aoi_projected = transform_geometry(project, dense_aoi)
+        if aoi_projected.is_empty or aoi_projected.area <= 0:
+            return 0.0
+        footprints = []
+        for item in items:
+            geometry = item.get("geometry")
+            if not isinstance(geometry, dict):
+                continue
+            dense_footprint = segmentize(shape(geometry), max_segment_length=0.001)
+            projected = transform_geometry(project, dense_footprint)
+            if not projected.is_empty:
+                footprints.append(projected)
+        if not footprints:
+            return 0.0
+        covered = unary_union(footprints).intersection(aoi_projected)
+        return float(min(1.0, max(0.0, covered.area / aoi_projected.area)))
+    except Exception:
+        return 0.0
+
+
+def _datatake_group_key(item: dict[str, Any]) -> tuple[str, str, str]:
+    properties = item.get("properties") or {}
+    platform = str(properties.get("platform") or properties.get("constellation") or "unknown-platform")
+    datatake = properties.get("s2:datatake_id") or properties.get("instrument:datatake_id")
+    observed_date = _item_date(item).isoformat()
+    # Never mosaic unrelated scenes just because they happen to share a UTC date.
+    # If a provider omits datatake metadata, the item remains its own singleton.
+    if isinstance(datatake, str) and datatake.strip():
+        return platform, datatake.strip(), observed_date
+    return platform, f"item:{item.get('id') or hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest()}", observed_date
+
+
+def select_best_items(
     items: list[dict[str, Any]],
     *,
     observation_date: date,
@@ -115,9 +161,9 @@ def select_best_item(
     analysis_crs: CRS,
     max_day_offset: int = 3,
     max_cloud_cover: float = 40.0,
-) -> dict[str, Any] | None:
-    """Select one scene by coverage first, then date proximity and cloud cover."""
-    ranked: list[tuple[tuple[float, int, float, str], dict[str, Any]]] = []
+) -> list[dict[str, Any]] | None:
+    """Select one Sentinel-2 datatake, mosaicking all eligible intersecting MGRS tiles."""
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -130,17 +176,58 @@ def select_best_item(
                 continue
             for key in ("B03", "B11", "SCL"):
                 _asset_href(item, key)
-            coverage = _item_coverage_fraction(item, aoi_geometry_wgs84, analysis_crs)
-            if coverage <= 0:
+            if _item_coverage_fraction(item, aoi_geometry_wgs84, analysis_crs) <= 0:
                 continue
-            item_id = str(item.get("id") or "")
-            ranked.append(((-coverage, offset, cloud, item_id), item))
+            groups.setdefault(_datatake_group_key(item), []).append(item)
         except (TypeError, ValueError):
             continue
+
+    ranked: list[
+        tuple[tuple[float, int, float, str, str], list[dict[str, Any]]]
+    ] = []
+    for (platform, datatake, observed_date), group in groups.items():
+        coverage = _items_coverage_fraction(group, aoi_geometry_wgs84, analysis_crs)
+        if coverage <= 0:
+            continue
+        acquisition = date.fromisoformat(observed_date)
+        offset = abs((acquisition - observation_date).days)
+        clouds = [float((row.get("properties") or {}).get("eo:cloud_cover")) for row in group]
+        mean_cloud = float(sum(clouds) / len(clouds))
+        ranked.append((
+            (-coverage, offset, mean_cloud, platform, datatake),
+            sorted(
+                group,
+                key=lambda row: (
+                    float((row.get("properties") or {}).get("eo:cloud_cover", 100.0)),
+                    str(row.get("id") or ""),
+                ),
+            ),
+        ))
     if not ranked:
         return None
     ranked.sort(key=lambda value: value[0])
     return ranked[0][1]
+
+
+def select_best_item(
+    items: list[dict[str, Any]],
+    *,
+    observation_date: date,
+    aoi_geometry_wgs84: Any,
+    analysis_crs: CRS,
+    max_day_offset: int = 3,
+    max_cloud_cover: float = 40.0,
+) -> dict[str, Any] | None:
+    """Compatibility wrapper returning the clearest tile from the best datatake."""
+    selected = select_best_items(
+        items,
+        observation_date=observation_date,
+        aoi_geometry_wgs84=aoi_geometry_wgs84,
+        analysis_crs=analysis_crs,
+        max_day_offset=max_day_offset,
+        max_cloud_cover=max_cloud_cover,
+    )
+    return selected[0] if selected else None
 
 
 def _confusion_metrics(
@@ -301,9 +388,18 @@ def _window_for_aoi(dataset: rasterio.io.DatasetReader, bounds: tuple[float, flo
 def _read_cross_sensor_arrays(
     *,
     nisar_path: Path,
-    item: dict[str, Any],
+    item: dict[str, Any] | list[dict[str, Any]],
     max_target_pixels: int = MAX_TARGET_PIXELS,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
+    """Read a same-datatake Sentinel-2 tile group onto one full-AOI B11-resolution grid."""
+    items = [item] if isinstance(item, dict) else list(item)
+    if not items:
+        raise CrosscheckError("At least one Sentinel-2 tile is required for raster alignment.")
+    datatake_groups = {_datatake_group_key(row) for row in items}
+    if len(datatake_groups) != 1:
+        raise CrosscheckError(
+            "A Sentinel-2 mosaic may contain only one platform, datatake and acquisition date."
+        )
     with rasterio.open(nisar_path) as nisar:
         if nisar.count < 1 or nisar.crs is None:
             raise CrosscheckError("NISAR mask must be a single-band georeferenced raster.")
@@ -318,8 +414,8 @@ def _read_cross_sensor_arrays(
                 f"NISAR mask CRS must be projected in metres; found axis units {units!r}."
             )
         nisar_transform = nisar.transform
+        nisar_bounds_native = tuple(nisar.bounds)
         nisar_bounds_wgs84 = transform_bounds(nisar.crs, "EPSG:4326", *nisar.bounds, densify_pts=21)
-        nisar_aoi_wgs84 = box(*nisar_bounds_wgs84)
         nisar_src = nisar.read(1, masked=True)
         nisar_valid = ~np.ma.getmaskarray(nisar_src)
         nisar_raw = np.asarray(np.ma.getdata(nisar_src))
@@ -328,120 +424,187 @@ def _read_cross_sensor_arrays(
         nisar_data = np.full(nisar_raw.shape, 255, dtype=np.uint8)
         nisar_data[nisar_valid] = nisar_raw[nisar_valid].astype(np.uint8)
 
-    signed = {
-        key: _signed_asset_url(_asset_href(item, key))
-        for key in ("B03", "B11", "SCL")
-    }
+    signed_items = [
+        {
+            "item": row,
+            "assets": {
+                key: _signed_asset_url(_asset_href(row, key))
+                for key in ("B03", "B11", "SCL")
+            },
+        }
+        for row in items
+    ]
     try:
-        with ExitStack() as stack:
-            b11 = stack.enter_context(rasterio.open(signed["B11"]))
-            if b11.crs is None or not CRS.from_user_input(b11.crs).is_projected:
-                raise CrosscheckError("Sentinel-2 B11 asset must use a projected CRS.")
-            b11_crs = CRS.from_user_input(b11.crs)
-            if not _is_projected_metre_crs(b11_crs):
-                units = [axis.unit_name for axis in b11_crs.axis_info[:2]]
+        with rasterio.open(signed_items[0]["assets"]["B11"]) as reference_b11:
+            if reference_b11.crs is None:
+                raise CrosscheckError("Sentinel-2 B11 asset must have a CRS.")
+            target_crs = CRS.from_user_input(reference_b11.crs)
+            if not _is_projected_metre_crs(target_crs):
+                units = [axis.unit_name for axis in target_crs.axis_info[:2]]
                 raise CrosscheckError(
                     f"Sentinel-2 B11 grid must use projected metre units; found {units!r}."
                 )
+            if (
+                not math.isclose(reference_b11.transform.b, 0.0, abs_tol=1e-12)
+                or not math.isclose(reference_b11.transform.d, 0.0, abs_tol=1e-12)
+            ):
+                raise CrosscheckError("Sentinel-2 B11 reference grid must be north-up and unrotated.")
+            pixel_size_x = abs(float(reference_b11.transform.a))
+            pixel_size_y = abs(float(reference_b11.transform.e))
+            if pixel_size_x <= 0 or pixel_size_y <= 0:
+                raise CrosscheckError("Sentinel-2 B11 reference pixel size is invalid.")
+
+            # Transform directly from the exact NISAR source bounds. Sending
+            # projected bounds through WGS84 and back can introduce tiny edge
+            # drift that expands an aligned raster by an extra row/column.
             projected_aoi_bounds = transform_bounds(
-                "EPSG:4326", b11.crs, *nisar_bounds_wgs84, densify_pts=21
+                nisar_crs, target_crs, *nisar_bounds_native, densify_pts=21
             )
-            window = _window_for_aoi(b11, projected_aoi_bounds)
-            width = int(window.width)
-            height = int(window.height)
+            # Keep the native 20 m B11 pixel spacing and align the expanded
+            # target grid to the first tile's pixel origin. The target covers
+            # the full NISAR mask extent, even when it crosses MGRS tile edges.
+            left = reference_b11.transform.c + math.floor(
+                (projected_aoi_bounds[0] - reference_b11.transform.c) / pixel_size_x
+            ) * pixel_size_x
+            top = reference_b11.transform.f - math.floor(
+                (reference_b11.transform.f - projected_aoi_bounds[3]) / pixel_size_y
+            ) * pixel_size_y
+            width = max(1, int(math.ceil((projected_aoi_bounds[2] - left) / pixel_size_x)))
+            height = max(1, int(math.ceil((top - projected_aoi_bounds[1]) / pixel_size_y)))
             if width * height > max_target_pixels:
                 raise CrosscheckError(
-                    f"Sentinel-2 comparison window has {width * height:,} pixels, over the safe limit {max_target_pixels:,}."
+                    f"Sentinel-2 full-AOI comparison grid has {width * height:,} pixels, over the safe limit {max_target_pixels:,}."
                 )
-            target_transform = window_transform(window, b11.transform)
-            b11_array = b11.read(1, window=window, masked=True)
-            b11_values = np.asarray(b11_array.astype(np.float32).filled(np.nan), dtype=np.float32)
-            b11_valid = (~np.ma.getmaskarray(b11_array)) & np.isfinite(b11_values) & (b11_values > 0)
+            target_transform = Affine(pixel_size_x, 0.0, left, 0.0, -pixel_size_y, top)
 
-            b03 = stack.enter_context(rasterio.open(signed["B03"]))
-            b03_nodata = b03.nodata if b03.nodata is not None else 0
-            b03_vrt = stack.enter_context(WarpedVRT(
-                b03,
-                crs=b11.crs,
-                transform=target_transform,
-                width=width,
-                height=height,
-                resampling=Resampling.bilinear,
-                src_nodata=b03_nodata,
-                nodata=0,
-            ))
-            b03_array = b03_vrt.read(1, masked=True)
-            b03_values = np.asarray(b03_array.astype(np.float32).filled(np.nan), dtype=np.float32)
-            b03_valid = (~np.ma.getmaskarray(b03_array)) & np.isfinite(b03_values) & (b03_values > 0)
+        mosaic_b03 = np.full((height, width), np.nan, dtype=np.float32)
+        mosaic_b11 = np.full((height, width), np.nan, dtype=np.float32)
+        mosaic_scl = np.zeros((height, width), dtype=np.uint8)
+        mosaic_valid = np.zeros((height, width), dtype=bool)
+        tile_valid_pixel_counts: dict[str, int] = {}
 
-            scl = stack.enter_context(rasterio.open(signed["SCL"]))
-            scl_nodata = scl.nodata if scl.nodata is not None else 0
-            scl_vrt = stack.enter_context(WarpedVRT(
-                scl,
-                crs=b11.crs,
-                transform=target_transform,
-                width=width,
-                height=height,
-                resampling=Resampling.nearest,
-                src_nodata=scl_nodata,
-                nodata=0,
-            ))
-            scl_values = scl_vrt.read(1).astype(np.uint8)
-            scl_water, scl_valid = _scl_water_reference(scl_values)
+        # Tiles are already sorted by cloud cover. In overlaps, the clearest
+        # eligible tile fills first; subsequent tiles fill only still-empty
+        # clear-sky pixels. No dates or datatakes are mixed in one mosaic.
+        for record in signed_items:
+            row = record["item"]
+            properties = row.get("properties") or {}
+            item_id = str(row.get("id") or "")
+            with ExitStack() as stack:
+                b11 = stack.enter_context(rasterio.open(record["assets"]["B11"]))
+                b11_nodata = b11.nodata if b11.nodata is not None else 0
+                b11_vrt = stack.enter_context(WarpedVRT(
+                    b11,
+                    crs=target_crs,
+                    transform=target_transform,
+                    width=width,
+                    height=height,
+                    resampling=Resampling.bilinear,
+                    src_nodata=b11_nodata,
+                    nodata=0,
+                ))
+                b11_array = b11_vrt.read(1, masked=True)
+                b11_values = np.asarray(b11_array.astype(np.float32).filled(np.nan), dtype=np.float32)
+                b11_valid = (~np.ma.getmaskarray(b11_array)) & np.isfinite(b11_values) & (b11_values > 0)
 
-            nisar_on_b11 = np.full((height, width), 255, dtype=np.uint8)
-            reproject(
-                source=nisar_data,
-                destination=nisar_on_b11,
-                src_transform=nisar_transform,
-                src_crs=nisar_crs,
-                src_nodata=255,
-                dst_transform=target_transform,
-                dst_crs=b11.crs,
-                dst_nodata=255,
-                resampling=Resampling.nearest,
-                init_dest_nodata=True,
-            )
-            # A valid-mask warp is separate so masked NISAR cells cannot
-            # accidentally become valid zeros during categorical reprojection.
-            nisar_valid_on_b11 = np.zeros((height, width), dtype=np.uint8)
-            reproject(
-                source=nisar_valid.astype(np.uint8),
-                destination=nisar_valid_on_b11,
-                src_transform=nisar_transform,
-                src_crs=nisar_crs,
-                src_nodata=0,
-                dst_transform=target_transform,
-                dst_crs=b11.crs,
-                dst_nodata=0,
-                resampling=Resampling.nearest,
-                init_dest_nodata=True,
-            )
-            nisar_valid_on_b11 = (nisar_valid_on_b11 == 1) & (nisar_on_b11 != 255)
-            index, index_valid = _mndwi(b03_values, b11_values)
-            common_valid = nisar_valid_on_b11 & scl_valid & b11_valid & b03_valid & index_valid
-            pixel_area = abs(target_transform.a * target_transform.e - target_transform.b * target_transform.d)
-            metadata = {
-                "nisar_bounds_wgs84": list(nisar_bounds_wgs84),
-                "sentinel2_crs": b11.crs.to_string(),
-                "sentinel2_width": width,
-                "sentinel2_height": height,
-                "sentinel2_pixel_area_m2": float(pixel_area),
-                "nisar_valid_pixels_on_sentinel2_grid": int(np.count_nonzero(nisar_valid_on_b11)),
-                "common_valid_pixels": int(np.count_nonzero(common_valid)),
-                "common_support_fraction": (
-                    float(np.count_nonzero(common_valid) / np.count_nonzero(nisar_valid_on_b11))
-                    if np.count_nonzero(nisar_valid_on_b11) else 0.0
-                ),
-            }
-            return nisar_on_b11 == 1, scl_water, index, common_valid, nisar_valid_on_b11, {
-                **metadata,
-                "pixel_area_m2": float(pixel_area),
-            }
+                b03 = stack.enter_context(rasterio.open(record["assets"]["B03"]))
+                b03_nodata = b03.nodata if b03.nodata is not None else 0
+                b03_vrt = stack.enter_context(WarpedVRT(
+                    b03,
+                    crs=target_crs,
+                    transform=target_transform,
+                    width=width,
+                    height=height,
+                    resampling=Resampling.bilinear,
+                    src_nodata=b03_nodata,
+                    nodata=0,
+                ))
+                b03_array = b03_vrt.read(1, masked=True)
+                b03_values = np.asarray(b03_array.astype(np.float32).filled(np.nan), dtype=np.float32)
+                b03_valid = (~np.ma.getmaskarray(b03_array)) & np.isfinite(b03_values) & (b03_values > 0)
+
+                scl = stack.enter_context(rasterio.open(record["assets"]["SCL"]))
+                scl_nodata = scl.nodata if scl.nodata is not None else 0
+                scl_vrt = stack.enter_context(WarpedVRT(
+                    scl,
+                    crs=target_crs,
+                    transform=target_transform,
+                    width=width,
+                    height=height,
+                    resampling=Resampling.nearest,
+                    src_nodata=scl_nodata,
+                    nodata=0,
+                ))
+                scl_values = scl_vrt.read(1).astype(np.uint8)
+                _scl_water, scl_valid = _scl_water_reference(scl_values)
+
+                tile_valid = b11_valid & b03_valid & scl_valid
+                take = tile_valid & ~mosaic_valid
+                mosaic_b03[take] = b03_values[take]
+                mosaic_b11[take] = b11_values[take]
+                mosaic_scl[take] = scl_values[take]
+                mosaic_valid[take] = True
+                tile_valid_pixel_counts[item_id] = int(np.count_nonzero(take))
+
+        nisar_on_s2 = np.full((height, width), 255, dtype=np.uint8)
+        reproject(
+            source=nisar_data,
+            destination=nisar_on_s2,
+            src_transform=nisar_transform,
+            src_crs=nisar_crs,
+            src_nodata=255,
+            dst_transform=target_transform,
+            dst_crs=target_crs,
+            dst_nodata=255,
+            resampling=Resampling.nearest,
+            init_dest_nodata=True,
+        )
+        # Warp NISAR valid support separately so NoData cannot turn into zero.
+        nisar_valid_on_s2 = np.zeros((height, width), dtype=np.uint8)
+        reproject(
+            source=nisar_valid.astype(np.uint8),
+            destination=nisar_valid_on_s2,
+            src_transform=nisar_transform,
+            src_crs=nisar_crs,
+            src_nodata=0,
+            dst_transform=target_transform,
+            dst_crs=target_crs,
+            dst_nodata=0,
+            resampling=Resampling.nearest,
+            init_dest_nodata=True,
+        )
+        nisar_support = (nisar_valid_on_s2 == 1) & (nisar_on_s2 != 255)
+        index, index_valid = _mndwi(mosaic_b03, mosaic_b11)
+        common_valid = nisar_support & mosaic_valid & index_valid
+        pixel_area = abs(target_transform.a * target_transform.e - target_transform.b * target_transform.d)
+        tile_ids = [
+            str((row.get("properties") or {}).get("s2:mgrs_tile") or row.get("id") or "")
+            for row in items
+        ]
+        metadata = {
+            "nisar_bounds_wgs84": list(nisar_bounds_wgs84),
+            "sentinel2_crs": target_crs.to_string(),
+            "sentinel2_width": width,
+            "sentinel2_height": height,
+            "sentinel2_pixel_area_m2": float(pixel_area),
+            "sentinel2_tile_count": len(items),
+            "sentinel2_mgrs_tiles": tile_ids,
+            "tile_common_clear_pixel_counts": tile_valid_pixel_counts,
+            "nisar_valid_pixels_on_sentinel2_grid": int(np.count_nonzero(nisar_support)),
+            "common_valid_pixels": int(np.count_nonzero(common_valid)),
+            "common_support_fraction": (
+                float(np.count_nonzero(common_valid) / np.count_nonzero(nisar_support))
+                if np.count_nonzero(nisar_support) else 0.0
+            ),
+        }
+        return nisar_on_s2 == 1, mosaic_scl == 6, index, common_valid, nisar_support, {
+            **metadata,
+            "pixel_area_m2": float(pixel_area),
+        }
     except CrosscheckError:
         raise
     except (rasterio.errors.RasterioError, OSError, ValueError) as exc:
-        raise CrosscheckError(f"Could not read or align signed Sentinel-2 assets: {type(exc).__name__}.") from None
+        raise CrosscheckError(f"Could not read or align Sentinel-2 datatake mosaic: {type(exc).__name__}.") from None
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -487,7 +650,7 @@ def run_crosscheck(
         max_day_offset=max_day_offset,
         max_cloud_cover=max_cloud_cover,
     )
-    selected = select_best_item(
+    selected_items = select_best_items(
         items,
         observation_date=observation_date,
         aoi_geometry_wgs84=aoi_geometry,
@@ -495,7 +658,7 @@ def run_crosscheck(
         max_day_offset=max_day_offset,
         max_cloud_cover=max_cloud_cover,
     )
-    if selected is None:
+    if selected_items is None:
         report = {
             "status": "NO_MATCHING_SENTINEL2_SCENE_WITHIN_FILTER",
             "analysis_type": "sentinel2_cross_sensor_agreement_screen",
@@ -509,7 +672,7 @@ def run_crosscheck(
             },
             "metrics": None,
             "warnings": [
-                "No Sentinel-2 L2A scene with the required B03/B11/SCL assets met the requested date, cloud and AOI-overlap filters.",
+                "No Sentinel-2 L2A datatake with the required B03/B11/SCL assets met the requested date, cloud and AOI-overlap filters.",
                 "No comparison metrics were calculated; absence of a match is not zero agreement.",
             ],
             "sources": {"stac_api": STAC_SEARCH_URL, "collection": COLLECTION, "provider": "Copernicus Sentinel-2 via Microsoft Planetary Computer"},
@@ -517,13 +680,23 @@ def run_crosscheck(
         _write_json(report_path, report)
         return report
 
-    properties = selected.get("properties") or {}
-    acquisition_datetime = str(properties.get("datetime"))
-    acquisition_date = _item_date(selected)
-    coverage_fraction = _item_coverage_fraction(selected, aoi_geometry, nisar_crs)
+    primary = selected_items[0]
+    properties = primary.get("properties") or {}
+    acquisition_datetimes = sorted(
+        str((row.get("properties") or {}).get("datetime") or "")
+        for row in selected_items
+    )
+    acquisition_datetime = acquisition_datetimes[0]
+    acquisition_dates = {_item_date(row) for row in selected_items}
+    if len(acquisition_dates) != 1:
+        raise CrosscheckError("Selected Sentinel-2 datatake contains inconsistent acquisition dates.")
+    acquisition_date = next(iter(acquisition_dates))
+    coverage_fraction = _items_coverage_fraction(
+        selected_items, aoi_geometry, nisar_crs
+    )
     nisar_water, scl_water, mndwi_index, common_valid, nisar_support, raster_meta = _read_cross_sensor_arrays(
         nisar_path=nisar_mask_path,
-        item=selected,
+        item=selected_items,
     )
     common_valid = common_valid & np.isfinite(mndwi_index)
     common_count = int(np.count_nonzero(common_valid))
@@ -541,7 +714,7 @@ def run_crosscheck(
     if coverage_fraction < minimum_common_support or support_fraction < minimum_common_support:
         status = "INSUFFICIENT_OPTICAL_SPATIAL_SUPPORT"
         warnings.append(
-            "The selected single Sentinel-2 tile and/or clear common-valid support covers less than the configured threshold; no agreement score is published."
+            "The selected same-datatake Sentinel-2 tile mosaic and/or clear common-valid support covers less than the configured threshold; no agreement score is published."
         )
     else:
         metrics = {
@@ -564,13 +737,25 @@ def run_crosscheck(
         "observation": {
             "requested_nisar_date": observation_date.isoformat(),
             "sentinel2_datetime_utc": acquisition_datetime,
+            "sentinel2_datetimes_utc": acquisition_datetimes,
             "sentinel2_date": acquisition_date.isoformat(),
             "absolute_date_offset_days": abs((acquisition_date - observation_date).days),
-            "sentinel2_item_id": selected.get("id"),
+            "sentinel2_item_id": primary.get("id"),
+            "sentinel2_item_ids": [row.get("id") for row in selected_items],
             "sentinel2_product_uri": properties.get("s2:product_uri"),
+            "sentinel2_datatake_id": properties.get("s2:datatake_id"),
             "mgrs_tile": properties.get("s2:mgrs_tile"),
+            "mgrs_tiles": raster_meta["sentinel2_mgrs_tiles"],
+            "sentinel2_tile_count": len(selected_items),
             "platform": properties.get("platform"),
-            "cloud_cover_percent": float(properties.get("eo:cloud_cover")),
+            "cloud_cover_percent": float(
+                sum(float((row.get("properties") or {}).get("eo:cloud_cover")) for row in selected_items)
+                / len(selected_items)
+            ),
+            "maximum_tile_cloud_cover_percent": max(
+                float((row.get("properties") or {}).get("eo:cloud_cover"))
+                for row in selected_items
+            ),
             "aoi_footprint_overlap_fraction": coverage_fraction,
         },
         "method": {
@@ -579,8 +764,10 @@ def run_crosscheck(
             "water_classification_2": f"MNDWI = (B03 - B11) / (B03 + B11) > {mndwi_threshold}",
             "mndwi_threshold": float(mndwi_threshold),
             "scl_clear_classes_used": list(SCL_VALID_CLASSES),
-            "common_grid": "Sentinel-2 B11 20 m grid",
+            "common_grid": "Sentinel-2 B11 20 m grid expanded to the full NISAR extent; adjacent MGRS tiles from one datatake are mosaicked",
+            "tile_mosaic_method": "same platform, s2:datatake_id and acquisition date; clearest tile fills overlapping valid pixels first",
             "b03_resampling": "bilinear",
+            "b11_resampling": "bilinear",
             "scl_and_nisar_mask_resampling": "nearest",
             "minimum_common_support_fraction": minimum_common_support,
         },
@@ -588,6 +775,9 @@ def run_crosscheck(
             "nisar_valid_pixels_on_sentinel2_grid": nisar_count,
             "common_valid_pixels": common_count,
             "common_support_fraction": support_fraction,
+            "sentinel2_tile_count": len(selected_items),
+            "sentinel2_mgrs_tiles": raster_meta["sentinel2_mgrs_tiles"],
+            "tile_common_clear_pixel_counts": raster_meta["tile_common_clear_pixel_counts"],
             "sentinel2_grid": {
                 "crs": raster_meta["sentinel2_crs"],
                 "width": raster_meta["sentinel2_width"],
@@ -601,9 +791,22 @@ def run_crosscheck(
             "catalogue": "Microsoft Planetary Computer STAC",
             "stac_api": "https://planetarycomputer.microsoft.com/api/stac/v1/",
             "collection": COLLECTION,
-            "item_id": selected.get("id"),
+            "item_id": primary.get("id"),
+            "item_ids": [row.get("id") for row in selected_items],
+            "tile_items": [
+                {
+                    "item_id": row.get("id"),
+                    "mgrs_tile": (row.get("properties") or {}).get("s2:mgrs_tile"),
+                    "cloud_cover_percent": float((row.get("properties") or {}).get("eo:cloud_cover")),
+                    "unsigned_assets": {
+                        key: _asset_href(row, key)
+                        for key in ("B03", "B11", "SCL")
+                    },
+                }
+                for row in selected_items
+            ],
             "unsigned_assets": {
-                key: _asset_href(selected, key)
+                key: _asset_href(primary, key)
                 for key in ("B03", "B11", "SCL")
             },
         },
