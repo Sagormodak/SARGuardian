@@ -797,7 +797,7 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
     run_step("flood change screening", [
         sys.executable, "run_flood_analysis.py", "--before", str(window_paths["before"]),
         "--during", str(window_paths["event_proximal_observation"]), "--after", str(window_paths["post_one"]),
-        "--before-date", event_window["before"], "--during-date", event_window["event_observation"],
+        "--before-date", event_window["before"], "--during-date", event_window["event_proximal_observation"],
         "--after-date", event_window["post_one"], *threshold_args,
         "--input-units", "linear", "--maturity", request["maturity"],
         "--frequency", request["frequency"], "--term", request["term"], "--out-dir", str(flood_dir),
