@@ -19,6 +19,27 @@ def gdal_version() -> tuple[int, int, int]:
     return tuple(int(part) for part in match.groups())
 
 
+def gdal_driver_names() -> set[str]:
+    """Return registered GDAL format-driver names, not just installed packages."""
+    result = subprocess.run(["gdalinfo", "--formats"], capture_output=True, text=True, check=True)
+    names: set[str] = set()
+    for line in (result.stdout + "\n" + result.stderr).splitlines():
+        match = re.match(r"\s*([A-Za-z0-9_]+)\s+-", line)
+        if match:
+            names.add(match.group(1))
+    return names
+
+
+def require_hdf5_driver() -> None:
+    drivers = gdal_driver_names()
+    if "HDF5" not in drivers:
+        raise RuntimeError(
+            "GDAL HDF5 raster driver is not registered. Install the matching "
+            "libgdal-hdf5 package alongside libgdal-core in the RiverShift "
+            "environment, then verify it with 'gdalinfo --formats'."
+        )
+
+
 def inspect_product(product: Path) -> dict[str, Any]:
     if not product.is_file():
         raise FileNotFoundError(product)
@@ -29,12 +50,26 @@ def inspect_product(product: Path) -> dict[str, Any]:
             f"Detected {'.'.join(map(str, version))}. See the NISAR Data User Guide GDAL page."
         )
 
-    result = subprocess.run(
-        ["gdalinfo", "-json", str(product)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    require_hdf5_driver()
+    try:
+        # Force the NISAR-compatible HDF5 path instead of relying on GDAL's
+        # automatic driver selection for a .h5 filename.
+        result = subprocess.run(
+            ["gdalinfo", "-if", "HDF5", "-json", str(product)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        diagnostic = (exc.stderr or exc.stdout or "").strip()
+        if diagnostic:
+            detail = f"GDAL diagnostic: {diagnostic[-2000:]}"
+        else:
+            detail = "GDAL returned no diagnostic output."
+        raise RuntimeError(
+            f"GDAL HDF5 inspection failed for {product.name}. {detail}"
+        ) from exc
+
     payload = json.loads(result.stdout)
     metadata = payload.get("metadata", {})
     subdatasets = metadata.get("SUBDATASETS", {})

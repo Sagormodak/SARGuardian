@@ -164,6 +164,15 @@ jobs:
           python --version
           echo "RIVERSHIFT_RUNTIME_STAGE=gdal START"
           gdalinfo --version
+          echo "RIVERSHIFT_RUNTIME_STAGE=gdal-drivers START"
+          gdal_formats="$(gdalinfo --formats)"
+          for driver in HDF5 netCDF; do
+            if ! grep -Eiq "^[[:space:]]*${driver}[[:space:]]+-" <<< "$gdal_formats"; then
+              echo "::error::Required GDAL driver ${driver} is unavailable; check the RiverShift libgdal driver packages."
+              exit 1
+            fi
+            printf 'RIVERSHIFT_GDAL_DRIVER_%s=PASS\n' "$driver"
+          done
           echo "RIVERSHIFT_RUNTIME_STAGE=python-geospatial-imports START"
           python -c "import rasterio, shapely, pyproj, scipy; print('RIVERSHIFT_GEOSPATIAL_RUNTIME=PASS')"
           echo "RIVERSHIFT_RUNTIME_STAGE=all PASS"
