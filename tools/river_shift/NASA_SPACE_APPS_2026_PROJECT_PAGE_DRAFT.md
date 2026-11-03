@@ -51,7 +51,7 @@ RiverShift addresses the discovery and communication gap: the user identifies th
 
 **Third-party visual context:** Google Maps Satellite imagery provides geographic orientation in the result map. It is not used in the NISAR classification and is not an independent validation dataset.
 
-**Optional cross-sensor comparison:** the backend now includes a standalone Copernicus Sentinel-2 L2A tool. It can compare a supplied NISAR water mask with clear-support SCL water and a B03/B11 MNDWI screen. The tool has not been run for the example result below. Do not claim that Sentinel-2 corroborated a particular result unless that run's STAC item ID, date offset, cloud cover, mask checksum and agreement report are attached. Its output is cross-sensor agreement screening, not ground truth or field validation.
+**Optional cross-sensor comparison:** the backend includes a standalone Copernicus Sentinel-2 L2A tool. A retained-data replay for the 2026-07-12 NISAR observation selected a 2026-07-02 Sentinel-2 scene (73.31% scene cloud cover) but found only 11.03% clear common support, below the 80% gate. No F1/IoU or agreement score was published. This is an insufficient-support outcome, not optical corroboration. The tool's output is cross-sensor agreement screening, not ground truth or field validation.
 
 Do not add Copernicus DEM, GPM IMERG, rainfall gauge, river-stage, field-survey, or population datasets to this section unless the team's submitted build actually integrates and records them.
 
