@@ -86,7 +86,7 @@ Two retained-data comparisons were performed from source RiverShift run `4164228
 - MGRS tiles: `46RBP`, `45RZJ`, `45RYJ` (3 tiles; primary item `S2B_MSIL2A_20260702T043659_R033_T46RBP_20260702T082247`).
 - Mean / maximum scene cloud cover: **73.31% / 73.89%**.
 - Clear common support: **11.03%**.
-- Per-tile clear pixels: `45RYJ` **290,688**; `45RZJ` **332**; `46RBP` **4,035**.
+- Non-overlapping clear common-support pixels contributed to the mosaic: `45RYJ` **290,688**; `45RZJ` **332**; `46RBP` **4,035**.
 
 ### NISAR 2026-09-10 → Sentinel-2 2026-09-15
 
@@ -94,7 +94,7 @@ Two retained-data comparisons were performed from source RiverShift run `4164228
 - MGRS tiles: `45RYJ`, `45RZJ`, `46RBP` (3 tiles; primary item `S2C_MSIL2A_20260915T043701_R033_T45RYJ_20260915T074111`).
 - Mean / maximum scene cloud cover: **49.35% / 55.54%**.
 - Clear common support: **45.34%**.
-- Per-tile clear pixels: `45RYJ` **1,245,168**; `45RZJ` **2,644**; `46RBP` **1,697**.
+- Non-overlapping clear common-support pixels contributed to the mosaic: `45RYJ` **1,245,168**; `45RZJ` **2,644**; `46RBP` **1,697**.
 
 Both comparisons returned `INSUFFICIENT_OPTICAL_SPATIAL_SUPPORT`, below the unchanged **80%** threshold. F1, IoU and other agreement metrics were therefore **not calculated** for either date. The mosaics achieve full AOI footprint coverage, but clouds and local SCL validity limit the clear optical support. These are valid no-score outcomes, not zero agreement and not evidence that the NISAR classification is wrong. They do not corroborate erosion/deposition candidates or prove field conditions.
 
