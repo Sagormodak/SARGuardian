@@ -180,6 +180,7 @@ class DriveClient:
     def _refresh_access_token(self) -> str:
         payload: Any = None
         for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
+            _log_drive_stage("oauth_token_refresh_attempt", "START", attempt=attempt, max_attempts=MAX_RETRY_ATTEMPTS)
             try:
                 response = self.session.post(
                     self.config.token_uri,
@@ -193,6 +194,7 @@ class DriveClient:
                 )
                 response.raise_for_status()
                 payload = response.json()
+                _log_drive_stage("oauth_token_refresh_attempt", "PASS", attempt=attempt)
                 break
             except requests.HTTPError as exc:
                 failed_response = getattr(exc, "response", None)
@@ -208,20 +210,25 @@ class DriveClient:
                         if isinstance(candidate, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", candidate):
                             oauth_error = candidate
                 if status in RETRYABLE_HTTP_STATUSES and attempt < MAX_RETRY_ATTEMPTS:
+                    _log_drive_stage("oauth_token_refresh_attempt", "RETRY", attempt=attempt, http_status=status)
                     retry_after = getattr(failed_response, "headers", {}).get("Retry-After")
                     time.sleep(_retry_delay(attempt, retry_after))
                     continue
                 detail = f"HTTP {status}" if status else "HTTP status unavailable"
                 if oauth_error:
                     detail += f"; oauth_error={oauth_error}"
+                _log_drive_stage("oauth_token_refresh_attempt", "FAIL", attempt=attempt, diagnostic=detail)
                 raise DriveUploadError(f"Google Drive OAuth token refresh failed ({detail}).") from None
+            except ValueError:
+                _log_drive_stage("oauth_token_refresh_attempt", "FAIL", attempt=attempt, diagnostic="invalid_json")
+                raise DriveUploadError("Google Drive OAuth token endpoint returned invalid JSON.") from None
             except requests.RequestException as exc:
                 if attempt < MAX_RETRY_ATTEMPTS:
+                    _log_drive_stage("oauth_token_refresh_attempt", "RETRY", attempt=attempt, error_type=type(exc).__name__)
                     time.sleep(_retry_delay(attempt))
                     continue
-                raise DriveUploadError("Google Drive OAuth token refresh failed (network or timeout).") from exc
-            except ValueError:
-                raise DriveUploadError("Google Drive OAuth token endpoint returned invalid JSON.") from None
+                _log_drive_stage("oauth_token_refresh_attempt", "FAIL", attempt=attempt, diagnostic="network_or_timeout")
+                raise DriveUploadError("Google Drive OAuth token refresh failed (network or timeout).") from None
         token = payload.get("access_token") if isinstance(payload, dict) else None
         if not isinstance(token, str) or not token:
             raise DriveUploadError("Google Drive did not return an access token.")
