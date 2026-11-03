@@ -62,6 +62,8 @@ def run_water_timeseries_analysis(
         paths, maturity=maturity, frequency=frequency, term=polarization_term,
     )
     source_provenance = gcov_source_provenance(sidecars or [])
+    for source_row, observation in zip(source_provenance["observation_sources"], ordered):
+        source_row["acquisition_date"] = observation["date"]
     pixel_area_m2 = require_projected_metre_grid(profiles[ordered[0]["date"]])
     # Every date is compared on exactly the same spatial support. Using each
     # acquisition's independent valid mask would make area changes partly a
