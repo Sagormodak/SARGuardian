@@ -99,3 +99,14 @@ currently targets the older AOI-only branch. To exercise this integration, run
 the WKT workflow directly from `feat/final-aoi-science-integration`; update the
 default dispatcher reference separately after this branch is reviewed. The
 source-AOI streaming workflow remains independently callable.
+
+
+## RiverShift — NASA Space Apps 2026
+
+The repository includes the RiverShift NISAR GCOV river-change screening worker under [tools/river_shift](tools/river_shift/README.md). RiverShift discovers compatible NISAR acquisitions for a user-drawn AOI, screens actual observed water/land changes and retains private scientific outputs with source provenance. It is designed for the NASA Space Apps 2026 **Dancing with the SARs** challenge.
+
+- [RiverShift judge guide](tools/river_shift/NASA_SPACE_APPS_2026_JUDGE_GUIDE.md)
+- [NASA project-page draft and submission checklist](tools/river_shift/NASA_SPACE_APPS_2026_PROJECT_PAGE_DRAFT.md)
+- [Interactive frontend repository](https://github.com/moshiour0/SARGuardian_Dynamic)
+
+RiverShift map classes are provisional candidates until independent validation. The Google Satellite basemap is visual context only; it is not a scientific input to the NISAR analysis. Actual acquisition dates are displayed without synthetic daily interpolation.

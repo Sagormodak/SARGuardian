@@ -146,3 +146,12 @@ The tests use small synthetic rasters. They verify contracts and algorithms, not
 - NASA CMR Search API: https://cmr.earthdata.nasa.gov/search/site/docs/search/api.html
 - ASF search and product delivery: https://docs.asf.alaska.edu/asf_search/searching/
 - Jamuna riverbank erosion study: https://nhess.copernicus.org/articles/23/1749/2023/
+
+
+## NASA Space Apps 2026 submission and judging
+
+For the **Dancing with the SARs** challenge, see:
+- [RiverShift judge guide](NASA_SPACE_APPS_2026_JUDGE_GUIDE.md) — problem, NISAR data flow, methods, outputs, scientific limits, reproducibility, demo storyboard and score-sheet evidence.
+- [NASA project-page draft](NASA_SPACE_APPS_2026_PROJECT_PAGE_DRAFT.md) — copy-ready project description and a submission checklist. Replace placeholders with real team and demo information; do not claim unverified validation or data sources.
+
+The guide documents the actual current data stack: NASA–ISRO NISAR L2 GCOV as the measurement source, ASF DAAC for product access/provenance, and Google Maps Satellite as third-party visual context only. It explicitly does not treat the map basemap as scientific validation.
