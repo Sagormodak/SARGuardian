@@ -133,7 +133,7 @@ function ReportPanel({ report }: { report: RiverShiftReport }) {
   return (
     <section className="rs-panel">
       <div className="rs-section-heading">
-        <div><p className="rs-kicker">IMPORTED SCIENTIFIC RESULT</p><h2>{title}</h2></div>
+        <div><p className="rs-kicker">RIVER SHIFT SCIENTIFIC RESULT</p><h2>{title}</h2></div>
         <span className="rs-quality">{report.quality.status.replace(/_/g, ' ')}</span>
       </div>
       <div className="rs-provenance">
@@ -154,7 +154,7 @@ function ReportPanel({ report }: { report: RiverShiftReport }) {
             <strong>{metricText(key, value)} <small>{metricUnit(key)}</small></strong>
           </article>
         ))}
-      </div>}
+      </div>
       {verified && verificationRecord && (
         <div className="rs-reference">
           Review record: <strong>{String(verificationRecord.reviewer_id)}</strong>
