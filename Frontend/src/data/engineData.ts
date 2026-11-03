@@ -1,7 +1,7 @@
 export type Engine = {
   id: 'landslide' | 'glacier' | 'known-place' | 'river-shift';
   name: string;
-  status: 'AVAILABLE' | 'RESEARCH PREVIEW';
+  status: 'AVAILABLE' | 'RESEARCH PREVIEW' | 'SETUP REQUIRED';
   description: string;
   actionLabel: string;
   image: string;
@@ -39,7 +39,7 @@ export const engines: Engine[] = [
   {
     id: 'river-shift',
     name: 'River Shift',
-    status: 'AVAILABLE',
+    status: 'SETUP REQUIRED',
     description: 'Analyze NISAR GCOV observations for water extent, observed-date water change, and persistent erosion/deposition candidates. Results remain provisional until independently validated.',
     actionLabel: 'Open River Shift engine',
     image: 'https://images.unsplash.com/photo-1437482078695-73f5ca6c96e2?auto=format&fit=crop&w=900&q=88',
