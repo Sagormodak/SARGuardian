@@ -47,6 +47,10 @@ The reference method is illustrative. Document how the actual mask was generated
 - Metrics match the confusion matrix.
 - Accuracy is never claimed as a substitute for F1/IoU under class imbalance.
 
+## Related optional comparison
+
+For a separate, automated Copernicus Sentinel-2 L2A cross-sensor screen that searches scenes and compares SCL/MNDWI classifications without requiring a manually prepared exact-grid reference, see [README_11_validate_with_sentinel2.md](README_11_validate_with_sentinel2.md) and `validate_with_sentinel2.py`. This does **not** replace the independent reference-mask workflow above and does not by itself establish ground truth.
+
 ## Scientific limitations
 - Sentinel-2 is an independent reference source, not automatically ground truth.
 - Optical reference masks may have cloud, shadow, water-index and acquisition-date errors.

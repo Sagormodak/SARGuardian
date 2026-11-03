@@ -41,7 +41,7 @@ RiverShift addresses the discovery and communication gap: the user identifies th
 - Red / green / blue change-map overlays on a third-party Google Satellite basemap.
 - Discrete playback of actual NISAR acquisition dates, with no daily interpolation.
 - Source granule, processing metadata, result hashes and private retention of full-resolution products.
-- Separate tools for independent water-mask validation and signed bankline movement along independently supplied transects.
+- Separate tools for independent reference-mask validation, an optional Copernicus Sentinel-2 L2A cross-sensor agreement screen, and signed bankline movement along independently supplied transects.
 
 ## NASA and external data
 
@@ -51,7 +51,9 @@ RiverShift addresses the discovery and communication gap: the user identifies th
 
 **Third-party visual context:** Google Maps Satellite imagery provides geographic orientation in the result map. It is not used in the NISAR classification and is not an independent validation dataset.
 
-Do not add Copernicus DEM, Sentinel-2, GPM IMERG, rainfall gauge, river-stage, field-survey, or population datasets to this section unless the team's submitted build actually integrates and records them.
+**Optional cross-sensor comparison:** the backend now includes a standalone Copernicus Sentinel-2 L2A tool. It can compare a supplied NISAR water mask with clear-support SCL water and a B03/B11 MNDWI screen. The tool has not been run for the example result below. Do not claim that Sentinel-2 corroborated a particular result unless that run's STAC item ID, date offset, cloud cover, mask checksum and agreement report are attached. Its output is cross-sensor agreement screening, not ground truth or field validation.
+
+Do not add Copernicus DEM, GPM IMERG, rainfall gauge, river-stage, field-survey, or population datasets to this section unless the team's submitted build actually integrates and records them.
 
 ## How the science works
 
@@ -87,7 +89,7 @@ These numbers are specific to that run's AOI, selected products, threshold and c
 
 The current automatic output is provisional. Persistent water/land transitions are candidates rather than independently confirmed erosion/deposition. The automatic workflow does not calculate signed channel migration from a centreline, sediment volume, water depth or flood causality. These require independent reference observations and/or field measurements.
 
-Our next validation step is to compare the NISAR-derived masks with an independently prepared, date-appropriate optical or field reference for the same AOI, and report confusion-matrix metrics and uncertainty. Signed bankline movement should only be reported where dated banklines and independently oriented transects are available.
+An optional Sentinel-2 cross-sensor comparison tool is available, but an AOI/date-specific report still needs to be generated before it can be cited as evidence for this project. Formal validation requires an independently reviewed, date-appropriate optical or field reference for the same AOI, along with a documented labeling protocol and uncertainty reporting. Signed bankline movement should only be reported where dated banklines and independently oriented transects are available.
 
 ## Demo
 
@@ -100,6 +102,8 @@ Our next validation step is to compare the NISAR-derived masks with an independe
 **Interactive application repository:** https://github.com/moshiour0/SARGuardian_Dynamic
 
 **Judge guide:** https://github.com/moshiour0/SARGuardian-backend/blob/main/tools/river_shift/NASA_SPACE_APPS_2026_JUDGE_GUIDE.md
+
+**Optional Sentinel-2 cross-sensor tool:** https://github.com/moshiour0/SARGuardian-backend/blob/main/tools/river_shift/validate_with_sentinel2.py
 
 **Example processing workflow:** https://github.com/moshiour0/SARGuardian-backend/actions/runs/41642281327
 
