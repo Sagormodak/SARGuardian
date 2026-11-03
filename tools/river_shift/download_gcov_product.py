@@ -142,11 +142,6 @@ def download_product(product: dict, output_dir: Path) -> dict:
     collection = f"NISAR_L2_GCOV_{maturity}_V1"
     earthaccess = _load_earthaccess()
 
-    print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
-        "stage": "earthdata_login",
-        "status": "START",
-        "auth_mode": "environment",
-    }), flush=True)
     token = os.environ.get("EARTHDATA_TOKEN", "").strip()
     auth_mode = "bearer_token" if token else "username_password"
     print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
