@@ -174,6 +174,24 @@ def select_date_window(
     }
 
 
+def select_event_compatible_group(
+    qualifying_groups: list[dict[str, Any]], event_date: date,
+) -> tuple[dict[str, Any], list[str], dict[str, str]]:
+    """Choose the highest-ranked compatible group that brackets the event date."""
+    for group in qualifying_groups:
+        try:
+            selected_dates, event_window = select_date_window(group.get("dates", []), event_date)
+        except WorkerFailure as exc:
+            if exc.code in {"EVENT_WINDOW_NOT_BRACKETED", "INSUFFICIENT_COMPARABLE_ACQUISITIONS"}:
+                continue
+            raise
+        return group, selected_dates, event_window
+    raise WorkerFailure(
+        "EVENT_WINDOW_NOT_BRACKETED",
+        "No single compatible NISAR orbit/frame group has one qualifying acquisition before the event date and three strictly after it.",
+    )
+
+
 def select_covering_granules(
     aoi,
     products: list[dict[str, Any]],
@@ -701,8 +719,7 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
             "NO_COMPARABLE_ACQUISITION_GROUP",
             "This AOI/date selection has no four-date NISAR group with matching maturity, orbit, mode, term and footprint coverage.",
         )
-    group = qualifying[0]
-    dates, event_window = select_date_window(group.get("dates", []), request["event_date"])
+    group, dates, event_window = select_event_compatible_group(qualifying, request["event_date"])
     rows_by_date = {row["acquisition_date"]: row for row in group["dates"]}
     metric_crs = _metric_crs(request["aoi"])
     products_by_date: dict[str, list[dict[str, Any]]] = {}
