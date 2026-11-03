@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  createQueuedJob,\n  createRiverShiftJob,
+  createQueuedJob,
+  createRiverShiftJob,
   downloadDisplacementArtifact,
   getDisplacementJob,
   getInteractiveDashboardHtml,
