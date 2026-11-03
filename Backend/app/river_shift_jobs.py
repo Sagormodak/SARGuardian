@@ -12,7 +12,7 @@ from urllib.request import Request as UrlRequest, urlopen
 from uuid import UUID, uuid4
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .auth import get_current_user
@@ -466,6 +466,19 @@ def _refresh_workflow_state(store: Any, record: dict[str, Any]) -> dict[str, Any
     except Exception:
         # A transient GitHub API failure must not hide the last durable job state.
         return record
+
+
+@router.get("/jobs", response_model=list[RiverShiftJobResponse])
+def list_river_shift_jobs(
+    limit: int = Query(default=20, ge=1, le=100),
+    user: dict = Depends(get_current_user),
+) -> list[RiverShiftJobResponse]:
+    store = _store()
+    try:
+        records = store.list_river_shift_jobs(_owner_uid(user), limit)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not list RiverShift processing jobs.") from None
+    return [_response(_refresh_workflow_state(store, record)) for record in records]
 
 
 @router.get("/jobs/{job_id}", response_model=RiverShiftJobResponse)
