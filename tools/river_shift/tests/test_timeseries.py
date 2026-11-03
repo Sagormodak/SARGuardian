@@ -79,6 +79,36 @@ def test_timeseries_uses_the_same_common_valid_pixels_for_every_date(tmp_path, r
     assert report["quality"]["valid_comparison_pixel_fraction"] == 0.5
 
 
+def test_timeseries_common_support_excludes_nonpositive_linear_power(tmp_path, raster_writer):
+    first = np.full((20, 20), 0.3, dtype=np.float32)
+    second = np.full((20, 20), 0.3, dtype=np.float32)
+    first[0, 0] = 0.0
+    second[0, 1] = -0.1
+    paths = [
+        raster_writer("positive-first.tif", first),
+        raster_writer("positive-second.tif", second),
+    ]
+
+    report = run_water_timeseries_analysis(
+        observations=[
+            {"date": "2026-06-18", "path": str(paths[0])},
+            {"date": "2026-07-01", "path": str(paths[1])},
+        ],
+        output_dir=str(tmp_path / "positive-series"),
+        units="linear",
+        threshold_db=-12.0,
+        use_otsu=False,
+        maturity="PROVISIONAL",
+        frequency="frequencyA",
+        polarization_term="HHHH",
+    )
+
+    assert report["metrics"]["comparison_valid_pixel_count"] == 398
+    assert report["metrics"]["comparison_valid_pixel_fraction"] == pytest.approx(398 / 400)
+    assert [frame["source_valid_pixel_count"] for frame in report["time_series"]] == [399, 399]
+
+
+
 def test_timeseries_requires_two_unique_dates(tmp_path, raster_writer):
     path = raster_writer("one.tif", np.full((10, 10), 0.3, dtype=np.float32))
     common = {
