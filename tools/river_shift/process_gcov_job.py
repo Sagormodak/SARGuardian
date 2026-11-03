@@ -532,11 +532,11 @@ def _configure_earthdata_credentials() -> None:
             "EARTHDATA_CREDENTIALS_MISSING",
             "Configure EARTHDATA_TOKEN or both EARTHDATA_USERNAME and EARTHDATA_PASSWORD.",
         )
-    if any(character in username + password for character in ("\\n", "\\r", "\\0")):
+    if any(character in username + password for character in ("\n", "\r", "\0")):
         raise WorkerFailure("EARTHDATA_CREDENTIALS_INVALID", "Earthdata credentials contain unsupported control characters.")
 
     def netrc_value(value: str) -> str:
-        return '"' + value.replace("\\\\", "\\\\\\\\").replace('"', '\\\"') + '"'
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
     home = Path(os.environ.get("HOME") or str(Path.home())).resolve()
     home.mkdir(parents=True, exist_ok=True)
@@ -546,11 +546,10 @@ def _configure_earthdata_credentials() -> None:
         + netrc_value(username)
         + " password "
         + netrc_value(password)
-        + "\\n",
+        + "\n",
         encoding="utf-8",
     )
     os.chmod(netrc_path, 0o600)
-
 
 def _ensure_credentials() -> None:
     _configure_earthdata_credentials()
