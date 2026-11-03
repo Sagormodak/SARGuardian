@@ -110,8 +110,7 @@ jobs:
       EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
       GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
       GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
-      GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID || secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
-      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID || secrets.GOOGLE_DRIVE_FOLDER_ID }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
 
     steps:
       - name: Check out backend worker source
@@ -142,7 +141,7 @@ jobs:
           for key in (
               "EARTHDATA_TOKEN", "EARTHDATA_USERNAME", "EARTHDATA_PASSWORD",
               "GOOGLE_DRIVE_OAUTH_CLIENT_JSON", "GOOGLE_DRIVE_REFRESH_TOKEN",
-              "GOOGLE_DRIVE_PARENT_FOLDER_ID", "GOOGLE_DRIVE_FOLDER_ID",
+              "GOOGLE_DRIVE_PARENT_FOLDER_ID",
               "RIVERSHIFT_CALLBACK_SECRET",
           ):
               print(f"{key}_present={'yes' if os.environ.get(key, '').strip() else 'no'}")
