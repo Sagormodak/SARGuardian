@@ -305,7 +305,7 @@ def test_network_download_failure_does_not_trigger_username_password_fallback(mo
     monkeypatch.setenv("EARTHDATA_PASSWORD", "password-test-value")
     monkeypatch.setattr("download_gcov_product._load_earthaccess", lambda: fake)
 
-    with pytest.raises(RuntimeError, match="could not download the exact"):
+    with pytest.raises(RuntimeError, match="no immediate re-download was performed"):
         download_product(_catalogue_row(), tmp_path)
 
     assert fake.download_count == 1
