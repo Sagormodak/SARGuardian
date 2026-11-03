@@ -51,7 +51,7 @@ RiverShift addresses the discovery and communication gap: the user identifies th
 
 **Third-party visual context:** Google Maps Satellite imagery provides geographic orientation in the result map. It is not used in the NISAR classification and is not an independent validation dataset.
 
-**Optional cross-sensor comparison:** the backend includes a standalone Copernicus Sentinel-2 L2A tool. A retained-data replay for the 2026-07-12 NISAR observation selected a 2026-07-02 Sentinel-2 scene (73.31% scene cloud cover) but found only 11.03% clear common support, below the 80% gate. No F1/IoU or agreement score was published. This is an insufficient-support outcome, not optical corroboration. The tool's output is cross-sensor agreement screening, not ground truth or field validation.
+**Optional cross-sensor comparison:** the backend includes a standalone Copernicus Sentinel-2 L2A tool. Retained-data replays were performed for NISAR observations on 2026-07-12 and 2026-09-10. They selected optical scenes on 2026-07-02 (73.31% scene cloud cover) and 2026-09-15 (49.35%), with clear common support of 11.03% and 45.34%. Both were below the 80% gate; no F1/IoU or agreement scores were published. These are insufficient-support outcomes, not optical corroboration. The tool's output is cross-sensor agreement screening, not ground truth or field validation.
 
 Do not add Copernicus DEM, GPM IMERG, rainfall gauge, river-stage, field-survey, or population datasets to this section unless the team's submitted build actually integrates and records them.
 
@@ -89,7 +89,7 @@ These numbers are specific to that run's AOI, selected products, threshold and c
 
 The current automatic output is provisional. Persistent water/land transitions are candidates rather than independently confirmed erosion/deposition. The automatic workflow does not calculate signed channel migration from a centreline, sediment volume, water depth or flood causality. These require independent reference observations and/or field measurements.
 
-An optional Sentinel-2 cross-sensor comparison tool is available, but an AOI/date-specific report still needs to be generated before it can be cited as evidence for this project. Formal validation requires an independently reviewed, date-appropriate optical or field reference for the same AOI, along with a documented labeling protocol and uncertainty reporting. Signed bankline movement should only be reported where dated banklines and independently oriented transects are available.
+An optional Sentinel-2 cross-sensor comparison has been run for two retained NISAR dates, but both optical comparisons had less than 80% clear common support and therefore produced no agreement metrics. Formal validation still requires an independently reviewed, date-appropriate optical or field reference for the same AOI, along with a documented labeling protocol and uncertainty reporting. Signed bankline movement should only be reported where dated banklines and independently oriented transects are available.
 
 ## Demo
 
