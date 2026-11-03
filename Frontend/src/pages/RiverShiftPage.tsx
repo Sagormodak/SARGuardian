@@ -233,6 +233,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
   const resultMapElement = useRef<HTMLDivElement>(null);
   const aoiMapInstance = useRef<google.maps.Map | null>(null);
   const resultMapInstance = useRef<google.maps.Map | null>(null);
+  const resultMapFitKey = useRef('');
   const aoiPolygon = useRef<google.maps.Polygon | null>(null);
   const aoiPreviewLine = useRef<google.maps.Polyline | null>(null);
   const timeSeriesFrames = useMemo(() => (report?.time_series || []).flatMap((frame) => {
@@ -656,14 +657,22 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       const geometry = feature.getGeometry();
       if (geometry) geometry.forEachLatLng((point) => bounds.extend(point));
     });
-    if (!bounds.isEmpty()) map.fitBounds(bounds);
-  }, [mapReady, currentTimeSeriesFrame, verifiedGeoJSONFiles, jobPreview, currentJobFrame, riverJobId, hasJobPreviewOverlay]);
+    const overlayFitKey = hasJobPreviewOverlay && riverJobId
+      ? `job:${riverJobId}`
+      : `report:${report?.analysis_type || 'none'}:${verifiedGeoJSONFiles.map((file) => file.sha256).join(',')}`;
+    // Keep the camera stable while the user watches observed acquisition dates advance.
+    if (!bounds.isEmpty() && resultMapFitKey.current !== overlayFitKey) {
+      map.fitBounds(bounds);
+      resultMapFitKey.current = overlayFitKey;
+    }
+
+  }, [mapReady, currentTimeSeriesFrame, verifiedGeoJSONFiles, jobPreview, currentJobFrame, riverJobId, hasJobPreviewOverlay, report]);
 
   useEffect(() => {
     if (!timeSeriesPlaying || playbackFrames.length < 2) return;
     const timer = window.setInterval(() => {
       setTimeSeriesIndex((index) => (index + 1) % playbackFrames.length);
-    }, 1100);
+    }, 1800);
     return () => window.clearInterval(timer);
   }, [timeSeriesPlaying, playbackFrames.length]);
 
@@ -892,7 +901,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
                   onChange={(event) => { setJobTimeSeriesPlaying(false); setJobTimeSeriesIndex(Number(event.target.value)); }} />
               </label>
             </div>
-            {currentJobFrameMetadata && <p className="rs-info-banner">Observed {currentJobFrameMetadata.date} · open-water candidate area {currentJobFrameMetadata.water_area_km2.toFixed(3)} km² · valid samples {(currentJobFrameMetadata.valid_pixel_fraction * 100).toFixed(1)}%{!currentJobFrame ? ' · loading map layer…' : ''}</p>}
+            {currentJobFrameMetadata && <p className="rs-info-banner">NISAR observation {currentJobFrameMetadata.date} · frame {jobTimeSeriesIndex + 1}/{jobTimeSeriesFrames.length} · open-water candidate area {currentJobFrameMetadata.water_area_km2.toFixed(3)} km² · valid common-support pixels {(currentJobFrameMetadata.valid_pixel_fraction * 100).toFixed(1)}% · source {currentJobFrameMetadata.granule_name || 'granule ID recorded in source report'}{!currentJobFrame ? ' · loading checksum-verified map layer…' : ''}</p>}
           </section>
         )}
         {jobPreview?.jobId === riverJob.id && jobPreview.error && <p className="rs-warning-inline" role="status">{jobPreview.error}</p>}
@@ -951,7 +960,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
           <div className="rs-map" ref={resultMapElement} role="img" aria-label="Google satellite basemap with checksum-checked RiverShift result overlays" />
           <div className="rs-legend"><span><i className="rs-swatch rs-erosion" />Erosion candidate</span><span><i className="rs-swatch rs-deposition" />Deposition candidate</span><span><i className="rs-swatch rs-water" />New water / observed water candidate</span></div>
           {hasVerifiedOverlay && <p className="rs-muted">Verified layer(s) are drawn; each GeoJSON SHA-256 matches the loaded report. Candidate classes require scientific interpretation and are not field-confirmed land change.</p>}
-          {hasJobPreviewOverlay && !hasVerifiedOverlay && <p className="rs-warning-inline">Provisional job preview is drawn. The full-resolution science reports remain PROVISIONAL; map geometries are simplified for display and small patches may be omitted.</p>}
+          {hasJobPreviewOverlay && !hasVerifiedOverlay && <p className="rs-warning-inline">Provisional map preview is drawn from the checksum-bound full-resolution binary masks using lower-resolution occupancy footprints. The map is for visual orientation only; full-resolution masks and scientific measurements remain authoritative and PROVISIONAL.</p>}
           {report && geoJSONFiles.length > 0 && !hasVerifiedOverlay && <p className="rs-warning-inline" role="status">Loaded GeoJSON is not drawn: the report is not VERIFIED, the checksum does not match, or the complete time-series layer set is missing.</p>}
         </section>
         {!report && <div className="rs-empty-state"><strong>{resultType}</strong><p>No scientific result is loaded. Run a script and import its JSON report; no demo measurement is shown here.</p></div>}
