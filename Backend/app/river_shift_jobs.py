@@ -296,7 +296,7 @@ def create_river_shift_job(payload: CreateRiverShiftJobRequest, user: dict = Dep
     unique_dates = manifest.get("unique_dates") if isinstance(manifest, dict) else None
     valid_dates = sorted({
         value for value in unique_dates
-        if isinstance(value, str) and re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", value)
+        if isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)
     }) if isinstance(unique_dates, list) else []
     if len(valid_dates) < 4:
         raise HTTPException(
