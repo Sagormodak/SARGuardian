@@ -1,5 +1,6 @@
 export const ARCHIVE_PATH = '/archive';
 export const DASHBOARD_PATH = '/dashboard';
+export const RIVER_SHIFT_PATH = '/river-shift';
 export const LANDSLIDE_PATH = '/landslide';
 export const LANDSLIDE_RESULTS_PATH = '/landslide/results';
 export const LANDSLIDE_DISPLACEMENT_PATH = '/landslide/displacements';
@@ -9,6 +10,10 @@ export const LANDSLIDE_KNOWN_PLACE_SETUP_ANALYSIS_PATH = '/landslide/known-place
 
 export function isDashboardRoute(pathname: string): boolean {
   return normalizePathname(pathname) === DASHBOARD_PATH;
+}
+
+export function isRiverShiftRoute(pathname: string): boolean {
+  return normalizePathname(pathname) === RIVER_SHIFT_PATH;
 }
 
 export function isArchiveRoute(pathname: string): boolean {

@@ -7,8 +7,9 @@ import { ArchivePage } from './pages/ArchivePage';
 import { DashboardPage } from './pages/DashboardPage';
 import { parseDashboardView } from './dashboardDocument';
 import { LandslidePage } from '../landslide/ui/LandslidePage';
+import { RiverShiftPage } from './pages/RiverShiftPage';
 import { auth, firebaseConfigured, googleProvider, missingFirebaseConfig } from './firebase';
-import { isArchiveRoute, isDashboardRoute, isLandslideDisplacementRoute, isLandslideKnownPlaceAnalysisRoute, isLandslideKnownPlaceSetupAnalysisRoute, isLandslideKnownPlaceSetupRoute, isLandslideResultsRoute, isLandslideRoute, LANDSLIDE_DISPLACEMENT_PATH, LANDSLIDE_KNOWN_PLACE_PATH, LANDSLIDE_KNOWN_PLACE_SETUP_ANALYSIS_PATH, LANDSLIDE_KNOWN_PLACE_SETUP_PATH, LANDSLIDE_PATH, LANDSLIDE_RESULTS_PATH, navigatePath, normalizePathname } from './routing';
+import { isArchiveRoute, isDashboardRoute, isRiverShiftRoute, RIVER_SHIFT_PATH, isLandslideDisplacementRoute, isLandslideKnownPlaceAnalysisRoute, isLandslideKnownPlaceSetupAnalysisRoute, isLandslideKnownPlaceSetupRoute, isLandslideResultsRoute, isLandslideRoute, LANDSLIDE_DISPLACEMENT_PATH, LANDSLIDE_KNOWN_PLACE_PATH, LANDSLIDE_KNOWN_PLACE_SETUP_ANALYSIS_PATH, LANDSLIDE_KNOWN_PLACE_SETUP_PATH, LANDSLIDE_PATH, LANDSLIDE_RESULTS_PATH, navigatePath, normalizePathname } from './routing';
 
 function App() {
   const [pathname, setPathname] = useState(() => normalizePathname(window.location.pathname));
@@ -76,7 +77,7 @@ function App() {
       setAuthState(currentUser ? 'ready' : 'idle');
       setAuthError(null);
       const currentPath = pathnameRef.current;
-      if (!currentUser && isLandslideRoute(currentPath)) {
+      if (!currentUser && (isLandslideRoute(currentPath) || isRiverShiftRoute(currentPath))) {
         setPendingRoute(currentPath);
         setAuthModalOpen(true);
         navigateTo('/');
@@ -116,7 +117,7 @@ function App() {
       await signOut(auth);
       setPendingRoute(null);
       setAuthModalOpen(false);
-      if (pathname === '/landslide' || pathname.startsWith('/landslide/')) {
+      if (isLandslideRoute(pathname) || isRiverShiftRoute(pathname)) {
         navigateTo('/');
       }
     } catch (error: unknown) {
@@ -128,7 +129,9 @@ function App() {
     // Known Place starts in its own AOI/date-window setup, then proceeds to
     // the existing two-polygon analysis page. Landslide and Glacier retain
     // the target-free AOI workspace.
-    const targetRoute = engine.id === 'known-place' ? LANDSLIDE_KNOWN_PLACE_SETUP_PATH : LANDSLIDE_PATH;
+    const targetRoute = engine.id === 'known-place'
+      ? LANDSLIDE_KNOWN_PLACE_SETUP_PATH
+      : engine.id === 'river-shift' ? RIVER_SHIFT_PATH : LANDSLIDE_PATH;
     if (!user) {
       setPendingRoute(targetRoute);
       setAuthModalOpen(true);
@@ -171,6 +174,38 @@ function App() {
         onSignIn={handleSignIn}
         onSignOut={handleSignOut}
         onOpenWorkspace={handleOpenWorkspace}
+      />
+    );
+  }
+
+  if (isRiverShiftRoute(pathname)) {
+    if (!user) {
+      return (
+        <Home
+          user={user}
+          authState={authState}
+          authError={authError}
+          firebaseConfigured={firebaseConfigured}
+          missingFirebaseConfig={missingFirebaseConfig}
+          showAuthModal={true}
+          onCloseAuthModal={() => { setAuthModalOpen(false); setPendingRoute(null); }}
+          onSignIn={handleSignIn}
+          onSignOut={handleSignOut}
+          onSelectEngine={handleSelectEngine}
+          onOpenWorkspace={handleOpenWorkspace}
+        />
+      );
+    }
+
+    return (
+      <RiverShiftPage
+        key={user.uid}
+        user={user}
+        firebaseConfigured={firebaseConfigured}
+        authState={authState}
+        onHome={() => navigateTo('/')}
+        onSignIn={handleSignIn}
+        onSignOut={handleSignOut}
       />
     );
   }
