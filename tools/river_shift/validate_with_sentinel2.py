@@ -293,6 +293,8 @@ def _read_cross_sensor_arrays(
         if nisar.count < 1 or nisar.crs is None:
             raise CrosscheckError("NISAR mask must be a single-band georeferenced raster.")
         nisar_crs = CRS.from_user_input(nisar.crs)
+        if nisar.width * nisar.height > 40_000_000:
+            raise CrosscheckError("NISAR source mask exceeds the 40-million-pixel safety limit for this optional comparison.")
         if not nisar_crs.is_projected:
             raise CrosscheckError("NISAR water mask must use a projected CRS.")
         units = str(nisar_crs.linear_units or "").lower()
@@ -415,10 +417,7 @@ def _read_cross_sensor_arrays(
             }
             return nisar_on_b11 == 1, scl_water, index, common_valid, nisar_valid_on_b11, {
                 **metadata,
-                "mndwi_valid": index_valid,
                 "pixel_area_m2": float(pixel_area),
-                "b11_values": b11_values,
-                "b03_values": b03_values,
             }
     except CrosscheckError:
         raise
