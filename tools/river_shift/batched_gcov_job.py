@@ -938,12 +938,16 @@ def _verify_and_stage_product_results(
 ) -> tuple[dict[str, list[Path]], Path]:
     expected_names = prepared["selected_product_names"]
     expected = set(expected_names)
-    results = _load_product_results(product_artifacts_dir)
+    first_results = _load_product_results(product_artifacts_dir)
     retry_dir = Path(os.environ.get("RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR", "retry-product-artifacts"))
-    # The delayed retry result supersedes the first-attempt result for that granule.
-    for name, retry_result in _load_product_results(retry_dir).items():
+    retry_results = _load_product_results(retry_dir)
+    results = dict(first_results)
+    result_dirs = {name: product_artifacts_dir for name in first_results}
+    # A delayed retry result supersedes the first-attempt result for that exact granule.
+    for name, retry_result in retry_results.items():
         if name in expected:
             results[name] = retry_result
+            result_dirs[name] = retry_dir
     missing = sorted(expected - set(results))
     failures = []
     product_rasters: dict[str, Path] = {}
@@ -990,7 +994,7 @@ def _verify_and_stage_product_results(
                 or len(expected_digest) != 64
             ):
                 continue
-            source = product_artifacts_dir / name / filename
+            source = result_dirs.get(name, product_artifacts_dir) / name / filename
             if not source.is_file() or sha256_file(source) != expected_digest:
                 failures.append(f"{name}: {filename} is missing or its SHA-256 does not match.")
                 verified_files = {}
