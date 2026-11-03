@@ -726,7 +726,7 @@ def test_cross_sensor_reader_rejects_mixed_sentinel_datatakes_before_signing_ass
         raise AssertionError("Mixed-datatake validation must happen before asset access.")
 
     monkeypatch.setattr(crosscheck, "_signed_asset_url", unexpected_sign)
-    with pytest.raises(crosscheck.CrosscheckError, match="only one platform, datatake and acquisition date"):
+    with pytest.raises(crosscheck.CrosscheckError, match="only one platform, datatake, acquisition date and processing baseline"):
         crosscheck._read_cross_sensor_arrays(
             nisar_path=nisar_path,
             item=[first, second],
