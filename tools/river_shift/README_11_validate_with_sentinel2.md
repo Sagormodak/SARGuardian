@@ -78,9 +78,12 @@ If no suitable scene exists, the tool writes `NO_MATCHING_SENTINEL2_SCENE_WITHIN
 
 ## Retained-run mosaic replay evidence
 
-A retained-data replay was performed for the NISAR acquisition dated **2026-07-12** using the source RiverShift run `41642281327`. The selected Sentinel-2 scene was acquired **2026-07-02** with scene cloud cover of **73.31%**. After clear SCL screening, only **11.03%** of the NISAR-valid comparison area had common optical support, well below the unchanged **80%** threshold. The result is `INSUFFICIENT_OPTICAL_SPATIAL_SUPPORT`; F1, IoU and other agreement metrics are therefore **not calculated**. This is a valid no-score outcome, not zero agreement and not evidence that the NISAR classification is wrong.
+Two retained-data comparisons were performed from source RiverShift run `41642281327`:
 
-The September 2026 retained-mask replay has not yet produced a valid comparison report; do not quote a September support fraction or metric until its diagnostic replay completes successfully.
+- **NISAR 2026-07-12 → Sentinel-2 2026-07-02:** scene cloud cover **73.31%**; clear common support **11.03%**.
+- **NISAR 2026-09-10 → Sentinel-2 2026-09-15:** scene cloud cover **49.35%**; clear common support **45.34%**. The primary selected STAC item is `S2C_MSIL2A_20260915T043701_R033_T45RYJ_20260915T074111`.
+
+Both comparisons returned `INSUFFICIENT_OPTICAL_SPATIAL_SUPPORT`, below the unchanged **80%** threshold. F1, IoU and other agreement metrics were therefore **not calculated** for either date. These are valid no-score outcomes, not zero agreement and not evidence that the NISAR classification is wrong. The results do not establish that the same-datatake mosaic increased coverage; tile-count and per-tile clear contribution must be read from the detailed replay report before making that claim.
 
 ## Primary references
 
