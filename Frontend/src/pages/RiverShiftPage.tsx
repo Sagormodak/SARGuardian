@@ -267,6 +267,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
   const hasLiveJobResultPending = Boolean(riverJob?.state === 'succeeded' && riverJobArtifactManifest?.length
     && !hasLiveJobResult);
   const explorerReport = report ?? activeJobPreview?.report ?? null;
+  const activeJobPreviewError = activeJobPreview?.error || '';
   const verifiedGeoJSONFiles = useMemo(() => {
     if (!report || report.analysis_type === 'water_timeseries_screening') return [];
     return geoJSONFiles.filter((file) => isRiverShiftGeoJSONApproved(report, file.sha256));
@@ -906,7 +907,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
           </div>
         </section>
       )}
-      {riverJobError && (
+      {riverJobError && riverJobError !== activeJobPreviewError && (
         <section className="rs-panel rs-job-feedback" aria-live="assertive">
           <p className="rs-error" role="alert">{riverJobError}</p>
         </section>
@@ -936,7 +937,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
           </section>
         )}
         {jobPreview?.jobId === riverJob.id && jobPreview.error && <p className="rs-warning-inline" role="status">{jobPreview.error}</p>}
-        {!!riverJob.artifact_manifest?.length && <div className="rs-artifact-list"><strong>Private result files · checksum verified</strong>{riverJob.artifact_manifest.map((artifact, index) => artifact.bytes <= 4_000_000
+        {!!riverJob.artifact_manifest?.length && <div className="rs-artifact-list"><strong>Private result files · upload checksum verified</strong><p className="rs-muted">Upload receipts preserve the original size and checksum. In-app downloads and previews are checked again before use.</p>{riverJob.artifact_manifest.map((artifact, index) => artifact.bytes <= 4_000_000
           ? <button className="rs-secondary-button" key={`${artifact.path}-${index}`} type="button" onClick={() => void saveRiverArtifact(index, artifact.name)}>{artifact.name} · {(artifact.bytes / 1_000_000).toFixed(2)} MB</button>
           : <span className="rs-muted" key={`${artifact.path}-${index}`}>{artifact.name} · {(artifact.bytes / 1_000_000).toFixed(2)} MB · stored privately; too large for in-app download</span>)}</div>}
       </section>}
