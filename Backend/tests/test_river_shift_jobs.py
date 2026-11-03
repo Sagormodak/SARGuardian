@@ -235,6 +235,28 @@ def test_dispatch_payload_includes_exact_discovery_filters(monkeypatch) -> None:
     assert inputs["granule_names_json"] == '["granule-1"]'
 
 
+
+def test_dispatch_transition_failure_does_not_leave_a_stuck_queued_job(monkeypatch) -> None:
+    store = RiverShiftStore()
+    api = configure(monkeypatch, store)
+    original_update = store.update_river_shift_job
+
+    def fail_transition(job_id, values, *, expected_state=None, expected_sequence=None):
+        if values.get("state") == river_module.JobState.DISPATCHING.value:
+            raise river_module.PersistenceError("simulated dispatch-state persistence failure")
+        return original_update(job_id, values, expected_state=expected_state, expected_sequence=expected_sequence)
+
+    monkeypatch.setattr(store, "update_river_shift_job", fail_transition)
+    response = api.post("/api/river-shift/jobs", json=payload())
+
+    assert response.status_code == 503
+    assert len(store.rows) == 1
+    job = next(iter(store.rows.values()))
+    assert job["state"] == river_module.JobState.FAILED.value
+    assert job["stage"] == "dispatch_failed"
+    assert job["error_code"] == "RIVERSHIFT_DISPATCH_FAILED"
+
+
 def test_river_shift_requires_four_observation_dates_before_job_creation(monkeypatch) -> None:
     store = RiverShiftStore()
     api = configure(monkeypatch, store)
