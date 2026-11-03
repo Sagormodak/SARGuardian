@@ -49,7 +49,7 @@ def test_mask_preview_preserves_an_isolated_source_candidate_after_downsampling(
     assert len(preview["features"]) == 1
     assert preview["river_shift_preview"]["preview_candidate_cells"] >= 1
     assert preview["river_shift_preview"]["features_omitted_for_size"] == 0
-    assert preview["river_shift_preview"]["method"] == "max_aggregated_binary_mask_then_polygonize"
+    assert preview["river_shift_preview"]["method"] == "average_occupancy_gt_zero_then_polygonize"
     assert preview_path.stat().st_size <= 50_000
     assert sha256_file(source_path) == original_digest
     assert preview["features"][0]["properties"]["class"] == "erosion"
