@@ -92,20 +92,51 @@ def download_product(product: dict, output_dir: Path) -> dict:
         "status": "START",
         "auth_mode": "environment",
     }), flush=True)
+    token = os.environ.get("EARTHDATA_TOKEN", "").strip()
+    has_password_credentials = bool(os.environ.get("EARTHDATA_USERNAME", "").strip()) and bool(
+        os.environ.get("EARTHDATA_PASSWORD", "")
+    )
+    auth_mode = "bearer_token" if token else "username_password"
     try:
         earthaccess.login(strategy="environment")
-    except Exception as exc:
-        print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
-            "stage": "earthdata_login",
-            "status": "FAIL",
-            "error_type": type(exc).__name__,
-        }), flush=True)
-        raise RuntimeError(
-            "Earthdata authentication failed; verify EARTHDATA_TOKEN or the Earthdata username/password secrets."
-        ) from None
+    except Exception as first_error:
+        # Match the working SARGuardian product downloader: a rejected/stale
+        # pre-generated token must not prevent a valid EDL username/password
+        # session from being tried once. Restore the original env afterwards.
+        if not token or not has_password_credentials:
+            print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+                "stage": "earthdata_login",
+                "status": "FAIL",
+                "auth_mode": auth_mode,
+                "error_type": type(first_error).__name__,
+            }), flush=True)
+            raise RuntimeError(
+                "Earthdata authentication failed; verify EARTHDATA_TOKEN or the Earthdata username/password secrets."
+            ) from None
+        try:
+            os.environ.pop("EARTHDATA_TOKEN", None)
+            earthaccess.login(strategy="environment")
+            auth_mode = "username_password_fallback"
+            print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+                "stage": "earthdata_login_fallback",
+                "status": "PASS",
+                "auth_mode": auth_mode,
+            }), flush=True)
+        except Exception as fallback_error:
+            print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+                "stage": "earthdata_login_fallback",
+                "status": "FAIL",
+                "error_type": type(fallback_error).__name__,
+            }), flush=True)
+            raise RuntimeError(
+                "Earthdata authentication failed with both the user token and username/password fallback."
+            ) from None
+        finally:
+            os.environ["EARTHDATA_TOKEN"] = token
     print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
         "stage": "earthdata_login",
         "status": "PASS",
+        "auth_mode": auth_mode,
     }), flush=True)
 
     print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
