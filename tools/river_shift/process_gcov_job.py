@@ -701,12 +701,27 @@ def create_web_previews(
     ]
     change_features = []
     for source_path, destination, layer_type in sources:
+        _log_worker_stage(
+            "web_map_preview", "START",
+            layer_type=layer_type,
+            source_file=source_path.name,
+            output_file=destination.name,
+        )
         preview = write_web_preview(source_path, destination, project, unproject, pixel_size, max_bytes=MAX_WEB_PREVIEW_BYTES)
-        layers.append({"path": destination.relative_to(work_dir).as_posix(), "sha256": sha256_file(destination)})
+        digest = sha256_file(destination)
+        layers.append({"path": destination.relative_to(work_dir).as_posix(), "sha256": digest})
         for feature in preview["features"]:
             properties = dict(feature.get("properties") or {})
             properties["river_shift_layer"] = layer_type
             change_features.append({**feature, "properties": properties})
+        _log_worker_stage(
+            "web_map_preview", "PASS",
+            layer_type=layer_type,
+            feature_count=len(preview.get("features", [])),
+            features_omitted_for_size=preview.get("river_shift_preview", {}).get("features_omitted_for_size", 0),
+            output_bytes=destination.stat().st_size,
+            output_sha256=digest,
+        )
     combined_path = map_dir / "river_change_candidates_preview.geojson"
     combined = {
         "type": "FeatureCollection",
@@ -718,12 +733,44 @@ def create_web_previews(
         },
         "features": change_features,
     }
-    encoded_combined = json.dumps(combined, separators=(",", ":"), allow_nan=False).encode("utf-8")
-    if len(encoded_combined) > MAX_WEB_PREVIEW_BYTES:
-        raise WorkerFailure("PREVIEW_TOO_LARGE", "The combined AOI change map is too large for the web preview; narrow the AOI.")
+    _log_worker_stage(
+        "combined_change_preview", "START",
+        candidate_feature_count=len(change_features),
+        byte_limit=MAX_WEB_PREVIEW_BYTES,
+    )
+    ranked_features = sorted(
+        change_features,
+        key=lambda feature: shape(feature.get("geometry")).area if feature.get("geometry") else 0.0,
+        reverse=True,
+    )
+    original_feature_count = len(ranked_features)
+    while True:
+        omitted = original_feature_count - len(ranked_features)
+        combined["features"] = ranked_features
+        if omitted:
+            combined["river_shift_preview"]["features_omitted_for_size"] = omitted
+            combined["river_shift_preview"]["warning"] = (
+                "DISPLAY ONLY: the largest simplified candidate patches are shown; smaller patches were omitted "
+                "to fit the map payload. Full-resolution private GeoJSON and scientific metrics are unchanged."
+            )
+        encoded_combined = json.dumps(combined, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        if len(encoded_combined) <= MAX_WEB_PREVIEW_BYTES:
+            break
+        if not ranked_features:
+            raise WorkerFailure("PREVIEW_GENERATION_FAILED", "Could not serialize the bounded combined map preview.")
+        keep = max(0, int(len(ranked_features) * 0.75))
+        ranked_features = ranked_features[:keep]
     combined_path.parent.mkdir(parents=True, exist_ok=True)
     combined_path.write_bytes(encoded_combined)
-    layers.append({"path": combined_path.relative_to(work_dir).as_posix(), "sha256": sha256_file(combined_path)})
+    combined_digest = sha256_file(combined_path)
+    layers.append({"path": combined_path.relative_to(work_dir).as_posix(), "sha256": combined_digest})
+    _log_worker_stage(
+        "combined_change_preview", "PASS",
+        feature_count=len(ranked_features),
+        features_omitted_for_size=original_feature_count - len(ranked_features),
+        output_bytes=len(encoded_combined),
+        output_sha256=combined_digest,
+    )
 
     report = json.loads(time_report_path.read_text(encoding="utf-8"))
     for frame in report.get("time_series", []):
@@ -732,10 +779,20 @@ def create_web_previews(
             raise WorkerFailure("PREVIEW_GENERATION_FAILED", "An observed-date time-series frame has an invalid date.")
         source_path = time_dir / str(frame.get("water_geojson", ""))
         preview_path = map_dir / f"water_{observed_date}_preview.geojson"
-        write_web_preview(source_path, preview_path, project, unproject, pixel_size)
-        layers.append({"path": preview_path.relative_to(work_dir).as_posix(), "sha256": sha256_file(preview_path)})
+        _log_worker_stage("time_series_frame_preview", "START", acquisition_date=observed_date, source_file=source_path.name)
+        frame_preview = write_web_preview(source_path, preview_path, project, unproject, pixel_size)
+        frame_digest = sha256_file(preview_path)
+        layers.append({"path": preview_path.relative_to(work_dir).as_posix(), "sha256": frame_digest})
         frame["water_geojson"] = preview_path.name
-        frame["water_geojson_sha256"] = sha256_file(preview_path)
+        frame["water_geojson_sha256"] = frame_digest
+        _log_worker_stage(
+            "time_series_frame_preview", "PASS",
+            acquisition_date=observed_date,
+            feature_count=len(frame_preview.get("features", [])),
+            features_omitted_for_size=frame_preview.get("river_shift_preview", {}).get("features_omitted_for_size", 0),
+            output_bytes=preview_path.stat().st_size,
+            output_sha256=frame_digest,
+        )
     report.setdefault("quality", {}).setdefault("warnings", []).append(
         "The web playback uses display-only simplified GeoJSON. Small patches may be omitted; no daily interpolation is performed."
     )
