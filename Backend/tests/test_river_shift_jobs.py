@@ -276,6 +276,7 @@ def test_list_river_shift_jobs_restores_only_the_authenticated_users_recent_jobs
     store = RiverShiftStore()
     api = configure(monkeypatch, store)
     first = api.post("/api/river-shift/jobs", json=payload()).json()
+    store.rows[first["id"]]["state"] = "succeeded"
     second_payload = payload() | {"idempotency_key": "river-shift-request-0002"}
     second = api.post("/api/river-shift/jobs", json=second_payload).json()
     monkeypatch.setattr(river_module, "_refresh_workflow_state", lambda _store, record: record)
