@@ -206,7 +206,6 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
   const [direction, setDirection] = useState<'' | 'ASCENDING' | 'DESCENDING'>('');
   const [frameCoverage, setFrameCoverage] = useState<'ALL' | 'FULL' | 'PARTIAL'>('ALL');
   const [catalogue, setCatalogue] = useState<CatalogueResponse | null>(null);
-  const [catalogueQueryKey, setCatalogueQueryKey] = useState('');
   const [catalogueBusy, setCatalogueBusy] = useState(false);
   const [catalogueError, setCatalogueError] = useState('');
   const [report, setReport] = useState<RiverShiftReport | null>(null);
@@ -277,19 +276,6 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     return geoJSONFiles.filter((file) => isRiverShiftGeoJSONApproved(report, file.sha256));
   }, [report, geoJSONFiles]);
   const hasVerifiedOverlay = Boolean(!hasJobPreviewOverlay && (currentTimeSeriesFrame || verifiedGeoJSONFiles.length));
-
-  const currentCatalogueQueryKey = JSON.stringify({
-    aoiWkt: aoiWkt.trim(),
-    startDate,
-    endDate,
-    maturity,
-    polarization: polarization || null,
-    direction: direction || null,
-    frameCoverage,
-  });
-  const catalogueIsCurrent = Boolean(
-    catalogue?.status === 'ready' && catalogueQueryKey === currentCatalogueQueryKey,
-  );
 
   useEffect(() => {
     if (!user) {
@@ -490,17 +476,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
   const searchCatalogue = async () => {
     setCatalogueError('');
     setCatalogue(null);
-    setCatalogueQueryKey('');
     setCatalogueBusy(true);
-    const queryKey = JSON.stringify({
-      aoiWkt: aoiWkt.trim(),
-      startDate,
-      endDate,
-      maturity,
-      polarization: polarization || null,
-      direction: direction || null,
-      frameCoverage,
-    });
     try {
       const coordinates = parseWktPolygon(aoiWkt);
       const response = await fetch(API_BASE + '/api/river-shift/catalog/search', {
@@ -523,7 +499,6 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
         throw new Error(detail);
       }
       setCatalogue(payload as CatalogueResponse);
-      setCatalogueQueryKey(queryKey);
     } catch (error) {
       setCatalogueError(error instanceof Error ? error.message : 'Could not search the ASF catalogue.');
     } finally {
@@ -938,10 +913,13 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       {riverJob && <section className="rs-panel rs-job-panel" aria-live="polite">
         <div className="rs-section-heading"><div><p className="rs-kicker">LIVE SCIENCE JOB</p><h2>{riverJob.state.replace(/_/g, ' ')} · {riverJob.stage.replace(/_/g, ' ')}</h2></div>
           <span className="rs-chip">{riverJob.maturity} · {riverJob.frequency} / {riverJob.covariance_term}</span></div>
-        <p className="rs-muted">Job ID {riverJob.id} · {riverJob.start_date} to {riverJob.end_date}</p>
+        <p className="rs-muted">{riverJob.analysis_mode === 'general_scan' ? 'General River Change Scan' : 'Event-Based Analysis'} · Job ID {riverJob.id} · {riverJob.start_date} to {riverJob.end_date}{riverJob.event_date ? ` · Event date ${riverJob.event_date}` : ''}</p>
         {riverJob.github_run_url && <p><a href={riverJob.github_run_url} target="_blank" rel="noreferrer">Open processing run logs ↗</a></p>}
         {riverJob.error_message && <p className="rs-error" role="alert">{riverJob.error_message}</p>}
-        {riverJob.state === 'succeeded' && <div className="rs-warning-inline"><strong>Processing complete · PROVISIONAL.</strong> Independent validation and authoritative event confirmation are pending. The map below can show a checksum-checked display preview; its measurements are not verified.</div>}
+        {riverJob.state === 'succeeded' && <div className="rs-warning-inline"><strong>Processing complete · PROVISIONAL.</strong> {riverJob.analysis_mode === 'general_scan'
+          ? 'No event date was supplied or inferred. Independent scientific validation is still pending.'
+          : 'The event date was user supplied and has not been independently confirmed; independent scientific validation is still pending.'}
+          {' '}The map below can show a checksum-checked display preview; its measurements are not verified.</div>}
         {jobPreview?.jobId === riverJob.id && jobPreview.report && jobTimeSeriesFrames.length > 0 && (
           <section className="rs-timeseries" aria-label="Provisional observed acquisition playback">
             <div className="rs-section-heading"><div><p className="rs-kicker">OBSERVED ACQUISITIONS</p><h3>River change playback</h3></div>

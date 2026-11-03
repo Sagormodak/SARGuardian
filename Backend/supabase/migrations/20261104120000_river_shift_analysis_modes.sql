@@ -10,7 +10,7 @@ alter table public.river_shift_jobs
   check (
     (analysis_mode = 'general_scan' and event_date is null)
     or
-    (analysis_mode = 'event_based' and event_date between start_date and end_date)
+    (analysis_mode = 'event_based' and event_date is not null and event_date between start_date and end_date)
   );
 create or replace function public.enforce_river_shift_job_transition()
 returns trigger language plpgsql set search_path = public as $$
