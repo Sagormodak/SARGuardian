@@ -265,6 +265,24 @@ def test_drive_file_list_requests_include_shared_drive_compatibility_flags():
     assert params["spaces"] == "drive"
 
 
+
+
+def test_drive_file_metadata_lookup_includes_shared_drive_flag_and_safe_not_found_reason():
+    session = FakeSession(
+        request_response=FakeResponse(
+            404,
+            payload={"error": {"errors": [{"reason": "notFound"}]}},
+        ),
+        put_responses=[],
+    )
+    drive = _drive_for_upload(session)
+
+    with pytest.raises(DriveUploadError, match="HTTP 404; reason=notFound"):
+        drive._json("GET", f"{DRIVE_API}/files/parent-folder-id", params={"fields": "id,mimeType"})
+
+    params = session.request_calls[0][2]["params"]
+    assert params["supportsAllDrives"] == "true"
+
 def test_authenticated_account_verification_requires_established_storage_account():
     drive = DriveClient.__new__(DriveClient)
     drive._json = lambda *_args, **_kwargs: {"user": {"emailAddress": "sarguardian.org@gmail.com"}}
