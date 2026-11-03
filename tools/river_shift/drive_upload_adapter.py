@@ -228,7 +228,7 @@ class DriveClient:
         normalized_url = url.split("?", 1)[0]
         if normalized_url.startswith(DRIVE_API + "/files"):
             params.setdefault("supportsAllDrives", "true")
-            if normalized_url == DRIVE_API + "/files":
+            if method.upper() == "GET" and normalized_url == DRIVE_API + "/files":
                 params.setdefault("includeItemsFromAllDrives", "true")
                 params.setdefault("spaces", "drive")
         if params:
