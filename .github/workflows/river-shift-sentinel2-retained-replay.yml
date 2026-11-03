@@ -1,6 +1,6 @@
 name: RiverShift retained-run Sentinel-2 cross-sensor replay
 
-run-name: RiverShift Sentinel-2 replay · run ${ inputs.source_run_id }} · ${ inputs.observation_date }}
+run-name: RiverShift Sentinel-2 replay · run ${{ inputs.source_run_id }} · ${{ inputs.observation_date }}
 
 on:
   workflow_dispatch:
@@ -41,7 +41,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: river-shift-sentinel2-replay-${ inputs.source_run_id }}-${ inputs.observation_date }}
+  group: river-shift-sentinel2-replay-${{ inputs.source_run_id }}-${{ inputs.observation_date }}
   cancel-in-progress: false
 
 jobs:
@@ -62,7 +62,7 @@ jobs:
         with:
           pattern: rivershift-product-b01-*
           path: source-products/
-          run-id: ${ inputs.source_run_id }}
+          run-id: ${{ inputs.source_run_id }}
           github-token: ${ secrets.GITHUB_TOKEN }}
           merge-multiple: false
 
@@ -71,7 +71,7 @@ jobs:
         with:
           pattern: rivershift-prepared-*
           path: prepared/
-          run-id: ${ inputs.source_run_id }}
+          run-id: ${{ inputs.source_run_id }}
           github-token: ${ secrets.GITHUB_TOKEN }}
           merge-multiple: false
 
@@ -93,13 +93,13 @@ jobs:
           python -u tools/river_shift/replay_sentinel2_from_retained_run.py \
             --products-dir source-products \
             --prepared-dir prepared \
-            --source-run-id "${ inputs.source_run_id }}" \
-            --observation-date "${ inputs.observation_date }}" \
+            --source-run-id "${{ inputs.source_run_id }}" \
+            --observation-date "${{ inputs.observation_date }}" \
             --output-dir replay-output \
-            --max-day-offset "${ inputs.max_day_offset }}" \
-            --max-cloud-cover "${ inputs.max_cloud_cover }}" \
-            --mndwi-threshold "${ inputs.mndwi_threshold }}" \
-            --minimum-common-support "${ inputs.minimum_common_support }}"
+            --max-day-offset "${{ inputs.max_day_offset }}" \
+            --max-cloud-cover "${{ inputs.max_cloud_cover }}" \
+            --mndwi-threshold "${{ inputs.mndwi_threshold }}" \
+            --minimum-common-support "${{ inputs.minimum_common_support }}"
           echo "::endgroup::"
 
       - name: Publish a privacy-safe summary
