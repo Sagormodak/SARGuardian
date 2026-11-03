@@ -249,7 +249,8 @@ def test_river_shift_artifact_download_is_owner_scoped_and_checksum_checked(monk
     api = configure(monkeypatch, store)
     created = api.post("/api/river-shift/jobs", json=payload()).json()
     job_id = created["id"]
-    result_bytes = b"private raster result"
+    # Exercise a response larger than the Vercel buffered 4.5 MB payload ceiling.
+    result_bytes = b"x" * (5 * 1024 * 1024 + 1)
     store.rows[job_id].update({
         "state": "succeeded",
         "artifact_manifest": [{
