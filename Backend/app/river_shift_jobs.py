@@ -286,7 +286,20 @@ def _dispatch(settings: Any, job_id: UUID, request_snapshot: dict[str, Any], gra
             if response.status != 204:
                 raise RuntimeError("GitHub Actions did not accept the RiverShift workflow dispatch.")
     except HTTPError as exc:
-        raise RuntimeError(f"GitHub Actions rejected RiverShift dispatch (HTTP {exc.code}).") from None
+        # Keep GitHub's public validation message so workflow_dispatch 422s
+        # can be diagnosed. Never include request headers, the bearer token,
+        # the submitted AOI or the full response payload in the error.
+        detail = ""
+        try:
+            error_payload = json.loads(exc.read(16_384).decode("utf-8", errors="replace"))
+            if isinstance(error_payload, dict) and isinstance(error_payload.get("message"), str):
+                detail = re.sub(r"\\s+", " ", error_payload["message"]).strip()[:240]
+        except (OSError, UnicodeDecodeError, ValueError):
+            detail = ""
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(
+            f"GitHub Actions rejected RiverShift dispatch (HTTP {exc.code}){suffix}."
+        ) from None
     except (URLError, TimeoutError):
         raise RuntimeError("Could not reach GitHub Actions to dispatch RiverShift processing.") from None
 
