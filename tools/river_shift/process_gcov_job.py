@@ -50,6 +50,81 @@ class WorkerFailure(RuntimeError):
         self.code = code
 
 
+def build_source_granule_manifest(
+    raw_dir: Path,
+    granule_names: list[str],
+    *,
+    maturity: str,
+    frequency: str,
+    term: str,
+) -> dict[str, Any]:
+    """Bind accepted granules to download receipts and native HDF5 layer inventories."""
+    rows = []
+    for name in sorted(set(granule_names)):
+        receipt_path = raw_dir / f"{name}.download.json"
+        inventory_path = raw_dir / f"{name}.gcov_inventory.json"
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raise WorkerFailure(
+                "SOURCE_RECEIPT_MISSING",
+                f"Download receipt or HDF5 inventory is missing for selected granule {name}.",
+            ) from None
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("granule_name") != name
+            or receipt.get("product") != "GCOV"
+            or receipt.get("maturity") != maturity
+            or receipt.get("downloaded") is not True
+            or not isinstance(receipt.get("sha256"), str)
+            or not re.fullmatch(r"[0-9a-fA-F]{64}", receipt["sha256"])
+            or not isinstance(receipt.get("size_bytes"), int)
+            or receipt["size_bytes"] <= 0
+            or not isinstance(inventory, dict)
+            or Path(str(inventory.get("product_file", ""))).name != f"{name}.h5"
+        ):
+            raise WorkerFailure(
+                "SOURCE_RECEIPT_INVALID",
+                f"Download receipt or HDF5 inventory does not match selected granule {name}.",
+            )
+        available = {
+            (row.get("frequency"), row.get("term"))
+            for row in inventory.get("available_diagonal_terms", [])
+            if isinstance(row, dict)
+        }
+        if (frequency, term) not in available:
+            raise WorkerFailure(
+                "GCOV_LAYER_UNAVAILABLE",
+                f"Native HDF5 inventory for {name} does not contain {frequency}/{term}.",
+            )
+        rows.append({
+            "granule_name": name,
+            "maturity": maturity,
+            "source_host": receipt.get("source_host"),
+            "size_bytes": receipt["size_bytes"],
+            "source_product_sha256": receipt["sha256"].lower(),
+            "download_receipt": f"{name}.download.json",
+            "download_receipt_sha256": sha256_file(receipt_path),
+            "hdf5_inventory": f"{name}.gcov_inventory.json",
+            "hdf5_inventory_sha256": sha256_file(inventory_path),
+            "gdal_version": inventory.get("gdal_version"),
+            "available_diagonal_terms": inventory.get("available_diagonal_terms"),
+            "available_valid_sample_masks": inventory.get("available_valid_sample_masks"),
+        })
+    if not rows:
+        raise WorkerFailure("SOURCE_RECEIPT_MISSING", "No source granule receipts were retained for the selected observations.")
+    return {
+        "schema_version": 1,
+        "mission": "NISAR",
+        "product": "GCOV",
+        "maturity": maturity,
+        "frequency": frequency,
+        "covariance_term": term,
+        "granules": rows,
+    }
+
+
 def require_worker_source_provenance(
     observation_paths: dict[str, Path],
     *,
@@ -844,11 +919,31 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
                 "--maturity", request["maturity"], "--aoi-wkt", request["aoi_wkt"], "--out", str(raster_path),
             ])
             exported.append(raster_path)
+            # The exporter has already bound the HDF5 source checksum, download
+            # receipt and native layer inventory into the COG sidecar. Retain
+            # the small receipts, but release multi-GB raw HDF5 immediately.
+            product_path.unlink(missing_ok=True)
         destination = raster_dir / f"observation_{observed_date}.tif"
         if len(exported) == 1:
             date_rasters[observed_date] = exported[0]
         else:
             date_rasters[observed_date] = _mosaic_date_rasters(exported, destination)
+            for intermediate in exported:
+                intermediate.unlink(missing_ok=True)
+                intermediate.with_suffix(".metadata.json").unlink(missing_ok=True)
+
+    source_granule_manifest = build_source_granule_manifest(
+        raw_dir,
+        selected_product_names,
+        maturity=request["maturity"],
+        frequency=request["frequency"],
+        term=request["term"],
+    )
+    source_granule_manifest_path = work_dir / "source-granule-provenance.json"
+    source_granule_manifest_path.write_text(
+        json.dumps(source_granule_manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
 
     reference_date = dates[0]
     reference_path = date_rasters[reference_date]
@@ -903,9 +998,18 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
     provenance_dir.mkdir(parents=True, exist_ok=True)
     for source, target in ((catalogue_path, provenance_dir / "catalogue-manifest.json"),
                            (audit_path, provenance_dir / "acquisition-compatibility-audit.json"),
-                           (selection_path, provenance_dir / "selected-observations.json")):
+                           (selection_path, provenance_dir / "selected-observations.json"),
+                           (source_granule_manifest_path, provenance_dir / "source-granule-provenance.json")):
         shutil.copy2(source, target)
         inventory.append({"path": target.relative_to(work_dir).as_posix(), "sha256": sha256_file(target)})
+    granule_receipts_dir = provenance_dir / "granules"
+    granule_receipts_dir.mkdir(parents=True, exist_ok=True)
+    for granule in source_granule_manifest["granules"]:
+        for key in ("download_receipt", "hdf5_inventory"):
+            source = raw_dir / granule[key]
+            target = granule_receipts_dir / source.name
+            shutil.copy2(source, target)
+            inventory.append({"path": target.relative_to(work_dir).as_posix(), "sha256": sha256_file(target)})
 
     time_report_path = output_root / "time-series" / "river_shift_timeseries_preview.json"
     time_report = json.loads((time_dir / "river_shift_timeseries.json").read_text(encoding="utf-8"))
