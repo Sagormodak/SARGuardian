@@ -806,7 +806,7 @@ def test_canonical_stac_processing_fields_group_and_select_latest_tile_generatio
     )
     left_old["properties"].pop("s2:processing_baseline")
     left_old["properties"]["processing:version"] = "05.11"
-    left_old["properties"].pop("s2:generation_time")
+    left_old["properties"].pop("s2:generation_time", None)
     left_old["properties"]["processing:datetime"] = "2026-09-16T01:00:00Z"
 
     left_latest = _item(
@@ -820,7 +820,7 @@ def test_canonical_stac_processing_fields_group_and_select_latest_tile_generatio
     )
     left_latest["properties"].pop("s2:processing_baseline")
     left_latest["properties"]["processing:version"] = "05.11"
-    left_latest["properties"].pop("s2:generation_time")
+    left_latest["properties"].pop("s2:generation_time", None)
     left_latest["properties"]["processing:datetime"] = "2026-09-17T01:00:00Z"
 
     right = _item(
@@ -834,7 +834,7 @@ def test_canonical_stac_processing_fields_group_and_select_latest_tile_generatio
     )
     right["properties"].pop("s2:processing_baseline")
     right["properties"]["processing:version"] = "05.11"
-    right["properties"].pop("s2:generation_time")
+    right["properties"].pop("s2:generation_time", None)
     right["properties"]["processing:datetime"] = "2026-09-17T01:01:00Z"
 
     old_baseline = _item(
@@ -848,7 +848,7 @@ def test_canonical_stac_processing_fields_group_and_select_latest_tile_generatio
     )
     old_baseline["properties"].pop("s2:processing_baseline")
     old_baseline["properties"]["processing:version"] = "05.12"
-    old_baseline["properties"].pop("s2:generation_time")
+    old_baseline["properties"].pop("s2:generation_time", None)
     old_baseline["properties"]["processing:datetime"] = "2026-09-18T01:00:00Z"
 
     selected = crosscheck.select_best_items(
@@ -891,7 +891,7 @@ def test_read_cross_sensor_arrays_reports_the_failed_item_band_without_exposing_
 
     with pytest.raises(
         crosscheck.CrosscheckError,
-        match=r"opening reference B11 for Sentinel-2 item sentinel2-diagnostic-item: RasterioIOError",
+        match=r"opening reference B11 for Sentinel-2 item sentinel2-diagnostic-item\): RasterioIOError",
     ) as exc_info:
         crosscheck._read_cross_sensor_arrays(nisar_path=nisar_path, item=item)
 
