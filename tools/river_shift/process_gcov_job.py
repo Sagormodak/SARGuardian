@@ -754,21 +754,24 @@ def write_mask_web_preview(
                     source_width / float(preview_width),
                     source_height / float(preview_height),
                 )
-                # Average resampling is supported by RasterIO reads. A binary
-                # source mask is converted to fractional occupancy; any value
-                # above zero means at least one source candidate cell overlaps
-                # the display cell. Float output prevents sparse positives
-                # from rounding down to zero.
-                sampled = source.read(
-                    1,
-                    out_shape=(preview_height, preview_width),
-                    masked=True,
+                # Use GDAL's average warp into floating point. RasterIO's
+                # out_shape average can sample away isolated positives; a
+                # coarser same-CRS warp computes fractional occupancy for each
+                # target cell, so any positive source pixel remains > 0.
+                sampled_values = np.zeros((preview_height, preview_width), dtype=np.float32)
+                reproject(
+                    source=rasterio.band(source, 1),
+                    destination=sampled_values,
+                    src_transform=source_transform,
+                    src_crs=source_crs_value,
+                    src_nodata=source_nodata,
+                    dst_transform=preview_transform,
+                    dst_crs=source_crs_value,
+                    dst_nodata=0.0,
                     resampling=Resampling.average,
-                    out_dtype="float32",
+                    init_dest_nodata=True,
                 )
-                sampled_mask = np.ma.getmaskarray(sampled)
-                sampled_values = np.asarray(sampled.filled(0), dtype=np.float32)
-                candidate = (sampled_values > 0.0) & ~sampled_mask
+                candidate = sampled_values > 0.0
                 candidate_cells = int(np.count_nonzero(candidate))
                 pixel_x_m = math.hypot(preview_transform.a, preview_transform.d)
                 pixel_y_m = math.hypot(preview_transform.b, preview_transform.e)
