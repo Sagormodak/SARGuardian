@@ -669,13 +669,27 @@ def download_river_shift_artifact(
             or getattr(cause, "status_code", None)
             or getattr(cause, "code", None)
         )
+        # Google OAuth returns a stable error code (for example invalid_grant
+        # or invalid_client). Record only that allow-listed code, never the
+        # response body or error_description, so credential failures can be
+        # distinguished without leaking secrets into application logs.
+        upstream_error_code = None
+        if upstream_response is not None:
+            try:
+                error_payload = upstream_response.json()
+                candidate_error_code = error_payload.get("error") if isinstance(error_payload, dict) else None
+                if isinstance(candidate_error_code, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", candidate_error_code):
+                    upstream_error_code = candidate_error_code
+            except (ValueError, AttributeError):
+                pass
         logger.warning(
             "RiverShift private artifact retrieval failed "
-            "(job_id=%s artifact_name=%s drive_error=%s upstream_http_status=%s cause_type=%s)",
+            "(job_id=%s artifact_name=%s drive_error=%s upstream_http_status=%s upstream_error_code=%s cause_type=%s)",
             str(job_id),
             filename,
             str(exc)[:180],
             upstream_status,
+            upstream_error_code,
             type(cause).__name__ if cause is not None else "none",
         )
         try:
