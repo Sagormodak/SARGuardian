@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import sys
 import traceback
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -100,6 +100,8 @@ def _product_date(product: dict[str, Any]) -> str | None:
                 return None
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(timezone.utc)
             return parsed.date().isoformat()
         except ValueError:
             pass
