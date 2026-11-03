@@ -651,3 +651,159 @@ def test_assembly_rejects_artifact_when_exporter_cog_checksum_does_not_match(tmp
     }
     with pytest.raises(WorkerFailure, match="checksum or exporter path is invalid"):
         _verify_and_stage_product_results(prepared, artifact_root, tmp_path / "assembly")
+
+
+@pytest.mark.parametrize("fail_drive_upload", [False, True])
+def test_assembly_finalization_builds_manifest_before_private_drive_upload(
+    tmp_path, monkeypatch, fail_drive_upload,
+):
+    job_id = "6668c93f-2188-408e-9f8d-f990acaf2035"
+    fingerprint = "a" * 64
+    runner_temp = tmp_path / "runner-temp"
+    prepared_dir = tmp_path / "prepared"
+    prepared_dir.mkdir()
+    for filename in (
+        "gcov-catalogue-manifest.json",
+        "gcov-time-series-audit.json",
+        "selected-observations.json",
+    ):
+        (prepared_dir / filename).write_text(json.dumps({"source": filename}), encoding="utf-8")
+
+    dates = ["2026-06-30", "2026-07-12", "2026-07-24", "2026-08-17"]
+    event_window = {
+        "before": dates[0],
+        "event_proximal_observation": dates[1],
+        "post_one": dates[2],
+        "post_two": dates[3],
+    }
+    granule = "NISAR_L2_PR_GCOV_024_069_A_015_4005_DHDH_A_20260630T232208_20260630T232243_P05023_N_F_J_001"
+    prepared = {
+        "job_id": job_id,
+        "request_fingerprint": fingerprint,
+        "selected_product_names": [granule],
+        "batches": [[granule]],
+        "dates": dates,
+        "event_window": event_window,
+        "selection": {"dates_selected": dates, "release_status": "PROVISIONAL"},
+    }
+    request = {
+        "job_id": job_id,
+        "fingerprint": fingerprint,
+        "maturity": "PROVISIONAL",
+        "frequency": "frequencyA",
+        "term": "HHHH",
+        "threshold_method": "otsu",
+        "threshold_db": None,
+    }
+
+    events = []
+
+    class FakeCallbacks:
+        def send(self, state, stage, **_kwargs):
+            events.append(("callback", state, stage))
+
+    def fake_verify_and_stage(_prepared, _products_dir, work_dir):
+        raster_dir = work_dir / "source-rasters"
+        raster_dir.mkdir(parents=True)
+        date_rasters = {}
+        for observed_date in dates:
+            raster = raster_dir / f"{observed_date}.tif"
+            raster.write_bytes(f"aligned source raster for {observed_date}".encode("utf-8"))
+            date_rasters[observed_date] = [raster]
+        provenance = work_dir / "source-granule-provenance.json"
+        provenance.write_text(json.dumps({"granules": []}), encoding="utf-8")
+        (work_dir / "raw").mkdir()
+        return date_rasters, provenance
+
+    def fake_run_step(stage, command, *, context=None):
+        del stage, context
+        script = Path(command[1]).name
+        output_dir = Path(command[command.index("--out-dir") + 1])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if script == "run_water_timeseries.py":
+            filename = "river_shift_timeseries.json"
+            payload = {"quality": {"warnings": []}, "method": {"threshold_db": -12.0}}
+        elif script in {"run_flood_analysis.py", "run_morphology_analysis.py"}:
+            filename = "river_shift_result.json"
+            payload = {"quality": {"status": "PASS"}, "metrics": {}}
+        else:
+            raise AssertionError(f"Unexpected assembly processing script: {script}")
+        (output_dir / filename).write_text(json.dumps(payload), encoding="utf-8")
+
+    def fake_create_web_previews(work_dir, *_args):
+        preview = work_dir / "outputs" / "map" / "river_change_candidates_preview.geojson"
+        preview.parent.mkdir(parents=True, exist_ok=True)
+        preview.write_text(json.dumps({"type": "FeatureCollection", "features": []}), encoding="utf-8")
+        return [{
+            "path": preview.relative_to(work_dir).as_posix(),
+            "sha256": hashlib.sha256(preview.read_bytes()).hexdigest(),
+        }]
+
+    def fake_upload_validated_results(work_dir):
+        events.append(("upload", "START"))
+        manifest_path = work_dir / "result-manifest.json"
+        assert manifest_path.is_file(), "Drive upload must never start before the manifest exists."
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        outputs = manifest["validated_outputs"]
+        assert outputs, "The package must contain validated outputs before Drive publication."
+        receipts = []
+        for index, output in enumerate(outputs, start=1):
+            path = work_dir / output["path"]
+            assert path.is_file()
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            assert digest == output["sha256"]
+            receipts.append({
+                "path": output["path"],
+                "bytes": path.stat().st_size,
+                "drive_file_id": f"private-drive-file-{index}",
+            })
+        if fail_drive_upload:
+            raise batch_module.DriveUploadError("simulated remote upload failure")
+        manifest["storage_verification"] = {"receipts": receipts}
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        events.append(("upload", "PASS"))
+        return {
+            "status": "PASS",
+            "receipts": receipts,
+            "retained_bytes": sum(receipt["bytes"] for receipt in receipts),
+        }
+
+    monkeypatch.setenv("RUNNER_TEMP", str(runner_temp))
+    monkeypatch.setenv("RIVERSHIFT_PREPARED_DIR", str(prepared_dir))
+    monkeypatch.setenv("RIVERSHIFT_PRODUCT_ARTIFACTS_DIR", str(tmp_path / "product-artifacts"))
+    monkeypatch.setenv("RIVERSHIFT_JOB_ID", job_id)
+    monkeypatch.setattr(batch_module, "_ensure_credentials", lambda: None)
+    monkeypatch.setattr(batch_module, "_verify_and_stage_product_results", fake_verify_and_stage)
+    monkeypatch.setattr(batch_module, "_co_register", lambda path, _reference, *, is_reference: path)
+    monkeypatch.setattr(batch_module, "require_worker_source_provenance", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(batch_module, "run_step", fake_run_step)
+    monkeypatch.setattr(batch_module, "create_web_previews", fake_create_web_previews)
+    monkeypatch.setattr(batch_module, "upload_validated_results", fake_upload_validated_results)
+
+    def capture_stage(stage, status, **_details):
+        events.append(("log", stage, status))
+
+    monkeypatch.setattr(batch_module, "_log_worker_stage", capture_stage)
+
+    if fail_drive_upload:
+        with pytest.raises(WorkerFailure, match="Google Drive result publication failed") as error:
+            batch_module._assemble_job(request, prepared, FakeCallbacks())
+        assert error.value.code == "PRIVATE_STORAGE_PUBLICATION_FAILED"
+        assert ("log", "private_result_publication", "FAIL") in events
+        assert ("upload", "PASS") not in events
+    else:
+        summary, artifacts = batch_module._assemble_job(request, prepared, FakeCallbacks())
+        assert summary["processing_status"] == "PASS"
+        assert summary["release_status"] == "PROVISIONAL"
+        assert artifacts
+        assert all(item.get("drive_file_id") for item in artifacts)
+        assert ("log", "private_result_publication", "PASS") in events
+        assert ("upload", "PASS") in events
+
+    package_pass = events.index(("log", "result_package_assembly", "PASS"))
+    publication_callback = events.index(("callback", "running", "private_result_publication"))
+    publication_start = events.index(("log", "private_result_publication", "START"))
+    upload_start = events.index(("upload", "START"))
+    assert package_pass < publication_callback < publication_start < upload_start
+    assert ("callback", "running", "result_package_assembly") in events
+
