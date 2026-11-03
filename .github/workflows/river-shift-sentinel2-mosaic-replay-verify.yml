@@ -1,0 +1,131 @@
+name: RiverShift same-datatake Sentinel-2 mosaic replay verification
+
+on:
+  push:
+    branches:
+      - run/rivershift-sentinel2-mosaic-replay-verification-20261104
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: river-shift-sentinel2-mosaic-replay-41642281327
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    name: Replay retained July and September NISAR masks against Sentinel-2 mosaics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Check out merged RiverShift science tools
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download retained per-product COG artifacts from the original RiverShift run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-product-b01-*
+          path: source-products/
+          run-id: "41642281327"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Download the exact prepared selection manifest
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-prepared-*
+          path: prepared/
+          run-id: "41642281327"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Install the pinned RiverShift geospatial environment
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+
+      - name: Verify GDAL and replay the 2026-07-12 NISAR observation
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python --version
+          gdalinfo --version
+          python -c "import rasterio, numpy, scipy, shapely, pyproj, requests; print('RIVERSHIFT_CROSS_SENSOR_RUNTIME=PASS')"
+          python -u tools/river_shift/replay_sentinel2_from_retained_run.py \
+            --products-dir source-products \
+            --prepared-dir prepared \
+            --source-run-id "41642281327" \
+            --observation-date "2026-07-12" \
+            --output-dir replay-output/2026-07-12 \
+            --max-day-offset 10 \
+            --max-cloud-cover 80 \
+            --mndwi-threshold "0.0" \
+            --minimum-common-support "0.80"
+
+      - name: Replay the 2026-09-10 NISAR observation
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python -u tools/river_shift/replay_sentinel2_from_retained_run.py \
+            --products-dir source-products \
+            --prepared-dir prepared \
+            --source-run-id "41642281327" \
+            --observation-date "2026-09-10" \
+            --output-dir replay-output/2026-09-10 \
+            --max-day-offset 5 \
+            --max-cloud-cover 60 \
+            --mndwi-threshold "0.0" \
+            --minimum-common-support "0.80"
+
+      - name: Publish privacy-safe mosaic comparison summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          summary = Path(__import__('os').environ['GITHUB_STEP_SUMMARY'])
+          lines = ["## RiverShift Sentinel-2 same-datatake mosaic replay", ""]
+          for day in ("2026-07-12", "2026-09-10"):
+              base = Path("replay-output") / day
+              report_path = base / "sentinel2-cross-sensor" / "sentinel2_cross_sensor_agreement.json"
+              if not report_path.is_file():
+                  lines.extend([f"### NISAR {day}", "No report produced; inspect the replay logs.", ""])
+                  continue
+              report = json.loads(report_path.read_text(encoding="utf-8"))
+              obs = report.get("observation") or {}
+              support = report.get("spatial_support") or {}
+              metrics = report.get("metrics")
+              lines.extend([
+                  f"### NISAR {day}",
+                  f"- Status: **{report.get('status')}**",
+                  f"- Sentinel-2 date: {obs.get('sentinel2_date')}",
+                  f"- Datatake: `{obs.get('sentinel2_datatake_id') or 'not reported'}`",
+                  f"- MGRS tiles: {', '.join(obs.get('mgrs_tiles') or []) or 'not found'}",
+                  f"- Tile count: {obs.get('sentinel2_tile_count', 0)}",
+                  f"- Mean / max tile cloud cover: {obs.get('cloud_cover_percent')}% / {obs.get('maximum_tile_cloud_cover_percent')}%",
+                  f"- AOI footprint overlap: {obs.get('aoi_footprint_overlap_fraction')}",
+                  f"- Clear common support: {support.get('common_support_fraction')}",
+              ])
+              if isinstance(metrics, dict):
+                  for key, label in (("scl_water_class", "SCL"), ("mndwi_water_class", "MNDWI")):
+                      values = metrics.get(key) or {}
+                      lines.append(f"- {label} F1 / IoU: {values.get('f1_score')} / {values.get('intersection_over_union')}")
+              else:
+                  lines.append("- F1 / IoU: not calculated (the configured support gate was not met)")
+              lines.append("")
+          lines.extend([
+              "**Interpretation:** cross-sensor agreement screening only, not ground truth or field validation. NISAR results remain PROVISIONAL.",
+              "",
+              "Only checksummed retained COGs were used. No raw NISAR HDF5 was re-downloaded; detailed reports, masks, coordinates and signed asset URLs were not published as workflow artifacts.",
+          ])
+          summary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
