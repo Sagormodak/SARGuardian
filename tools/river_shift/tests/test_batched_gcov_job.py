@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import warnings
 
+import pytest
 from pyproj import Transformer
 from shapely.geometry import box, mapping
 
+import batched_gcov_job as batch_module
 from batched_gcov_job import (
     BATCH_SIZE,
     MAX_BATCHES,
+    WorkerFailure,
+    _product_catalogue_path,
     _product_result_problem,
+    _report_retry_wave,
     _retry_matrix,
+    _run_product_worker,
     _select_retry_rows,
     _write_batch_outputs,
 )
@@ -206,4 +213,245 @@ def test_retry_job_is_not_gated_by_the_retry_count_output():
     assert "if: needs.retry_prepare.result == 'success'" in retry_job
     assert "retry_count !=" not in retry_job
     assert "matrix: ${{ fromJSON(needs.retry_prepare.outputs.retry_matrix) }}" in retry_job
+
+def test_product_catalogue_path_is_absolute_from_child_tools_working_directory(tmp_path, monkeypatch):
+    tools_dir = tmp_path / "tools" / "river_shift"
+    tools_dir.mkdir(parents=True)
+    prepared_dir = tmp_path / "prepared"
+    prepared_dir.mkdir()
+    catalogue = prepared_dir / "selected-catalogue.json"
+    catalogue.write_text(json.dumps({"products": []}), encoding="utf-8")
+
+    monkeypatch.chdir(tools_dir)
+    resolved = _product_catalogue_path(prepared_dir)
+
+    assert resolved.is_absolute()
+    assert resolved == catalogue.resolve()
+    assert resolved.is_file()
+
+
+def test_product_worker_failure_receipt_returns_nonzero_and_uses_absolute_catalogue(tmp_path, monkeypatch):
+    granule = "NISAR_L2_PR_GCOV_001"
+    prepared_dir = tmp_path / "prepared"
+    prepared_dir.mkdir()
+    fingerprint = "a" * 64
+    (prepared_dir / "prepared.json").write_text(json.dumps({
+        "job_id": "job-1",
+        "request_fingerprint": fingerprint,
+        "selected_product_names": [granule],
+        "date_by_name": {granule: "2026-06-30"},
+        "request": {
+            "frequency": "frequencyA",
+            "term": "HHHH",
+            "maturity": "PROVISIONAL",
+            "aoi_wkt": "POLYGON ((85 27, 85.01 27, 85.01 27.01, 85 27.01, 85 27))",
+        },
+    }), encoding="utf-8")
+    (prepared_dir / "selected-catalogue.json").write_text(json.dumps({
+        "products": [{"granule_name": granule}],
+    }), encoding="utf-8")
+    output_dir = tmp_path / "product-output"
+    runner_temp = tmp_path / "runner-temp"
+
+    environment = {
+        "RIVERSHIFT_GRANULE_NAME": granule,
+        "RIVERSHIFT_ACQUISITION_DATE": "2026-06-30",
+        "RIVERSHIFT_BATCH_NUMBER": "1",
+        "RIVERSHIFT_BATCH_COUNT": "1",
+        "RIVERSHIFT_PRODUCT_INDEX": "1",
+        "RIVERSHIFT_TOTAL_PRODUCTS": "1",
+        "RIVERSHIFT_RETRY_ATTEMPT": "0",
+        "RIVERSHIFT_PRODUCT_OUTPUT_DIR": str(output_dir),
+        "RIVERSHIFT_PREPARED_DIR": str(prepared_dir),
+        "RIVERSHIFT_JOB_ID": "job-1",
+        "RIVERSHIFT_REQUEST_FINGERPRINT": fingerprint,
+        "RUNNER_TEMP": str(runner_temp),
+    }
+    for key, value in environment.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(batch_module, "_configure_earthdata_credentials", lambda: None)
+    monkeypatch.setattr(batch_module, "_log_worker_stage", lambda *_args, **_kwargs: None)
+
+    seen_catalogue = {}
+
+    def fail_download(stage, command, *, context=None):
+        catalogue_arg = command[command.index("--catalogue") + 1]
+        seen_catalogue["path"] = Path(catalogue_arg)
+        raise WorkerFailure("SCIENCE_STEP_FAILED", "simulated child download failure")
+
+    monkeypatch.setattr(batch_module, "run_step", fail_download)
+
+    exit_code = _run_product_worker()
+
+    assert seen_catalogue["path"].is_absolute()
+    assert seen_catalogue["path"].is_file()
+    assert exit_code == 1
+    receipt = json.loads((output_dir / granule / "worker-result.json").read_text(encoding="utf-8"))
+    assert receipt["status"] == "FAIL"
+    assert receipt["error_code"] == "SCIENCE_STEP_FAILED"
+
+
+def test_retry_report_marks_failed_retry_as_terminal_and_returns_nonzero(tmp_path, monkeypatch):
+    granule = "missing-product-0001"
+    prepared_dir = tmp_path / "prepared"
+    first_dir = tmp_path / "first-attempt"
+    retry_dir = tmp_path / "retry-attempt"
+    prepared_dir.mkdir()
+    first_dir.mkdir()
+    retry_dir.mkdir()
+    (prepared_dir / "prepared.json").write_text(json.dumps({
+        "job_id": "job-1",
+        "request_fingerprint": "b" * 64,
+        "selected_product_names": [granule],
+        "date_by_name": {granule: "2026-07-12"},
+    }), encoding="utf-8")
+    for key, value in {
+        "RIVERSHIFT_PREPARED_DIR": str(prepared_dir),
+        "RIVERSHIFT_PRODUCT_ARTIFACTS_DIR": str(first_dir),
+        "RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR": str(retry_dir),
+        "RIVERSHIFT_CALLBACK_URL": "https://api.example.test",
+        "RIVERSHIFT_CALLBACK_SEQUENCE": "6",
+        "RIVERSHIFT_RETRY_DISPATCH_STATUS": "success",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    captured = {}
+    class FakeCallbacks:
+        def __init__(self, job_id, fingerprint, callback_url, *, initial_sequence=0):
+            self.sequence = initial_sequence
+        def send(self, state, stage, *, result_summary=None, artifact_manifest=None, error_code=None, error_message=None):
+            self.sequence += 1
+            captured.update({"state": state, "stage": stage, "result_summary": result_summary, "error_code": error_code, "error_message": error_message})
+
+    monkeypatch.setattr(batch_module, "JobCallbacks", FakeCallbacks)
+    monkeypatch.setattr(batch_module, "_log_worker_stage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(batch_module, "_write_step_summary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(batch_module, "_write_output", lambda name, value: captured.__setitem__(name, value))
+
+    with pytest.raises(WorkerFailure, match="delayed retry product"):
+        _report_retry_wave()
+
+    assert captured["state"] == "failed"
+    assert captured["error_code"] == "PRODUCT_RETRY_FAILED"
+    assert captured["result_summary"]["retry_failure_count"] == 1
+    assert captured["callback_sequence"] == "7"
+
+
+def test_retry_matrix_handoff_failure_posts_terminal_failure(tmp_path, monkeypatch):
+    granule = "missing-product-0002"
+    prepared_dir = tmp_path / "prepared"
+    first_dir = tmp_path / "first"
+    retry_dir = tmp_path / "retry"
+    prepared_dir.mkdir()
+    first_dir.mkdir()
+    retry_dir.mkdir()
+    (prepared_dir / "prepared.json").write_text(json.dumps({
+        "job_id": "job-2",
+        "request_fingerprint": "c" * 64,
+        "selected_product_names": [granule],
+        "date_by_name": {granule: "2026-08-01"},
+    }), encoding="utf-8")
+    for key, value in {
+        "RIVERSHIFT_PREPARED_DIR": str(prepared_dir),
+        "RIVERSHIFT_PRODUCT_ARTIFACTS_DIR": str(first_dir),
+        "RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR": str(retry_dir),
+        "RIVERSHIFT_CALLBACK_URL": "https://api.example.test",
+        "RIVERSHIFT_CALLBACK_SEQUENCE": "4",
+        "RIVERSHIFT_RETRY_DISPATCH_STATUS": "failure",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    captured = {}
+    class FakeCallbacks:
+        def __init__(self, *_args, initial_sequence=0):
+            self.sequence = initial_sequence
+        def send(self, state, stage, **kwargs):
+            self.sequence += 1
+            captured.update({"state": state, "stage": stage, **kwargs})
+
+    monkeypatch.setattr(batch_module, "JobCallbacks", FakeCallbacks)
+    monkeypatch.setattr(batch_module, "_log_worker_stage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(batch_module, "_write_step_summary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(batch_module, "_write_output", lambda name, value: captured.__setitem__(name, value))
+
+    with pytest.raises(WorkerFailure, match="retry matrix"):
+        _report_retry_wave()
+
+    assert captured["state"] == "failed"
+    assert captured["error_code"] == "RETRY_MATRIX_HANDOFF_FAILED"
+    assert captured["retry_failure_count"] == 1
+
+
+def test_retry_report_with_no_retry_queue_stays_running(tmp_path, monkeypatch):
+    granule = "verified-product-0001"
+    prepared_dir = tmp_path / "prepared"
+    first_dir = tmp_path / "first"
+    retry_dir = tmp_path / "retry"
+    prepared_dir.mkdir()
+    (first_dir / granule).mkdir(parents=True)
+    retry_dir.mkdir()
+    required = [f"{granule}.tif", f"{granule}.metadata.json", f"{granule}.download.json", f"{granule}.gcov_inventory.json"]
+    files = []
+    for name in required:
+        payload = name.encode("utf-8")
+        (first_dir / granule / name).write_bytes(payload)
+        files.append({"name": name, "sha256": hashlib.sha256(payload).hexdigest()})
+    result = {
+        "status": "PASS",
+        "job_id": "job-3",
+        "request_fingerprint": "d" * 64,
+        "granule_name": granule,
+        "acquisition_date": "2026-08-01",
+        "files": files,
+    }
+    (first_dir / granule / "worker-result.json").write_text(json.dumps(result), encoding="utf-8")
+    (prepared_dir / "prepared.json").write_text(json.dumps({
+        "job_id": "job-3",
+        "request_fingerprint": "d" * 64,
+        "selected_product_names": [granule],
+        "date_by_name": {granule: "2026-08-01"},
+    }), encoding="utf-8")
+    for key, value in {
+        "RIVERSHIFT_PREPARED_DIR": str(prepared_dir),
+        "RIVERSHIFT_PRODUCT_ARTIFACTS_DIR": str(first_dir),
+        "RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR": str(retry_dir),
+        "RIVERSHIFT_CALLBACK_URL": "https://api.example.test",
+        "RIVERSHIFT_CALLBACK_SEQUENCE": "8",
+        "RIVERSHIFT_RETRY_DISPATCH_STATUS": "success",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    captured = {}
+    class FakeCallbacks:
+        def __init__(self, *_args, initial_sequence=0):
+            self.sequence = initial_sequence
+        def send(self, state, stage, *, result_summary=None, artifact_manifest=None, error_code=None, error_message=None):
+            self.sequence += 1
+            captured.update({"state": state, "stage": stage, "result_summary": result_summary})
+
+    monkeypatch.setattr(batch_module, "JobCallbacks", FakeCallbacks)
+    monkeypatch.setattr(batch_module, "_log_worker_stage", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(batch_module, "_write_step_summary", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(batch_module, "_write_output", lambda name, value: captured.__setitem__(name, value))
+
+    _report_retry_wave()
+
+    assert captured["state"] == "running"
+    assert captured["result_summary"]["retry_count"] == 0
+    assert captured["result_summary"]["retry_failure_count"] == 0
+
+
+def test_workflow_does_not_mask_product_worker_failures_and_validates_retry_handoff():
+    repository_root = Path(__file__).resolve().parents[3]
+    workflow = (repository_root / ".github" / "workflows" / "river-shift-gcov-process.yml").read_text(encoding="utf-8")
+
+    # Product-matrix failure must be visible; reconciliation jobs separately
+    # preserve the ability to start later batches and the delayed retry wave.
+    assert "continue-on-error: true\\n    strategy:" not in workflow
+    assert "retry_dispatch:" in workflow
+    assert "RIVERSHIFT_RETRY_MATRIX_JSON:" in workflow
+    assert "matrix_include_count=" in workflow
+    assert "fromJSON(needs.retry_dispatch.outputs.retry_matrix)" in workflow
+    expected_status_env = "RIVERSHIFT_RETRY_DISPATCH_STATUS: $" + "{{ needs.retry_dispatch.result }}"
+    assert expected_status_env in workflow
 
