@@ -1,0 +1,164 @@
+name: RiverShift retained-run Sentinel-2 cross-sensor replay
+
+run-name: RiverShift Sentinel-2 replay · run ${{ inputs.source_run_id }} · ${{ inputs.observation_date }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Completed RiverShift run containing retained per-product COG artifacts
+        required: true
+        type: string
+        default: "41642281327"
+      observation_date:
+        description: Exact NISAR acquisition date (YYYY-MM-DD)
+        required: true
+        type: string
+        default: "2026-07-12"
+      max_day_offset:
+        description: Maximum acquisition-date difference
+        required: true
+        type: number
+        default: 3
+      max_cloud_cover:
+        description: Maximum Sentinel-2 scene cloud cover percentage
+        required: true
+        type: number
+        default: 40
+      mndwi_threshold:
+        description: MNDWI threshold using B03 and B11
+        required: true
+        type: string
+        default: "0.0"
+      minimum_common_support:
+        description: Minimum clear optical support fraction
+        required: true
+        type: string
+        default: "0.80"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: river-shift-sentinel2-replay-${{ inputs.source_run_id }}-${{ inputs.observation_date }}
+  cancel-in-progress: false
+
+jobs:
+  cross-sensor:
+    name: Rebuild retained NISAR mask and compare with Sentinel-2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Check out the RiverShift science tools
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download retained per-product COG artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-product-b01-*
+          path: source-products/
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Download the exact prepared selection manifest
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-prepared-*
+          path: prepared/
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Install the pinned RiverShift geospatial environment
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+
+      - name: Verify GDAL and run the retained-data cross-sensor replay
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          echo "::group::RiverShift retained-run cross-sensor replay"
+          python --version
+          gdalinfo --version
+          python -c "import rasterio, numpy, scipy, shapely, pyproj, requests; print('RIVERSHIFT_CROSS_SENSOR_RUNTIME=PASS')"
+          python -u tools/river_shift/replay_sentinel2_from_retained_run.py \
+            --products-dir source-products \
+            --prepared-dir prepared \
+            --source-run-id "${{ inputs.source_run_id }}" \
+            --observation-date "${{ inputs.observation_date }}" \
+            --output-dir replay-output \
+            --max-day-offset "${{ inputs.max_day_offset }}" \
+            --max-cloud-cover "${{ inputs.max_cloud_cover }}" \
+            --mndwi-threshold "${{ inputs.mndwi_threshold }}" \
+            --minimum-common-support "${{ inputs.minimum_common_support }}"
+          echo "::endgroup::"
+
+      - name: Publish a privacy-safe summary
+        if: always()
+        shell: bash
+        env:
+          SUMMARY_REPORT: replay-output/sentinel2-cross-sensor/sentinel2_cross_sensor_agreement.json
+          REPLAY_MANIFEST: replay-output/cross_sensor_replay_manifest.json
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report_path = Path(os.environ["SUMMARY_REPORT"])
+          manifest_path = Path(os.environ["REPLAY_MANIFEST"])
+          if not report_path.is_file() or not manifest_path.is_file():
+              with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
+                  stream.write("## RiverShift Sentinel-2 replay\n\nNo cross-sensor report was produced. Review the preceding job logs.\n")
+              raise SystemExit(0)
+
+          report = json.loads(report_path.read_text(encoding="utf-8"))
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          observation = report.get("observation") or {}
+          support = report.get("spatial_support") or {}
+          metrics = report.get("metrics")
+          lines = [
+              "## RiverShift Sentinel-2 cross-sensor replay",
+              "",
+              f"- Status: **{report.get('status')}**",
+              f"- Source RiverShift run: {manifest.get('source_workflow_run_id')}",
+              f"- NISAR acquisition date: {manifest.get('requested_observation_date')}",
+              f"- NISAR dates in replay: {', '.join(manifest.get('actual_nisar_observation_dates') or [])}",
+              f"- Sentinel-2 item: {observation.get('sentinel2_item_id') or 'not found'}",
+              f"- Sentinel-2 date: {observation.get('sentinel2_date') or 'not found'}",
+              f"- Scene cloud cover: {observation.get('cloud_cover_percent')}",
+              f"- Date offset: {observation.get('absolute_date_offset_days')}",
+              f"- AOI footprint overlap: {observation.get('aoi_footprint_overlap_fraction')}",
+              f"- Clear common support: {support.get('common_support_fraction')}",
+              "",
+          ]
+          if isinstance(metrics, dict):
+              lines.extend(["### Cross-sensor agreement metrics", "", "| Optical reference | Precision | Recall | F1 | IoU |", "|---|---:|---:|---:|---:|"])
+              for key, label in (("scl_water_class", "Sentinel-2 SCL water"), ("mndwi_water_class", "Sentinel-2 MNDWI")):
+                  values = metrics.get(key) or {}
+                  def fmt(value):
+                      return "not available" if value is None else f"{float(value):.3f}"
+                  lines.append(
+                      f"| {label} | {fmt(values.get('precision'))} | {fmt(values.get('recall'))} | {fmt(values.get('f1_score'))} | {fmt(values.get('intersection_over_union'))} |"
+                  )
+          else:
+              lines.extend(["No agreement metrics were published because no eligible scene or enough clear common support was available.", ""])
+          lines.extend([
+              "",
+              "**Interpretation:** cross-sensor agreement screening only. Sentinel-2 SCL/MNDWI is not ground truth or field validation. The source NISAR run remains PROVISIONAL.",
+              "",
+              "The detailed report and masks remain in the ephemeral runner workspace; no AOI coordinates, asset URLs, NISAR masks or full report are uploaded as a public workflow artifact.",
+          ])
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
+              stream.write("\n".join(lines) + "\n")
+          PY

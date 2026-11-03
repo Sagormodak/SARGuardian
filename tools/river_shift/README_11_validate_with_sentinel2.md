@@ -83,3 +83,15 @@ If no suitable scene exists, the tool writes `NO_MATCHING_SENTINEL2_SCENE_WITHIN
 - Planetary Computer SAS signing: https://planetarycomputer.microsoft.com/docs/concepts/sas/
 - Sentinel-2 Level-2A processing / SCL: https://sentinels.copernicus.eu/web/sentinel/user-guides/sentinel-2-msi/product-types/level-2a
 - NISAR GCOV product guide: https://nisar-docs.asf.alaska.edu/gcov/
+## Replay an existing RiverShift run without downloading raw NISAR again
+
+A manual GitHub Actions workflow is available at `.github/workflows/river-shift-sentinel2-retained-replay.yml`. It retrieves the small per-product AOI COG artifacts and prepared manifest from an earlier RiverShift worker run, verifies their worker receipts and SHA-256 values, rebuilds the original six-date water series with the exact recorded Otsu/manual threshold, then compares the chosen observation date against Sentinel-2.
+
+To run it, open **Actions → RiverShift retained-run Sentinel-2 cross-sensor replay → Run workflow** in the backend repository. Supply:
+- `source_run_id`: a completed run whose per-product artifacts have not expired (the example run is `41642281327`);
+- `observation_date`: a date in that run's exact selected acquisition list (the example default is `2026-07-12`);
+- the date offset, cloud ceiling, MNDWI threshold and minimum clear common-support fraction.
+
+The workflow reads retained AOI COGs and receipts only. It does not download raw multi-gigabyte HDF5 NISAR granules, change the original run, or run as part of normal RiverShift processing. The summary exposes the selected Sentinel-2 item and comparison metrics only; the full report, water masks, AOI coordinates and asset URLs remain on the temporary Actions runner and are not uploaded as public artifacts.
+
+A no-match or low-support result is a valid explicit outcome. No comparison score is invented, and the original NISAR run remains PROVISIONAL until independent human review.
