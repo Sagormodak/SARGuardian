@@ -18,6 +18,7 @@ from .raster_io import (
     write_mask_geojson,
     sha256_file,
     validate_gcov_series,
+    gcov_source_provenance,
 )
 from .water_detection import classify_open_water, otsu_threshold_db
 
@@ -86,6 +87,7 @@ def run_morphology_analysis(
     series_metadata, provenance_complete = validate_gcov_series(
         paths, maturity=maturity, frequency=frequency, term=polarization_term,
     )
+    source_provenance = gcov_source_provenance(series_metadata or [])
 
     if dates:
         ordered_dates = [date.fromisoformat(dates[key]) for key in ("before", "post_one", "post_two")]
@@ -179,8 +181,9 @@ def run_morphology_analysis(
             "maturity": maturity.upper(),
             "frequency": frequency,
             "covariance_term": polarization_term,
-            "granule_names": [metadata["source_granule_name"] for metadata in series_metadata],
-            "source_granule_sha256": [metadata["source_product_sha256"] for metadata in series_metadata],
+            "granule_names": source_provenance["granule_names"],
+            "source_granule_sha256": source_provenance["source_granule_sha256"],
+            "observation_sources": source_provenance["observation_sources"],
         },
         "inputs": {
             **paths,
