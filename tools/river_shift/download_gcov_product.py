@@ -14,14 +14,58 @@ from urllib.parse import urlparse
 import requests
 
 
+TRUSTED_ASF_HOSTS = {
+    "nisar.asf.earthdatacloud.nasa.gov",
+    "asf.alaska.edu",
+    "datapool.asf.alaska.edu",
+}
+TRUSTED_EARTHDATA_AUTH_HOSTS = {"urs.earthdata.nasa.gov"}
+HDF5_SIGNATURE = b"\\x89HDF\\r\\n\\x1a\\n"
+
+
 def trusted_asf_url(value: str) -> bool:
-    parsed = urlparse(value)
-    host = (parsed.hostname or "").lower()
-    return parsed.scheme == "https" and (
-        host == "asf.alaska.edu"
-        or host.endswith(".asf.alaska.edu")
-        or host.endswith(".asf.earthdatacloud.nasa.gov")
-    )
+    try:
+        parsed = urlparse(value)
+        return (
+            parsed.scheme == "https"
+            and (parsed.hostname or "").lower() in TRUSTED_ASF_HOSTS
+            and parsed.port in (None, 443)
+            and parsed.username is None
+            and parsed.password is None
+        )
+    except ValueError:
+        return False
+
+
+def trusted_redirect_chain(response: requests.Response) -> bool:
+    """Allow only ASF product hosts and the official Earthdata Login host."""
+    for hop in [*getattr(response, "history", []), response]:
+        try:
+            parsed = urlparse(str(hop.url))
+            host = (parsed.hostname or "").lower()
+            if (
+                parsed.scheme != "https"
+                or parsed.port not in (None, 443)
+                or parsed.username is not None
+                or parsed.password is not None
+                or host not in TRUSTED_ASF_HOSTS | TRUSTED_EARTHDATA_AUTH_HOSTS
+            ):
+                return False
+        except (TypeError, ValueError):
+            return False
+    return urlparse(str(response.url)).hostname in TRUSTED_ASF_HOSTS
+
+
+def is_hdf5_file(path: Path) -> bool:
+    """Recognize the HDF5 signature, including a permitted user block."""
+    with path.open("rb") as stream:
+        offset = 0
+        while offset <= 1_048_576:
+            stream.seek(offset)
+            if stream.read(len(HDF5_SIGNATURE)) == HDF5_SIGNATURE:
+                return True
+            offset = 512 if offset == 0 else offset * 2
+    return False
 
 
 def sha256_file(path: Path) -> str:
@@ -95,6 +139,8 @@ def download_product(product: dict, output_dir: Path, timeout_seconds: int) -> d
             timeout=(30, timeout_seconds),
         ) as response:
             response.raise_for_status()
+            if not trusted_redirect_chain(response):
+                raise RuntimeError("ASF download redirected outside the trusted ASF/Earthdata hosts.")
             expected_header = response.headers.get("Content-Length")
             expected_bytes = int(expected_header) if expected_header and expected_header.isdigit() else None
             downloaded = 0
@@ -110,6 +156,8 @@ def download_product(product: dict, output_dir: Path, timeout_seconds: int) -> d
 
         if downloaded <= 0:
             raise RuntimeError("Downloaded file is empty.")
+        if not is_hdf5_file(partial_path):
+            raise RuntimeError("ASF response is not a valid HDF5 product; an HTML/login or error page may have been returned.")
         if expected_bytes is not None and downloaded != expected_bytes:
             raise RuntimeError(
                 f"Downloaded byte count {downloaded} does not match HTTP Content-Length {expected_bytes}."
