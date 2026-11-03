@@ -144,11 +144,11 @@ def select_date_window(
 
     # Do not label a pre-event scene as the flood observation. The event-proximal
     # scene is the first actual NISAR acquisition on/after the user-supplied date.
-    event_index = next((index for index, observed in enumerate(parsed_dates) if observed >= event_date), None)
+    event_index = next((index for index, observed in enumerate(parsed_dates) if observed > event_date), None)
     if event_index is None or event_index < 1 or event_index + 2 >= len(dates):
         raise WorkerFailure(
             "EVENT_WINDOW_NOT_BRACKETED",
-            "Need one qualifying acquisition before the event date and three on/after it (event-proximal plus two later observations).",
+            "Need one qualifying acquisition strictly before the event date and three strictly after it (event-proximal plus two later observations).",
         )
 
     quartet = dates[event_index - 1:event_index + 3]
