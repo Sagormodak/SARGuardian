@@ -1,6 +1,8 @@
 from datetime import date
+from pathlib import Path
 
 import numpy as np
+import pytest
 import rasterio
 from rasterio.transform import from_origin
 from shapely.geometry import box, mapping
@@ -142,3 +144,152 @@ def test_no_matching_scene_is_reported_not_as_zero_agreement(tmp_path, monkeypat
     saved = tmp_path / "results" / "sentinel2_cross_sensor_agreement.json"
     assert saved.is_file()
     assert report["nisar_mask_sha256"] == crosscheck.sha256_file(mask_path)
+
+
+def _write_geotiff(path: Path, data: np.ndarray, *, pixel_size: float, nodata=None):
+    data = np.asarray(data)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=data.shape[1],
+        height=data.shape[0],
+        count=1,
+        dtype=data.dtype,
+        crs="EPSG:32645",
+        transform=from_origin(500000, 2700000, pixel_size, pixel_size),
+        nodata=nodata,
+    ) as destination:
+        destination.write(data, 1)
+    return path
+
+
+def test_window_for_aoi_constructs_and_clips_a_valid_raster_window(tmp_path):
+    from rasterio.windows import Window
+
+    raster_path = _write_geotiff(
+        tmp_path / "b11.tif",
+        np.ones((8, 8), dtype=np.uint16),
+        pixel_size=20,
+    )
+    with rasterio.open(raster_path) as dataset:
+        window = crosscheck._window_for_aoi(
+            dataset,
+            (500020, 2699880, 500080, 2699940),
+        )
+
+    assert isinstance(window, Window)
+    assert (window.col_off, window.row_off) == (1, 3)
+    assert (window.width, window.height) == (3, 3)
+
+
+def test_window_for_aoi_rejects_an_extent_outside_the_selected_scene(tmp_path):
+    raster_path = _write_geotiff(
+        tmp_path / "b11.tif",
+        np.ones((8, 8), dtype=np.uint16),
+        pixel_size=20,
+    )
+    with rasterio.open(raster_path) as dataset:
+        with pytest.raises(crosscheck.CrosscheckError, match="does not overlap"):
+            crosscheck._window_for_aoi(
+                dataset,
+                (501000, 2699880, 501080, 2699940),
+            )
+
+
+def test_cross_sensor_reader_aligns_real_local_nisar_and_sentinel_assets(tmp_path, monkeypatch):
+    nisar_data = np.array(
+        [
+            [1, 1, 0, 0],
+            [1, 1, 0, 0],
+            [0, 0, 1, 1],
+            [0, 0, 1, 1],
+        ],
+        dtype=np.uint8,
+    )
+    b03_data = np.array(
+        [
+            [30, 30, 10, 10],
+            [30, 30, 10, 10],
+            [25, 25, 15, 15],
+            [25, 25, 15, 15],
+        ],
+        dtype=np.uint16,
+    )
+    b11_data = np.array([[10, 30], [10, 20]], dtype=np.uint16)
+    scl_data = np.array([[6, 4], [5, 3]], dtype=np.uint8)
+
+    nisar_path = _write_geotiff(
+        tmp_path / "nisar.tif", nisar_data, pixel_size=10, nodata=255
+    )
+    b03_path = _write_geotiff(
+        tmp_path / "B03.tif", b03_data, pixel_size=10, nodata=0
+    )
+    b11_path = _write_geotiff(
+        tmp_path / "B11.tif", b11_data, pixel_size=20, nodata=0
+    )
+    scl_path = _write_geotiff(
+        tmp_path / "SCL.tif", scl_data, pixel_size=20, nodata=0
+    )
+    paths = {
+        "B03": str(b03_path),
+        "B11": str(b11_path),
+        "SCL": str(scl_path),
+    }
+    monkeypatch.setattr(
+        crosscheck,
+        "_signed_asset_url",
+        lambda href: paths[href.rsplit("/", 1)[-1].split(".")[0]],
+    )
+    item = _item(
+        "local-raster-fixture",
+        box(88.0, 24.0, 89.0, 25.0),
+        "2026-07-12",
+        10.0,
+    )
+
+    nisar_water, scl_water, mndwi, common_valid, nisar_support, meta = (
+        crosscheck._read_cross_sensor_arrays(
+            nisar_path=nisar_path,
+            item=item,
+        )
+    )
+
+    assert nisar_water.shape == (2, 2)
+    assert scl_water.tolist() == [[True, False], [False, False]]
+    assert mndwi.shape == (2, 2)
+    assert np.isfinite(mndwi).all()
+    assert common_valid.shape == (2, 2)
+    assert common_valid.tolist() == [[True, True], [True, False]]
+    assert nisar_support.all()
+    assert meta["common_valid_pixels"] == 3
+    assert meta["sentinel2_width"] == 2
+    assert meta["sentinel2_height"] == 2
+    assert meta["pixel_area_m2"] == 400.0
+
+
+def test_cross_sensor_reader_rejects_oversized_nisar_input_before_asset_access(tmp_path, monkeypatch):
+    nisar_path = _write_geotiff(
+        tmp_path / "large-mask.tif",
+        np.zeros((2, 2), dtype=np.uint8),
+        pixel_size=10,
+        nodata=255,
+    )
+    monkeypatch.setattr(crosscheck, "MAX_SOURCE_PIXELS", 3)
+
+    def unexpected_sign(_href):
+        raise AssertionError("Assets should not be opened after the source-mask size guard fails.")
+
+    monkeypatch.setattr(crosscheck, "_signed_asset_url", unexpected_sign)
+    item = _item(
+        "too-large",
+        box(88.0, 24.0, 89.0, 25.0),
+        "2026-07-12",
+        10.0,
+    )
+
+    with pytest.raises(crosscheck.CrosscheckError, match="safe limit 3"):
+        crosscheck._read_cross_sensor_arrays(
+            nisar_path=nisar_path,
+            item=item,
+        )
