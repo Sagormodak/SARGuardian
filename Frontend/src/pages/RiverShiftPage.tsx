@@ -680,7 +680,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     if (!jobTimeSeriesPlaying || jobTimeSeriesFrames.length < 2) return;
     const timer = window.setInterval(() => {
       setJobTimeSeriesIndex((index) => (index + 1) % jobTimeSeriesFrames.length);
-    }, 1100);
+    }, 1800);
     return () => window.clearInterval(timer);
   }, [jobTimeSeriesPlaying, jobTimeSeriesFrames.length]);
 
