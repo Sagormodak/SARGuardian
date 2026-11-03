@@ -671,9 +671,24 @@ def write_web_preview(
         if keep == len(features):
             keep -= 1
         features = features[:keep]
+
+    # An oversized web-only payload must never invalidate the underlying
+    # scientific outputs. An empty display layer is preferable to losing a
+    # valid analysis; the full-resolution GeoJSON remains in the private bundle.
+    preview["features"] = []
+    preview["river_shift_preview"]["features_omitted_for_size"] = original_count
+    preview["river_shift_preview"]["warning"] = (
+        "DISPLAY ONLY: every map patch was omitted because the preview exceeded its safe size budget. "
+        "The full-resolution private GeoJSON and all scientific metrics remain available and unchanged."
+    )
+    encoded = json.dumps(preview, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    if len(encoded) <= max_bytes:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(encoded)
+        return preview
     raise WorkerFailure(
-        "PREVIEW_TOO_LARGE",
-        f"Even the coarsely simplified display-only map could not fit the {max_bytes}-byte preview budget; full scientific outputs remain available.",
+        "PREVIEW_GENERATION_FAILED",
+        "The empty display-only preview exceeded its serialization limit; the underlying scientific output is preserved.",
     )
 
 
