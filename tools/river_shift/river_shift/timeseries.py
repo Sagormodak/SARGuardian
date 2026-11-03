@@ -19,7 +19,7 @@ from .raster_io import (
     write_mask,
     write_mask_geojson,
 )
-from .water_detection import classify_open_water, otsu_threshold_db
+from .water_detection import classify_open_water, otsu_threshold_db, valid_backscatter_mask
 
 
 def run_water_timeseries_analysis(
@@ -54,7 +54,7 @@ def run_water_timeseries_analysis(
     for row in ordered:
         arrays_item, valid_item, profile_item = read_band(row["path"])
         arrays.append(arrays_item)
-        valids.append(valid_item)
+        valids.append(valid_backscatter_mask(arrays_item, valid_item, units=units))
         profiles[row["date"]] = profile_item
         paths[row["date"]] = row["path"]
     assert_same_grid(profiles)
