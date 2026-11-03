@@ -120,7 +120,7 @@ def _prediction_parent_provenance(prediction_path: str | Path) -> dict[str, Any]
         source.get("mission") != "NISAR"
         or source.get("product") != "GCOV"
         or not source.get("maturity")
-        or source.get("frequency") not in {"A", "B"}
+        or source.get("frequency") not in {"A", "B", "frequencyA", "frequencyB"}
         or not source.get("covariance_term")
         or not isinstance(granule_names, list)
         or not granule_names

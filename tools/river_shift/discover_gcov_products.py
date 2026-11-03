@@ -175,7 +175,7 @@ def normalize_product(row: dict[str, Any]) -> dict[str, Any] | None:
         "footprint_wkt": first_string(row, ("wkt", "footprintWkt", "footprint_wkt")),
         "main_band_polarization": first_string(row, ("mainBandPolarization", "polarization")) or {
             "SH": "HH", "SV": "VV", "DH": "HH+HV", "DV": "VV+VH",
-            "CL": "LH+LV", "CR": "RH+RV",
+            "QP": "HH+HV+VH+VV", "CL": "LH+LV", "CR": "RH+RV",
         }.get((metadata["polarization_code"] or "")[:2]),
         "size_mb": size_mb,
         **metadata,
@@ -299,7 +299,7 @@ def normalize_umm_product(item: dict[str, Any], maturity: str) -> dict[str, Any]
 
     main_polarization = {
         "SH": "HH", "SV": "VV", "DH": "HH+HV", "DV": "VV+VH",
-        "CL": "LH+LV", "CR": "RH+RV",
+        "QP": "HH+HV+VH+VV", "CL": "LH+LV", "CR": "RH+RV",
     }.get((metadata.get("polarization_code") or "")[:2])
 
     data_granule = umm.get("DataGranule") or {}
@@ -506,7 +506,7 @@ def main() -> int:
     parser.add_argument("--start-date", required=True, type=date.fromisoformat)
     parser.add_argument("--end-date", required=True, type=date.fromisoformat)
     parser.add_argument("--maturity", choices=("BETA", "PROVISIONAL", "ALL"), default="PROVISIONAL")
-    parser.add_argument("--main-band-polarization", choices=("HH", "HH+HV", "HH+VV", "HH+HV+VH+VV", "VV", "VV+VH", "LH+LV", "RH+RV"))
+    parser.add_argument("--main-band-polarization", choices=("HH", "HH+HV", "HH+HV+VH+VV", "VV", "VV+VH", "LH+LV", "RH+RV"))
     parser.add_argument("--flight-direction", choices=("ASCENDING", "DESCENDING"))
     parser.add_argument("--frame-coverage", choices=("ALL", "FULL", "PARTIAL"), default="ALL")
     parser.add_argument("--max-results", type=int, default=500)

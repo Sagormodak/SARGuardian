@@ -57,7 +57,8 @@ def test_validation_requires_reference_provenance(raster_writer):
 
 
 @pytest.mark.parametrize("analysis_type", ["flood_inundation_screening", "river_morphology_screening"])
-def test_validation_records_parent_gcov_report_provenance(raster_writer, analysis_type):
+@pytest.mark.parametrize("frequency", ["frequencyA", "frequencyB", "A", "B"])
+def test_validation_records_parent_gcov_report_provenance(raster_writer, analysis_type, frequency):
     from river_shift.raster_io import sha256_file
 
     prediction = np.array([[1, 0], [0, 1]], dtype=np.uint8)
@@ -68,7 +69,7 @@ def test_validation_records_parent_gcov_report_provenance(raster_writer, analysi
         "analysis_type": analysis_type,
         "source": {
             "mission": "NISAR", "product": "GCOV", "maturity": "PROVISIONAL",
-            "frequency": "A", "covariance_term": "HHHH",
+            "frequency": frequency, "covariance_term": "HHHH",
             "granule_names": ["NISAR_L2_PR_GCOV_001"],
             "source_granule_sha256": ["a" * 64],
         },

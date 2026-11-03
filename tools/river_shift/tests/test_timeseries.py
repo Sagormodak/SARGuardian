@@ -39,6 +39,46 @@ def test_timeseries_exports_each_observed_date_and_sensitivity(tmp_path, raster_
     assert saved["time_series"][0]["water_geojson_sha256"]
 
 
+
+def test_timeseries_uses_the_same_common_valid_pixels_for_every_date(tmp_path, raster_writer):
+    first = np.full((20, 20), 0.3, dtype=np.float32)
+    first[5:10, 0:5] = 0.01  # Outside the common support: must not affect the first date's area.
+    second = np.full((20, 20), 0.3, dtype=np.float32)
+    second[5:10, 10:15] = 0.01  # Inside the common support.
+    first_path = raster_writer("common-first.tif", first)
+    second_path = raster_writer("common-second.tif", second)
+
+    import rasterio
+    with rasterio.open(second_path, "r+") as raster:
+        mask = np.zeros((20, 20), dtype=np.uint8)
+        mask[:, 10:20] = 255
+        raster.write_mask(mask)
+
+    report = run_water_timeseries_analysis(
+        observations=[
+            {"date": "2026-06-18", "path": str(first_path)},
+            {"date": "2026-07-01", "path": str(second_path)},
+        ],
+        output_dir=str(tmp_path / "common-series"),
+        units="linear",
+        threshold_db=-12.0,
+        use_otsu=False,
+        maturity="PROVISIONAL",
+        frequency="frequencyA",
+        polarization_term="HHHH",
+    )
+
+    frames = report["time_series"]
+    assert [frame["valid_pixel_count"] for frame in frames] == [200, 200]
+    assert [frame["valid_pixel_fraction"] for frame in frames] == [0.5, 0.5]
+    assert frames[0]["source_valid_pixel_count"] == 400
+    assert frames[1]["source_valid_pixel_count"] == 200
+    assert frames[0]["water_area_km2"] == 0.0
+    assert frames[1]["water_area_km2"] == pytest.approx(0.0025)
+    assert report["metrics"]["comparison_valid_pixel_count"] == 200
+    assert report["quality"]["valid_comparison_pixel_fraction"] == 0.5
+
+
 def test_timeseries_requires_two_unique_dates(tmp_path, raster_writer):
     path = raster_writer("one.tif", np.full((10, 10), 0.3, dtype=np.float32))
     common = {
