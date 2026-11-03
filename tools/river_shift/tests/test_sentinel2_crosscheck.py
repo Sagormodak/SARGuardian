@@ -293,3 +293,9 @@ def test_cross_sensor_reader_rejects_oversized_nisar_input_before_asset_access(t
             nisar_path=nisar_path,
             item=item,
         )
+
+
+def test_projected_crs_must_use_true_metre_axes():
+    assert crosscheck._is_projected_metre_crs(CRS.from_epsg(32645))
+    assert not crosscheck._is_projected_metre_crs(CRS.from_epsg(4326))
+    assert not crosscheck._is_projected_metre_crs(CRS.from_epsg(2263))
