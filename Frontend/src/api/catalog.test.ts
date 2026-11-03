@@ -403,6 +403,7 @@ describe('NISAR catalogue preflight API contract', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/api/river-shift/jobs?limit=7');
     expect(fetchMock.mock.calls[0][1].cache).toBe('no-store');
     expect(fetchMock.mock.calls[0][1].headers).toEqual({
+      'Content-Type': 'application/json',
       Authorization: 'Bearer firebase-id-token',
     });
   });
