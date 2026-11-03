@@ -141,12 +141,27 @@ def _items_coverage_fraction(
         return 0.0
 
 
+def _processing_baseline(item: dict[str, Any]) -> str:
+    properties = item.get("properties") or {}
+    # STAC Sentinel-2 extension deprecates s2:processing_baseline in favour
+    # of the common processing:version field. Keep the legacy fallback for
+    # existing Planetary Computer catalogue records.
+    return str(properties.get("processing:version") or properties.get("s2:processing_baseline") or "unknown-baseline")
+
+
+def _generation_time(item: dict[str, Any]) -> str:
+    properties = item.get("properties") or {}
+    # Canonical STAC processing extension field first; Sentinel-2 legacy alias
+    # remains supported for existing catalogue items.
+    return str(properties.get("processing:datetime") or properties.get("s2:generation_time") or "")
+
+
 def _datatake_group_key(item: dict[str, Any]) -> tuple[str, str, str, str]:
     properties = item.get("properties") or {}
     platform = str(properties.get("platform") or properties.get("constellation") or "unknown-platform")
     datatake = properties.get("s2:datatake_id") or properties.get("instrument:datatake_id")
     observed_date = _item_date(item).isoformat()
-    processing_baseline = str(properties.get("s2:processing_baseline") or "unknown-baseline")
+    processing_baseline = _processing_baseline(item)
     # Never mosaic unrelated scenes just because they happen to share a UTC date.
     # If a provider omits datatake metadata, the item remains its own singleton.
     if isinstance(datatake, str) and datatake.strip():
@@ -200,11 +215,11 @@ def select_best_items(
                 continue
             current_properties = current.get("properties") or {}
             candidate_revision = (
-                str(properties.get("s2:generation_time") or ""),
+                _generation_time(row),
                 str(row.get("id") or ""),
             )
             current_revision = (
-                str(current_properties.get("s2:generation_time") or ""),
+                _generation_time(current),
                 str(current.get("id") or ""),
             )
             if candidate_revision > current_revision:
@@ -460,6 +475,8 @@ def _read_cross_sensor_arrays(
         for row in items
     ]
     try:
+        reference_item_id = str(signed_items[0]["item"].get("id") or "unknown-item")
+        raster_stage = f"opening reference B11 for Sentinel-2 item {reference_item_id}"
         with rasterio.open(signed_items[0]["assets"]["B11"]) as reference_b11:
             if reference_b11.crs is None:
                 raise CrosscheckError("Sentinel-2 B11 asset must have a CRS.")
@@ -516,6 +533,7 @@ def _read_cross_sensor_arrays(
             properties = row.get("properties") or {}
             item_id = str(row.get("id") or "")
             with ExitStack() as stack:
+                raster_stage = f"opening B11 for Sentinel-2 item {item_id}"
                 b11 = stack.enter_context(rasterio.open(record["assets"]["B11"]))
                 b11_nodata = b11.nodata if b11.nodata is not None else 0
                 b11_vrt = stack.enter_context(WarpedVRT(
@@ -528,10 +546,12 @@ def _read_cross_sensor_arrays(
                     src_nodata=b11_nodata,
                     nodata=0,
                 ))
+                raster_stage = f"reading aligned B11 for Sentinel-2 item {item_id}"
                 b11_array = b11_vrt.read(1, masked=True)
                 b11_values = np.asarray(b11_array.astype(np.float32).filled(np.nan), dtype=np.float32)
                 b11_valid = (~np.ma.getmaskarray(b11_array)) & np.isfinite(b11_values) & (b11_values > 0)
 
+                raster_stage = f"opening B03 for Sentinel-2 item {item_id}"
                 b03 = stack.enter_context(rasterio.open(record["assets"]["B03"]))
                 b03_nodata = b03.nodata if b03.nodata is not None else 0
                 b03_vrt = stack.enter_context(WarpedVRT(
@@ -544,10 +564,12 @@ def _read_cross_sensor_arrays(
                     src_nodata=b03_nodata,
                     nodata=0,
                 ))
+                raster_stage = f"reading aligned B03 for Sentinel-2 item {item_id}"
                 b03_array = b03_vrt.read(1, masked=True)
                 b03_values = np.asarray(b03_array.astype(np.float32).filled(np.nan), dtype=np.float32)
                 b03_valid = (~np.ma.getmaskarray(b03_array)) & np.isfinite(b03_values) & (b03_values > 0)
 
+                raster_stage = f"opening SCL for Sentinel-2 item {item_id}"
                 scl = stack.enter_context(rasterio.open(record["assets"]["SCL"]))
                 scl_nodata = scl.nodata if scl.nodata is not None else 0
                 scl_vrt = stack.enter_context(WarpedVRT(
@@ -560,6 +582,7 @@ def _read_cross_sensor_arrays(
                     src_nodata=scl_nodata,
                     nodata=0,
                 ))
+                raster_stage = f"reading aligned SCL for Sentinel-2 item {item_id}"
                 scl_values = scl_vrt.read(1).astype(np.uint8)
                 _scl_water, scl_valid = _scl_water_reference(scl_values)
 
@@ -571,6 +594,7 @@ def _read_cross_sensor_arrays(
                 mosaic_valid[take] = True
                 tile_valid_pixel_counts[item_id] = int(np.count_nonzero(take))
 
+        raster_stage = "reprojecting the NISAR mask onto the Sentinel-2 mosaic grid"
         nisar_on_s2 = np.full((height, width), 255, dtype=np.uint8)
         reproject(
             source=nisar_data,
@@ -599,6 +623,7 @@ def _read_cross_sensor_arrays(
             init_dest_nodata=True,
         )
         nisar_support = (nisar_valid_on_s2 == 1) & (nisar_on_s2 != 255)
+        raster_stage = "computing MNDWI on the clear Sentinel-2 mosaic"
         index, index_valid = _mndwi(mosaic_b03, mosaic_b11)
         common_valid = nisar_support & mosaic_valid & index_valid
         pixel_area = abs(target_transform.a * target_transform.e - target_transform.b * target_transform.d)
@@ -629,7 +654,9 @@ def _read_cross_sensor_arrays(
     except CrosscheckError:
         raise
     except (rasterio.errors.RasterioError, OSError, ValueError) as exc:
-        raise CrosscheckError(f"Could not read or align Sentinel-2 datatake mosaic: {type(exc).__name__}.") from None
+        raise CrosscheckError(
+            f"Could not complete Sentinel-2 mosaic stage ({raster_stage}): {type(exc).__name__}."
+        ) from None
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -769,7 +796,7 @@ def run_crosscheck(
             "sentinel2_item_ids": [row.get("id") for row in selected_items],
             "sentinel2_product_uri": properties.get("s2:product_uri"),
             "sentinel2_datatake_id": properties.get("s2:datatake_id") or properties.get("instrument:datatake_id"),
-            "sentinel2_processing_baseline": properties.get("s2:processing_baseline"),
+            "sentinel2_processing_baseline": _processing_baseline(primary),
             "mgrs_tile": properties.get("s2:mgrs_tile"),
             "mgrs_tiles": raster_meta["sentinel2_mgrs_tiles"],
             "sentinel2_tile_count": len(selected_items),
@@ -791,7 +818,7 @@ def run_crosscheck(
             "mndwi_threshold": float(mndwi_threshold),
             "scl_clear_classes_used": list(SCL_VALID_CLASSES),
             "common_grid": "Sentinel-2 B11 20 m grid expanded to the full NISAR extent; adjacent MGRS tiles from one datatake are mosaicked",
-            "tile_mosaic_method": "same platform, datatake ID, acquisition date and processing baseline; duplicate MGRS items retain the latest s2:generation_time; clearest valid tile fills overlaps first",
+            "tile_mosaic_method": "same platform, datatake ID, acquisition date and processing baseline; duplicate MGRS items retain the latest processing:datetime (or legacy s2:generation_time); clearest valid tile fills overlaps first",
             "b03_resampling": "bilinear",
             "b11_resampling": "bilinear",
             "scl_and_nisar_mask_resampling": "nearest",
@@ -823,8 +850,8 @@ def run_crosscheck(
                 {
                     "item_id": row.get("id"),
                     "mgrs_tile": (row.get("properties") or {}).get("s2:mgrs_tile"),
-                    "processing_baseline": (row.get("properties") or {}).get("s2:processing_baseline"),
-                    "generation_time": (row.get("properties") or {}).get("s2:generation_time"),
+                    "processing_baseline": _processing_baseline(row),
+                    "generation_time": _generation_time(row) or None,
                     "cloud_cover_percent": float((row.get("properties") or {}).get("eo:cloud_cover")),
                     "unsigned_assets": {
                         key: _asset_href(row, key)

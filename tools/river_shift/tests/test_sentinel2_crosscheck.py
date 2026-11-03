@@ -790,3 +790,110 @@ def test_best_datatake_keeps_latest_generation_per_tile_within_one_processing_ba
     assert {row["id"] for row in selected} == {"left-latest-generation", "right-tile"}
     assert len(selected) == 2
     assert {row["properties"]["s2:processing_baseline"] for row in selected} == {"05.11"}
+
+
+
+def test_canonical_stac_processing_fields_group_and_select_latest_tile_generation():
+    aoi = box(88.0, 24.0, 89.0, 25.0)
+    left_old = _item(
+        "canonical-left-old",
+        box(88.0, 24.0, 88.5, 25.0),
+        "2026-09-15",
+        15.0,
+        datatake_id="S2B_20260915T043701",
+        mgrs_tile="45RYJ",
+        processing_baseline="05.11",
+    )
+    left_old["properties"].pop("s2:processing_baseline")
+    left_old["properties"]["processing:version"] = "05.11"
+    left_old["properties"].pop("s2:generation_time", None)
+    left_old["properties"]["processing:datetime"] = "2026-09-16T01:00:00Z"
+
+    left_latest = _item(
+        "canonical-left-latest",
+        box(88.0, 24.0, 88.5, 25.0),
+        "2026-09-15",
+        25.0,
+        datatake_id="S2B_20260915T043701",
+        mgrs_tile="45RYJ",
+        processing_baseline="05.11",
+    )
+    left_latest["properties"].pop("s2:processing_baseline")
+    left_latest["properties"]["processing:version"] = "05.11"
+    left_latest["properties"].pop("s2:generation_time", None)
+    left_latest["properties"]["processing:datetime"] = "2026-09-17T01:00:00Z"
+
+    right = _item(
+        "canonical-right",
+        box(88.5, 24.0, 89.0, 25.0),
+        "2026-09-15",
+        30.0,
+        datatake_id="S2B_20260915T043701",
+        mgrs_tile="45RZJ",
+        processing_baseline="05.11",
+    )
+    right["properties"].pop("s2:processing_baseline")
+    right["properties"]["processing:version"] = "05.11"
+    right["properties"].pop("s2:generation_time", None)
+    right["properties"]["processing:datetime"] = "2026-09-17T01:01:00Z"
+
+    old_baseline = _item(
+        "canonical-other-baseline",
+        box(88.0, 24.0, 88.5, 25.0),
+        "2026-09-15",
+        1.0,
+        datatake_id="S2B_20260915T043701",
+        mgrs_tile="45RYJ",
+        processing_baseline="05.12",
+    )
+    old_baseline["properties"].pop("s2:processing_baseline")
+    old_baseline["properties"]["processing:version"] = "05.12"
+    old_baseline["properties"].pop("s2:generation_time", None)
+    old_baseline["properties"]["processing:datetime"] = "2026-09-18T01:00:00Z"
+
+    selected = crosscheck.select_best_items(
+        [left_old, left_latest, right, old_baseline],
+        observation_date=date(2026, 9, 15),
+        aoi_geometry_wgs84=aoi,
+        analysis_crs=CRS.from_epsg(32645),
+        max_day_offset=1,
+        max_cloud_cover=40,
+    )
+
+    assert selected is not None
+    assert {row["id"] for row in selected} == {"canonical-left-latest", "canonical-right"}
+    assert {crosscheck._processing_baseline(row) for row in selected} == {"05.11"}
+    assert crosscheck._generation_time(left_latest) == "2026-09-17T01:00:00Z"
+
+ 
+
+def test_read_cross_sensor_arrays_reports_the_failed_item_band_without_exposing_asset_url(tmp_path, monkeypatch):
+    nisar_path = _write_geotiff_at(
+        tmp_path / "nisar-diagnostic-mask.tif",
+        np.zeros((2, 2), dtype=np.uint8),
+        x_origin=500000,
+        nodata=255,
+    )
+    item = _item(
+        "sentinel2-diagnostic-item",
+        box(88.0, 24.0, 89.0, 25.0),
+        "2026-09-15",
+        20.0,
+        datatake_id="S2B_DIAGNOSTIC_PASS",
+        mgrs_tile="45RYJ",
+    )
+    missing_asset_path = tmp_path / "missing-b11.tif"
+    monkeypatch.setattr(
+        crosscheck,
+        "_signed_asset_url",
+        lambda _href: str(missing_asset_path),
+    )
+
+    with pytest.raises(
+        crosscheck.CrosscheckError,
+        match=r"opening reference B11 for Sentinel-2 item sentinel2-diagnostic-item\): RasterioIOError",
+    ) as exc_info:
+        crosscheck._read_cross_sensor_arrays(nisar_path=nisar_path, item=item)
+
+    assert "example.test" not in str(exc_info.value)
+    assert "?" not in str(exc_info.value)
