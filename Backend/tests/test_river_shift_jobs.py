@@ -31,6 +31,10 @@ class RiverShiftStore:
         self.rows[row["id"]] = row
         return row
 
+    def list_river_shift_jobs(self, owner_uid: str, limit: int = 20):
+        rows = [row for row in self.rows.values() if row["owner_uid"] == owner_uid]
+        return sorted(rows, key=lambda row: row["created_at"], reverse=True)[:limit]
+
     def get_river_shift_job(self, owner_uid: str, job_id):
         row = self.rows.get(str(job_id))
         return row if row and row["owner_uid"] == owner_uid else None
@@ -262,3 +266,28 @@ def test_river_shift_artifact_download_is_owner_scoped_and_checksum_checked(monk
     monkeypatch.setattr(river_module, "download_private_result", lambda _file_id: ({"size": "4"}, b"oops"))
     corrupted = api.get(f"/api/river-shift/jobs/{job_id}/artifacts/0")
     assert corrupted.status_code == 409
+
+
+def test_list_river_shift_jobs_restores_only_the_authenticated_users_recent_jobs(monkeypatch) -> None:
+    store = RiverShiftStore()
+    api = configure(monkeypatch, store)
+    first = api.post("/api/river-shift/jobs", json=payload()).json()
+    second_payload = payload() | {"idempotency_key": "river-shift-request-0002"}
+    second = api.post("/api/river-shift/jobs", json=second_payload).json()
+    monkeypatch.setattr(river_module, "_refresh_workflow_state", lambda _store, record: record)
+
+    listed = api.get("/api/river-shift/jobs?limit=10")
+    assert listed.status_code == 200, listed.text
+    assert {row["id"] for row in listed.json()} == {first["id"], second["id"]}
+
+    app.dependency_overrides[get_current_user] = lambda: {"uid": "another-user"}
+    other_account = api.get("/api/river-shift/jobs")
+    assert other_account.status_code == 200
+    assert other_account.json() == []
+
+
+def test_list_river_shift_jobs_enforces_bounded_limit(monkeypatch) -> None:
+    store = RiverShiftStore()
+    api = configure(monkeypatch, store)
+    assert api.get("/api/river-shift/jobs?limit=0").status_code == 422
+    assert api.get("/api/river-shift/jobs?limit=101").status_code == 422
