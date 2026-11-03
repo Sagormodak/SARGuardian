@@ -188,7 +188,6 @@ jobs:
     if: needs.prepare.result == 'success' && needs.prepare.outputs.batch_1_count != '0'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    continue-on-error: true
     strategy:
       fail-fast: false
       max-parallel: 15
@@ -247,7 +246,7 @@ jobs:
           compression-level: 1
 
   batch_1_status:
-    name: Batch 1 · verify 15-product barrier
+    name: Batch 1 · reconcile results and release next batch
     needs: [prepare, batch_1]
     if: always() && needs.prepare.result == 'success'
     runs-on: ubuntu-24.04
@@ -296,7 +295,6 @@ jobs:
     if: needs.prepare.result == 'success' && needs.batch_1_status.result == 'success' && needs.prepare.outputs.batch_2_count != '0'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    continue-on-error: true
     strategy:
       fail-fast: false
       max-parallel: 15
@@ -355,7 +353,7 @@ jobs:
           compression-level: 1
 
   batch_2_status:
-    name: Batch 2 · verify 15-product barrier
+    name: Batch 2 · reconcile results and release next batch
     needs: [prepare, batch_1_status, batch_2]
     if: always() && needs.prepare.result == 'success' && needs.batch_1_status.result == 'success'
     runs-on: ubuntu-24.04
@@ -404,7 +402,6 @@ jobs:
     if: needs.prepare.result == 'success' && needs.batch_2_status.result == 'success' && needs.prepare.outputs.batch_3_count != '0'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    continue-on-error: true
     strategy:
       fail-fast: false
       max-parallel: 15
@@ -463,7 +460,7 @@ jobs:
           compression-level: 1
 
   batch_3_status:
-    name: Batch 3 · verify 15-product barrier
+    name: Batch 3 · reconcile results and release next batch
     needs: [prepare, batch_2_status, batch_3]
     if: always() && needs.prepare.result == 'success' && needs.batch_2_status.result == 'success'
     runs-on: ubuntu-24.04
@@ -512,7 +509,6 @@ jobs:
     if: needs.prepare.result == 'success' && needs.batch_3_status.result == 'success' && needs.prepare.outputs.batch_4_count != '0'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    continue-on-error: true
     strategy:
       fail-fast: false
       max-parallel: 15
@@ -571,7 +567,7 @@ jobs:
           compression-level: 1
 
   batch_4_status:
-    name: Batch 4 · verify final product barrier
+    name: Batch 4 · reconcile results and release retry wave
     needs: [prepare, batch_3_status, batch_4]
     if: always() && needs.prepare.result == 'success' && needs.batch_3_status.result == 'success'
     runs-on: ubuntu-24.04
@@ -656,17 +652,75 @@ jobs:
         shell: micromamba-shell {0}
         run: python -u tools/river_shift/batched_gcov_job.py
 
+  retry_dispatch:
+    name: Validate retry matrix handoff across GitHub Actions jobs
+    needs: retry_prepare
+    if: always() && needs.retry_prepare.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      retry_matrix: ${{ steps.validate.outputs.retry_matrix }}
+      retry_count: ${{ steps.validate.outputs.retry_count }}
+    steps:
+      - name: Validate exact retry queue and publish verified matrix
+        id: validate
+        shell: bash
+        env:
+          RIVERSHIFT_RETRY_MATRIX_JSON: ${{ needs.retry_prepare.outputs.retry_matrix }}
+          RIVERSHIFT_RETRY_COUNT: ${{ needs.retry_prepare.outputs.retry_count }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          raw = os.environ.get('RIVERSHIFT_RETRY_MATRIX_JSON', '')
+          count_raw = os.environ.get('RIVERSHIFT_RETRY_COUNT', '')
+          if not raw or not count_raw:
+              raise SystemExit('RETRY_MATRIX_HANDOFF_FAILED: retry_prepare job outputs are missing at the job boundary.')
+          try:
+              matrix = json.loads(raw)
+              count = int(count_raw)
+          except (json.JSONDecodeError, ValueError):
+              raise SystemExit('RETRY_MATRIX_HANDOFF_FAILED: retry matrix JSON or retry count is invalid.') from None
+          rows = matrix.get('include') if isinstance(matrix, dict) else None
+          if not isinstance(rows, list) or count < 0 or len(rows) != count:
+              row_count = len(rows) if isinstance(rows, list) else 'invalid'
+              raise SystemExit(f'RETRY_MATRIX_HANDOFF_FAILED: retry_count={count}, matrix_include_count={row_count}.')
+          required = {'granule_name', 'acquisition_date', 'retry_attempt'}
+          seen = set()
+          for row in rows:
+              if not isinstance(row, dict) or not required.issubset(row):
+                  raise SystemExit('RETRY_MATRIX_HANDOFF_FAILED: a retry row is missing required identity fields.')
+              name = row['granule_name']
+              if not isinstance(name, str) or not name or name in seen or row['retry_attempt'] != 1:
+                  raise SystemExit('RETRY_MATRIX_HANDOFF_FAILED: retry matrix contains an invalid or duplicate product identity.')
+              seen.add(name)
+          with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as stream:
+              stream.write(f'retry_matrix={raw}\\n')
+              stream.write(f'retry_count={count}\\n')
+          Path(os.environ['GITHUB_STEP_SUMMARY']).write_text(
+              '## Retry matrix handoff validation\\n\\n'
+              f'- retry_prepare count: **{count}**\\n'
+              f'- validated matrix rows: **{len(rows)}**\\n'
+              '- Identity uniqueness: **PASS**\\n'
+              '- Retry attempt cap: **one retry per product**\\n',
+              encoding='utf-8',
+          )
+          print(f'RIVERSHIFT_RETRY_MATRIX_HANDOFF=PASS count={count}', flush=True)
+          PY
+
   retry:
     name: Delayed retry · product ${{ matrix.product_index }}/${{ matrix.total_products }}
-    needs: retry_prepare
-    if: needs.retry_prepare.result == 'success'
+    needs: retry_dispatch
+    if: needs.retry_dispatch.result == 'success' && needs.retry_dispatch.outputs.retry_count != '0'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    continue-on-error: true
     strategy:
       fail-fast: false
       max-parallel: 15
-      matrix: ${{ fromJSON(needs.retry_prepare.outputs.retry_matrix) }}
+      matrix: ${{ fromJSON(needs.retry_dispatch.outputs.retry_matrix) }}
     env:
       RIVERSHIFT_WORKER_PHASE: product
       RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
@@ -723,7 +777,7 @@ jobs:
 
   retry_status:
     name: Reconcile the single delayed retry wave
-    needs: [prepare, batch_1_status, batch_2_status, batch_3_status, batch_4_status, retry_prepare, retry]
+    needs: [prepare, batch_1_status, batch_2_status, batch_3_status, batch_4_status, retry_prepare, retry_dispatch, retry]
     if: always() && needs.retry_prepare.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -736,6 +790,7 @@ jobs:
       RIVERSHIFT_CALLBACK_URL: ${{ inputs.callback_url }}
       RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
       RIVERSHIFT_CALLBACK_SEQUENCE: ${{ needs.batch_4_status.outputs.callback_sequence }}
+      RIVERSHIFT_RETRY_DISPATCH_STATUS: ${{ needs.retry_dispatch.result }}
       RIVERSHIFT_PREPARED_DIR: prepared
       RIVERSHIFT_PRODUCT_ARTIFACTS_DIR: product-artifacts
       RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR: retry-product-artifacts
