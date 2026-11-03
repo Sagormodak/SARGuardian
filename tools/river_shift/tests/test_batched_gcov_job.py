@@ -382,7 +382,7 @@ def test_retry_matrix_handoff_failure_posts_terminal_failure(tmp_path, monkeypat
 
     assert captured["state"] == "failed"
     assert captured["error_code"] == "RETRY_MATRIX_HANDOFF_FAILED"
-    assert captured["retry_failure_count"] == 1
+    assert captured["retry_failure_count"] == "1"
 
 
 def test_retry_report_with_no_retry_queue_stays_running(tmp_path, monkeypatch):
