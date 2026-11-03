@@ -225,6 +225,18 @@ def _discover_manifest(payload: CreateRiverShiftJobRequest) -> tuple[dict[str, A
             status_code=422,
             detail="NASA CMR returned fewer than four acquisition dates for this AOI/window. RiverShift processing needs at least four observations before footprint and layer compatibility checks.",
         )
+    event_key = payload.event_date.isoformat()
+    pre_event_dates = [value for value in dates if value < event_key]
+    post_event_dates = [value for value in dates if value > event_key]
+    if not pre_event_dates or len(post_event_dates) < 3:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "The requested event date is not bracketed by enough distinct NISAR acquisitions. "
+                "RiverShift needs at least one comparable acquisition strictly before the event date "
+                "and three strictly after it; same-calendar-day acquisitions are not assumed to be post-event."
+            ),
+        )
     if not names or len(names) > 100:
         raise HTTPException(status_code=422, detail="The accepted GCOV catalogue selection is empty or exceeds the 100-granule worker limit.")
     manifest = {
