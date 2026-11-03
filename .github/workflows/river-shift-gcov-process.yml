@@ -83,10 +83,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  process:
+  prepare:
+    name: Prepare exact GCOV selection and 15-product batch plan
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 45
+    outputs:
+      batch_1_matrix: ${{ steps.prepare.outputs.batch_1_matrix }}
+      batch_2_matrix: ${{ steps.prepare.outputs.batch_2_matrix }}
+      batch_3_matrix: ${{ steps.prepare.outputs.batch_3_matrix }}
+      batch_4_matrix: ${{ steps.prepare.outputs.batch_4_matrix }}
+      batch_1_count: ${{ steps.prepare.outputs.batch_1_count }}
+      batch_2_count: ${{ steps.prepare.outputs.batch_2_count }}
+      batch_3_count: ${{ steps.prepare.outputs.batch_3_count }}
+      batch_4_count: ${{ steps.prepare.outputs.batch_4_count }}
+      batch_count: ${{ steps.prepare.outputs.batch_count }}
+      selected_count: ${{ steps.prepare.outputs.selected_count }}
+      callback_sequence: ${{ steps.prepare.outputs.callback_sequence }}
     env:
+      RIVERSHIFT_WORKER_PHASE: prepare
       RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
       RIVERSHIFT_AOI_WKT: ${{ inputs.aoi_wkt }}
       RIVERSHIFT_START_DATE: ${{ inputs.start_date }}
@@ -104,80 +118,541 @@ jobs:
       RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
       RIVERSHIFT_CALLBACK_URL: ${{ inputs.callback_url }}
       RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
-      PYTHONUNBUFFERED: "1"
       EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
       EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
       EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
       GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
       GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
       GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
-
+      RIVERSHIFT_PREPARE_OUTPUT_DIR: prepared
+      PYTHONUNBUFFERED: "1"
     steps:
       - name: Check out backend worker source
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
-
-      - name: Log non-secret RiverShift dispatch context
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "::group::RiverShift request context (sensitive values omitted)"
-          printf 'job_id=%s\n' "$RIVERSHIFT_JOB_ID"
-          printf 'date_window=%s..%s\n' "$RIVERSHIFT_START_DATE" "$RIVERSHIFT_END_DATE"
-          printf 'event_date=%s\n' "$RIVERSHIFT_EVENT_DATE"
-          printf 'maturity=%s frequency=%s covariance_term=%s\n' "$RIVERSHIFT_MATURITY" "$RIVERSHIFT_FREQUENCY" "$RIVERSHIFT_COVARIANCE_TERM"
-          printf 'frame_coverage=%s flight_direction=%s main_band_polarization=%s\n' "$RIVERSHIFT_FRAME_COVERAGE" "${RIVERSHIFT_FLIGHT_DIRECTION:-not_set}" "${RIVERSHIFT_MAIN_BAND_POLARIZATION:-not_set}"
-          python - <<'PY'
-          import json
-          import os
-          raw = os.environ.get("RIVERSHIFT_GRANULE_NAMES_JSON", "")
-          try:
-              names = json.loads(raw)
-              count = len(names) if isinstance(names, list) else "invalid"
-          except json.JSONDecodeError:
-              count = "invalid"
-          print(f"accepted_granule_count={count}")
-          for key in (
-              "EARTHDATA_TOKEN", "EARTHDATA_USERNAME", "EARTHDATA_PASSWORD",
-              "GOOGLE_DRIVE_OAUTH_CLIENT_JSON", "GOOGLE_DRIVE_REFRESH_TOKEN",
-              "GOOGLE_DRIVE_PARENT_FOLDER_ID",
-              "RIVERSHIFT_CALLBACK_SECRET",
-          ):
-              print(f"{key}_present={'yes' if os.environ.get(key, '').strip() else 'no'}")
-          PY
-          echo "::endgroup::"
-
-      - name: Install GDAL and geospatial dependencies
+      - name: Install pinned geospatial runtime
         uses: mamba-org/setup-micromamba@v3
         with:
           environment-file: tools/river_shift/environment.yml
           cache-environment: true
           generate-run-shell: true
-
-      - name: Verify runtime
+      - name: Verify GDAL and NISAR runtime
         shell: micromamba-shell {0}
         run: |
           set -euo pipefail
-          echo "::group::RiverShift runtime verification"
-          echo "RIVERSHIFT_RUNTIME_STAGE=python START"
+          echo "::group::RiverShift prepare runtime"
           python --version
-          echo "RIVERSHIFT_RUNTIME_STAGE=gdal START"
           gdalinfo --version
-          echo "RIVERSHIFT_RUNTIME_STAGE=gdal-drivers START"
           gdal_formats="$(gdalinfo --formats)"
           for driver in HDF5 netCDF; do
             if ! grep -Eiq "^[[:space:]]*${driver}[[:space:]]+-" <<< "$gdal_formats"; then
-              echo "::error::Required GDAL driver ${driver} is unavailable; check the RiverShift libgdal driver packages."
+              echo "::error::Required GDAL ${driver} driver is unavailable."
               exit 1
             fi
-            printf 'RIVERSHIFT_GDAL_DRIVER_%s=PASS\n' "$driver"
+            printf 'RIVERSHIFT_RUNTIME_DRIVER_%s=PASS\n' "$driver"
           done
-          echo "RIVERSHIFT_RUNTIME_STAGE=python-geospatial-imports START"
-          python -c "import rasterio, shapely, pyproj, scipy; print('RIVERSHIFT_GEOSPATIAL_RUNTIME=PASS')"
-          echo "RIVERSHIFT_RUNTIME_STAGE=all PASS"
+          python -c "import rasterio, shapely, pyproj, scipy, earthaccess; print('RIVERSHIFT_RUNTIME_IMPORTS=PASS')"
           echo "::endgroup::"
-
-      - name: Discover, download, process, retain private results and report callbacks
+      - name: Log non-secret request context
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::RiverShift request"
+          printf 'job_id=%s\n' "$RIVERSHIFT_JOB_ID"
+          printf 'date_window=%s..%s event_date=%s\n' "$RIVERSHIFT_START_DATE" "$RIVERSHIFT_END_DATE" "$RIVERSHIFT_EVENT_DATE"
+          printf 'maturity=%s frequency=%s term=%s\n' "$RIVERSHIFT_MATURITY" "$RIVERSHIFT_FREQUENCY" "$RIVERSHIFT_COVARIANCE_TERM"
+          printf 'Earthdata token configured=%s\n' "$([ -n "$EARTHDATA_TOKEN" ] && echo yes || echo no)"
+          printf 'Drive OAuth configured=%s parent folder configured=%s\n' "$([ -n "$GOOGLE_DRIVE_OAUTH_CLIENT_JSON" ] && echo yes || echo no)" "$([ -n "$GOOGLE_DRIVE_PARENT_FOLDER_ID" ] && echo yes || echo no)"
+          echo "::endgroup::"
+      - name: Discover, audit, and prepare exact product batches
+        id: prepare
         shell: micromamba-shell {0}
-        run: python -u tools/river_shift/process_gcov_job.py
+        run: python -u tools/river_shift/batched_gcov_job.py
+      - name: Upload immutable preparation manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: rivershift-prepared-${{ inputs.job_id }}
+          path: prepared/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 3
+      - name: Summarize selected product batch plan
+        if: always()
+        shell: bash
+        run: echo "::notice::RiverShift prepares up to 15 independent product runners per batch. The next batch waits for the preceding batch barrier."
+
+  batch_1:
+    name: Batch 1 · product ${{ matrix.product_index }}/${{ matrix.total_products }}
+    needs: prepare
+    if: needs.prepare.result == 'success' && needs.prepare.outputs.batch_1_count != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.prepare.outputs.batch_1_matrix) }}
+    env:
+      RIVERSHIFT_WORKER_PHASE: product
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_GRANULE_NAME: ${{ matrix.granule_name }}
+      RIVERSHIFT_ACQUISITION_DATE: ${{ matrix.acquisition_date }}
+      RIVERSHIFT_BATCH_NUMBER: ${{ matrix.batch_number }}
+      RIVERSHIFT_BATCH_COUNT: ${{ matrix.batch_count }}
+      RIVERSHIFT_PRODUCT_INDEX: ${{ matrix.product_index }}
+      RIVERSHIFT_TOTAL_PRODUCTS: ${{ matrix.total_products }}
+      RIVERSHIFT_PREPARED_DIR: prepared
+      RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rivershift-prepared-${{ inputs.job_id }}
+          path: prepared/
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+      - name: Verify this runner's HDF5 driver
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          gdalinfo --version
+          gdalinfo --formats | grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-'
+          python -c "import rasterio, earthaccess; print('RIVERSHIFT_PRODUCT_RUNTIME=PASS')"
+      - name: Download, inspect, and AOI-process this exact GCOV product
+        shell: micromamba-shell {0}
+        run: python -u tools/river_shift/batched_gcov_job.py
+      - name: Retain this product's COG and provenance receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rivershift-product-b01-${{ matrix.granule_name }}
+          path: product-output/
+          if-no-files-found: warn
+          retention-days: 1
+          compression-level: 1
+
+  batch_1_status:
+    name: Batch 1 · verify 15-product barrier
+    needs: [prepare, batch_1]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      callback_sequence: ${{ steps.report.outputs.callback_sequence }}
+    env:
+      RIVERSHIFT_WORKER_PHASE: report-batch
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_CALLBACK_URL: ${{ inputs.callback_url }}
+      RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+      RIVERSHIFT_BATCH_NUMBER: "1"
+      RIVERSHIFT_CALLBACK_SEQUENCE: ${{ needs.prepare.outputs.callback_sequence }}
+      RIVERSHIFT_PREPARED_DIR: prepared
+      RIVERSHIFT_BATCH_RESULTS_DIR: batch-results
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rivershift-prepared-${{ inputs.job_id }}
+          path: prepared/
+      - name: Download completed product receipts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-product-b01-*
+          path: batch-results/
+          merge-multiple: true
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+      - name: Reconcile every product and publish batch barrier
+        id: report
+        shell: micromamba-shell {0}
+        run: python -u tools/river_shift/batched_gcov_job.py
+
+  batch_2:
+    name: Batch 2 · product ${{ matrix.product_index }}/${{ matrix.total_products }}
+    needs: [prepare, batch_1_status]
+    if: needs.prepare.result == 'success' && needs.batch_1_status.result == 'success' && needs.prepare.outputs.batch_2_count != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.prepare.outputs.batch_2_matrix) }}
+    env:
+      RIVERSHIFT_WORKER_PHASE: product
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_GRANULE_NAME: ${{ matrix.granule_name }}
+      RIVERSHIFT_ACQUISITION_DATE: ${{ matrix.acquisition_date }}
+      RIVERSHIFT_BATCH_NUMBER: ${{ matrix.batch_number }}
+      RIVERSHIFT_BATCH_COUNT: ${{ matrix.batch_count }}
+      RIVERSHIFT_PRODUCT_INDEX: ${{ matrix.product_index }}
+      RIVERSHIFT_TOTAL_PRODUCTS: ${{ matrix.total_products }}
+      RIVERSHIFT_PREPARED_DIR: prepared
+      RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rivershift-prepared-${{ inputs.job_id }}
+          path: prepared/
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+      - name: Verify this runner's HDF5 driver
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          gdalinfo --version
+          gdalinfo --formats | grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-'
+          python -c "import rasterio, earthaccess; print('RIVERSHIFT_PRODUCT_RUNTIME=PASS')"
+      - name: Download, inspect, and AOI-process this exact GCOV product
+        shell: micromamba-shell {0}
+        run: python -u tools/river_shift/batched_gcov_job.py
+      - name: Retain this product's COG and provenance receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rivershift-product-b02-${{ matrix.granule_name }}
+          path: product-output/
+          if-no-files-found: warn
+          retention-days: 1
+          compression-level: 1
+
+  batch_2_status:
+    name: Batch 2 · verify 15-product barrier
+    needs: [prepare, batch_1_status, batch_2]
+    if: always() && needs.prepare.result == 'success' && needs.batch_1_status.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      callback_sequence: ${{ steps.report.outputs.callback_sequence }}
+    env:
+      RIVERSHIFT_WORKER_PHASE: report-batch
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_CALLBACK_URL: ${{ inputs.callback_url }}
+      RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+      RIVERSHIFT_BATCH_NUMBER: "2"
+      RIVERSHIFT_CALLBACK_SEQUENCE: ${{ needs.batch_1_status.outputs.callback_sequence }}
+      RIVERSHIFT_PREPARED_DIR: prepared
+      RIVERSHIFT_BATCH_RESULTS_DIR: batch-results
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rivershift-prepared-${{ inputs.job_id }}
+          path: prepared/
+      - name: Download completed product receipts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-product-b02-*
+          path: batch-results/
+          merge-multiple: true
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+      - name: Reconcile every product and publish batch barrier
+        id: report
+        shell: micromamba-shell {0}
+        run: python -u tools/river_shift/batched_gcov_job.py
+
+  batch_3:
+    name: Batch 3 · product ${{ matrix.product_index }}/${{ matrix.total_products }}
+    needs: [prepare, batch_2_status]
+    if: needs.prepare.result == 'success' && needs.batch_2_status.result == 'success' && needs.prepare.outputs.batch_3_count != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.prepare.outputs.batch_3_matrix) }}
+    env:
+      RIVERSHIFT_WORKER_PHASE: product
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_GRANULE_NAME: ${{ matrix.granule_name }}
+      RIVERSHIFT_ACQUISITION_DATE: ${{ matrix.acquisition_date }}
+      RIVERSHIFT_BATCH_NUMBER: ${{ matrix.batch_number }}
+      RIVERSHIFT_BATCH_COUNT: ${{ matrix.batch_count }}
+      RIVERSHIFT_PRODUCT_INDEX: ${{ matrix.product_index }}
+      RIVERSHIFT_TOTAL_PRODUCTS: ${{ matrix.total_products }}
+      RIVERSHIFT_PREPARED_DIR: prepared
+      RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rivershift-prepared-${{ inputs.job_id }}
+          path: prepared/
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+      - name: Verify this runner's HDF5 driver
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          gdalinfo --version
+          gdalinfo --formats | grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-'
+          python -c "import rasterio, earthaccess; print('RIVERSHIFT_PRODUCT_RUNTIME=PASS')"
+      - name: Download, inspect, and AOI-process this exact GCOV product
+        shell: micromamba-shell {0}
+        run: python -u tools/river_shift/batched_gcov_job.py
+      - name: Retain this product's COG and provenance receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rivershift-product-b03-${{ matrix.granule_name }}
+          path: product-output/
+          if-no-files-found: warn
+          retention-days: 1
+          compression-level: 1
+
+  batch_3_status:
+    name: Batch 3 · verify 15-product barrier
+    needs: [prepare, batch_2_status, batch_3]
+    if: always() && needs.prepare.result == 'success' && needs.batch_2_status.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      callback_sequence: ${{ steps.report.outputs.callback_sequence }}
+    env:
+      RIVERSHIFT_WORKER_PHASE: report-batch
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_CALLBACK_URL: ${{ inputs.callback_url }}
+      RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+      RIVERSHIFT_BATCH_NUMBER: "3"
+      RIVERSHIFT_CALLBACK_SEQUENCE: ${{ needs.batch_2_status.outputs.callback_sequence }}
+      RIVERSHIFT_PREPARED_DIR: prepared
+      RIVERSHIFT_BATCH_RESULTS_DIR: batch-results
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rivershift-prepared-${{ inputs.job_id }}
+          path: prepared/
+      - name: Download completed product receipts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-product-b03-*
+          path: batch-results/
+          merge-multiple: true
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+      - name: Reconcile every product and publish batch barrier
+        id: report
+        shell: micromamba-shell {0}
+        run: python -u tools/river_shift/batched_gcov_job.py
+
+  batch_4:
+    name: Batch 4 · product ${{ matrix.product_index }}/${{ matrix.total_products }}
+    needs: [prepare, batch_3_status]
+    if: needs.prepare.result == 'success' && needs.batch_3_status.result == 'success' && needs.prepare.outputs.batch_4_count != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.prepare.outputs.batch_4_matrix) }}
+    env:
+      RIVERSHIFT_WORKER_PHASE: product
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_GRANULE_NAME: ${{ matrix.granule_name }}
+      RIVERSHIFT_ACQUISITION_DATE: ${{ matrix.acquisition_date }}
+      RIVERSHIFT_BATCH_NUMBER: ${{ matrix.batch_number }}
+      RIVERSHIFT_BATCH_COUNT: ${{ matrix.batch_count }}
+      RIVERSHIFT_PRODUCT_INDEX: ${{ matrix.product_index }}
+      RIVERSHIFT_TOTAL_PRODUCTS: ${{ matrix.total_products }}
+      RIVERSHIFT_PREPARED_DIR: prepared
+      RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rivershift-prepared-${{ inputs.job_id }}
+          path: prepared/
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+      - name: Verify this runner's HDF5 driver
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          gdalinfo --version
+          gdalinfo --formats | grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-'
+          python -c "import rasterio, earthaccess; print('RIVERSHIFT_PRODUCT_RUNTIME=PASS')"
+      - name: Download, inspect, and AOI-process this exact GCOV product
+        shell: micromamba-shell {0}
+        run: python -u tools/river_shift/batched_gcov_job.py
+      - name: Retain this product's COG and provenance receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rivershift-product-b04-${{ matrix.granule_name }}
+          path: product-output/
+          if-no-files-found: warn
+          retention-days: 1
+          compression-level: 1
+
+  batch_4_status:
+    name: Batch 4 · verify final product barrier
+    needs: [prepare, batch_3_status, batch_4]
+    if: always() && needs.prepare.result == 'success' && needs.batch_3_status.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      callback_sequence: ${{ steps.report.outputs.callback_sequence }}
+    env:
+      RIVERSHIFT_WORKER_PHASE: report-batch
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_CALLBACK_URL: ${{ inputs.callback_url }}
+      RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+      RIVERSHIFT_BATCH_NUMBER: "4"
+      RIVERSHIFT_CALLBACK_SEQUENCE: ${{ needs.batch_3_status.outputs.callback_sequence }}
+      RIVERSHIFT_PREPARED_DIR: prepared
+      RIVERSHIFT_BATCH_RESULTS_DIR: batch-results
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rivershift-prepared-${{ inputs.job_id }}
+          path: prepared/
+      - name: Download completed product receipts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-product-b04-*
+          path: batch-results/
+          merge-multiple: true
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+      - name: Reconcile every product and publish final batch barrier
+        id: report
+        shell: micromamba-shell {0}
+        run: python -u tools/river_shift/batched_gcov_job.py
+
+  assemble:
+    name: Verify all products, run change science, and retain private results
+    needs: [prepare, batch_1_status, batch_2_status, batch_3_status, batch_4_status]
+    if: always() && needs.prepare.result == 'success' && needs.batch_1_status.result == 'success' && needs.batch_2_status.result == 'success' && needs.batch_3_status.result == 'success' && needs.batch_4_status.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      RIVERSHIFT_WORKER_PHASE: assemble
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_AOI_WKT: ${{ inputs.aoi_wkt }}
+      RIVERSHIFT_START_DATE: ${{ inputs.start_date }}
+      RIVERSHIFT_END_DATE: ${{ inputs.end_date }}
+      RIVERSHIFT_EVENT_DATE: ${{ inputs.event_date }}
+      RIVERSHIFT_MATURITY: ${{ inputs.maturity }}
+      RIVERSHIFT_MAIN_BAND_POLARIZATION: ${{ inputs.main_band_polarization }}
+      RIVERSHIFT_FLIGHT_DIRECTION: ${{ inputs.flight_direction }}
+      RIVERSHIFT_FRAME_COVERAGE: ${{ inputs.frame_coverage }}
+      RIVERSHIFT_FREQUENCY: ${{ inputs.frequency }}
+      RIVERSHIFT_COVARIANCE_TERM: ${{ inputs.covariance_term }}
+      RIVERSHIFT_THRESHOLD_METHOD: ${{ inputs.threshold_method }}
+      RIVERSHIFT_THRESHOLD_DB: ${{ inputs.threshold_db }}
+      RIVERSHIFT_GRANULE_NAMES_JSON: ${{ inputs.granule_names_json }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_CALLBACK_URL: ${{ inputs.callback_url }}
+      RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+      RIVERSHIFT_CALLBACK_SEQUENCE: ${{ needs.batch_4_status.outputs.callback_sequence }}
+      RIVERSHIFT_PREPARED_DIR: prepared
+      RIVERSHIFT_PRODUCT_ARTIFACTS_DIR: product-artifacts
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rivershift-prepared-${{ inputs.job_id }}
+          path: prepared/
+      - name: Download every batch's COGs and provenance receipts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-product-*
+          path: product-artifacts/
+          merge-multiple: true
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+      - name: Verify full product set, mosaic dates, and run scientific analysis
+        shell: micromamba-shell {0}
+        run: python -u tools/river_shift/batched_gcov_job.py

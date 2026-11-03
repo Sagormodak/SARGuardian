@@ -11,6 +11,7 @@ on:
     branches:
       - main
       - feat/river-shift-gcov-worker-20261103
+      - feat/river-shift-15-product-batches-20261103
       - fix/river-shift-drive-uploader-logging-20261103
     paths:
       - "tools/river_shift/**"
@@ -64,7 +65,9 @@ jobs:
           grep -Fq 'run-name: RiverShift ${{ inputs.job_id }}' .github/workflows/river-shift-gcov-process.yml
           grep -q 'RIVERSHIFT_CALLBACK_SECRET:' .github/workflows/river-shift-gcov-process.yml
           grep -q 'RIVERSHIFT_REQUEST_FINGERPRINT:' .github/workflows/river-shift-gcov-process.yml
-          grep -Eq 'python (-u )?tools/river_shift/process_gcov_job.py' .github/workflows/river-shift-gcov-process.yml
+          grep -Eq 'python (-u )?tools/river_shift/batched_gcov_job.py' .github/workflows/river-shift-gcov-process.yml
+          grep -q 'max-parallel: 15' .github/workflows/river-shift-gcov-process.yml
+          grep -q 'batch_4_status' .github/workflows/river-shift-gcov-process.yml
 
       - name: Validate standalone processing tests
         shell: micromamba-shell {0}
