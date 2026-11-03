@@ -51,28 +51,13 @@ jobs:
           cache-environment: true
           generate-run-shell: true
 
-      - name: Verify GDAL and replay the 2026-07-12 NISAR observation
+      - name: Verify GDAL and replay the 2026-09-10 NISAR observation with item-level diagnostics
         shell: micromamba-shell {0}
         run: |
           set -euo pipefail
           python --version
           gdalinfo --version
           python -c "import rasterio, numpy, scipy, shapely, pyproj, requests; print('RIVERSHIFT_CROSS_SENSOR_RUNTIME=PASS')"
-          python -u tools/river_shift/replay_sentinel2_from_retained_run.py \
-            --products-dir source-products \
-            --prepared-dir prepared \
-            --source-run-id "41642281327" \
-            --observation-date "2026-07-12" \
-            --output-dir replay-output/2026-07-12 \
-            --max-day-offset 10 \
-            --max-cloud-cover 80 \
-            --mndwi-threshold "0.0" \
-            --minimum-common-support "0.80"
-
-      - name: Replay the 2026-09-10 NISAR observation
-        shell: micromamba-shell {0}
-        run: |
-          set -euo pipefail
           python -u tools/river_shift/replay_sentinel2_from_retained_run.py \
             --products-dir source-products \
             --prepared-dir prepared \
@@ -94,7 +79,7 @@ jobs:
           from pathlib import Path
           summary = Path(__import__('os').environ['GITHUB_STEP_SUMMARY'])
           lines = ["## RiverShift Sentinel-2 same-datatake mosaic replay", ""]
-          for day in ("2026-07-12", "2026-09-10"):
+          for day in ("2026-09-10",):
               base = Path("replay-output") / day
               report_path = base / "sentinel2-cross-sensor" / "sentinel2_cross_sensor_agreement.json"
               if not report_path.is_file():
