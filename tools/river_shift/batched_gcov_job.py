@@ -44,7 +44,7 @@ from process_gcov_job import (
     select_event_compatible_group,
     sha256_file,
 )
-from science_adapter.upload_to_drive import DriveUploadError, upload_validated_results
+from drive_upload_adapter import DriveUploadError, upload_validated_results
 
 
 BATCH_SIZE = 15
@@ -915,6 +915,9 @@ def _assemble_job(
     ], context={"event_window": event_window})
 
     callbacks.send("running", "private_result_publication")
+    _log_worker_stage("assembly_private_storage_preflight", "START")
+    _ensure_credentials()
+    _log_worker_stage("assembly_private_storage_preflight", "PASS", storage_root="RiverShift", parent_variable="GOOGLE_DRIVE_PARENT_FOLDER_ID")
     _log_worker_stage("result_package_assembly", "START")
     output_root = work_dir / "outputs"
     inventory = []
