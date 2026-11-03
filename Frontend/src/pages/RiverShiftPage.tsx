@@ -760,14 +760,14 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
                 </select>
               </label>
               <label className="rs-field"><span>Main-band polarization</span>
-                <select value={polarization} onChange={(event) => setPolarization(event.target.value)}>
+                <select value={polarization} onChange={(event) => setPolarization(event.target.value as typeof polarization)}>
                   <option value="">Any</option><option value="VV">VV</option><option value="VV+VH">VV + VH</option>
                   <option value="HH">HH</option><option value="HH+HV">HH + HV</option>
                   <option value="HH+HV+VH+VV">Full quad-pol</option><option value="LH+LV">LH + LV</option><option value="RH+RV">RH + RV</option>
                 </select>
               </label>
               <label className="rs-field rs-field-full"><span>Orbit direction</span>
-                <select value={direction} onChange={(event) => setDirection(event.target.value)}>
+                <select value={direction} onChange={(event) => setDirection(event.target.value as typeof direction)}>
                   <option value="">Any direction</option><option value="ASCENDING">Ascending</option><option value="DESCENDING">Descending</option>
                 </select>
               </label>
