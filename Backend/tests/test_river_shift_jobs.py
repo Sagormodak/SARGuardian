@@ -311,6 +311,6 @@ def test_river_shift_allows_only_one_active_job_per_account_but_keeps_idempotent
     assert first.status_code == duplicate.status_code == 200
     assert duplicate.json()["id"] == first.json()["id"]
     assert competing.status_code == 409
-    assert competing.json()["detail"]["code"] == "RIVERSHIFT_JOB_ALREADY_ACTIVE"
-    assert competing.json()["detail"]["job_id"] == first.json()["id"]
+    assert "already has an active RiverShift job" in competing.json()["detail"]
+    assert first.json()["id"] in competing.json()["detail"]
     assert len(store.rows) == 1
