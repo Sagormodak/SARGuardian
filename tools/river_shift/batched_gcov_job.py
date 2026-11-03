@@ -1096,11 +1096,19 @@ def _rebase_exporter_sidecar_for_assembly(
             "SOURCE_PROVENANCE_INVALID",
             f"The imported COG checksum or exporter path is invalid for {granule_name}.",
         )
+    source_names = metadata.get("source_granule_names")
+    source_hashes = metadata.get("source_granule_sha256")
     if (
         metadata.get("source_granule_name") != granule_name
+        or source_names != [granule_name]
+        or not isinstance(source_hashes, list)
+        or len(source_hashes) != 1
+        or not isinstance(source_hashes[0], str)
+        or not re.fullmatch(r"[0-9a-fA-F]{64}", source_hashes[0])
         or not isinstance(source_digest, str)
         or not re.fullmatch(r"[0-9a-fA-F]{64}", source_digest)
         or source_digest.lower() != expected_source_sha256.lower()
+        or source_hashes[0].lower() != expected_source_sha256.lower()
     ):
         raise WorkerFailure(
             "SOURCE_PROVENANCE_INVALID",
