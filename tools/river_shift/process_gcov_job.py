@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import traceback
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -90,18 +91,35 @@ def _feature_geometry(product: dict[str, Any]):
 
 def _product_date(product: dict[str, Any]) -> str | None:
     value = product.get("acquisition_start_utc") or product.get("start_time_utc")
-    if not isinstance(value, str):
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).date().isoformat()
-    except ValueError:
-        return None
+    if isinstance(value, str):
+        compact = re.fullmatch(r"(\\d{8}T\\d{6})(?:\\.\\d+)?Z?", value.strip())
+        if compact:
+            try:
+                return datetime.strptime(compact.group(1), "%Y%m%dT%H%M%S").date().isoformat()
+            except ValueError:
+                return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed.date().isoformat()
+        except ValueError:
+            pass
+    granule_name = product.get("granule_name")
+    if isinstance(granule_name, str):
+        parts = granule_name.removesuffix(".h5").split("_")
+        if len(parts) == 18 and parts[0] == "NISAR" and parts[1] == "L2" and parts[3] == "GCOV":
+            try:
+                return datetime.strptime(parts[11], "%Y%m%dT%H%M%S").date().isoformat()
+            except ValueError:
+                return None
+    return None
 
 
 def select_date_window(
     date_rows: list[dict[str, Any]], event_date: date, maximum_dates: int = MAX_SELECTED_DATES,
 ) -> tuple[list[str], dict[str, str]]:
-    """Choose a real observation near the event with one earlier and two later dates."""
+    """Select one pre-event date, the first eligible post-event date, and two later dates."""
+    if maximum_dates < 4:
+        raise WorkerFailure("INVALID_REQUEST", "The selected time-series maximum cannot be lower than four dates.")
     by_date = {
         str(row.get("acquisition_date")): row
         for row in date_rows
@@ -115,12 +133,24 @@ def select_date_window(
             "INSUFFICIENT_COMPARABLE_ACQUISITIONS",
             "This AOI and date window need at least four comparable, footprint-qualified NISAR acquisition dates.",
         )
-    candidates = []
-    for index in range(1, len(dates) - 2):
-        observed = date.fromisoformat(dates[index])
-        candidates.append((abs((observed - event_date).days), observed < event_date, index))
-    _, _, event_index = min(candidates)
-    anchors = {dates[event_index - 1], dates[event_index], dates[event_index + 1], dates[event_index + 2]}
+    try:
+        parsed_dates = [date.fromisoformat(value) for value in dates]
+    except ValueError:
+        raise WorkerFailure("INVALID_CATALOGUE_DATE", "A footprint-qualified acquisition date is not valid ISO YYYY-MM-DD.") from None
+    if len(set(parsed_dates)) != len(parsed_dates):
+        raise WorkerFailure("DUPLICATE_CATALOGUE_DATE", "The footprint audit contains duplicate acquisition dates.")
+
+    # Do not label a pre-event scene as the flood observation. The event-proximal
+    # scene is the first actual NISAR acquisition on/after the user-supplied date.
+    event_index = next((index for index, observed in enumerate(parsed_dates) if observed >= event_date), None)
+    if event_index is None or event_index < 1 or event_index + 2 >= len(dates):
+        raise WorkerFailure(
+            "EVENT_WINDOW_NOT_BRACKETED",
+            "Need one qualifying acquisition before the event date and three on/after it (event-proximal plus two later observations).",
+        )
+
+    quartet = dates[event_index - 1:event_index + 3]
+    anchors = set(quartet)
     selected = set(anchors)
     while len(selected) < min(maximum_dates, len(dates)):
         remaining = [value for value in dates if value not in selected]
@@ -134,11 +164,11 @@ def select_date_window(
             ),
         )
         selected.add(next_date)
-    sequence = sorted(selected)
-    quartet = dates[event_index - 1:event_index + 3]
-    return sequence, {
-        "before": quartet[0], "event_observation": quartet[1],
-        "post_one": quartet[2], "post_two": quartet[3],
+    return sorted(selected), {
+        "before": quartet[0],
+        "event_proximal_observation": quartet[1],
+        "post_one": quartet[2],
+        "post_two": quartet[3],
     }
 
 
@@ -262,7 +292,8 @@ def _mosaic_date_rasters(paths: list[Path], destination: Path) -> Path:
         return paths[0]
     vrt = destination.with_suffix(".vrt")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    command = ["gdalbuildvrt", "-overwrite", "-resolution", "highest", "-addalpha", str(vrt), *map(str, paths)]
+    ordered_paths = sorted(paths, key=lambda path: path.name)
+    command = ["gdalbuildvrt", "-overwrite", "-resolution", "highest", "-addalpha", str(vrt), *map(str, ordered_paths)]
     try:
         subprocess.run(command, cwd=TOOLS, check=True)
         subprocess.run(
@@ -273,9 +304,9 @@ def _mosaic_date_rasters(paths: list[Path], destination: Path) -> Path:
         raise WorkerFailure("RASTER_MOSAIC_FAILED", "Could not combine the selected same-date scene rasters safely.") from None
     finally:
         vrt.unlink(missing_ok=True)
-    source_metadata = json.loads(paths[0].with_suffix(".metadata.json").read_text(encoding="utf-8"))
-    source_names = [json.loads(path.with_suffix(".metadata.json").read_text(encoding="utf-8"))["source_granule_name"] for path in paths]
-    source_hashes = [json.loads(path.with_suffix(".metadata.json").read_text(encoding="utf-8"))["source_product_sha256"] for path in paths]
+    source_metadata = json.loads(ordered_paths[0].with_suffix(".metadata.json").read_text(encoding="utf-8"))
+    source_names = [json.loads(path.with_suffix(".metadata.json").read_text(encoding="utf-8"))["source_granule_name"] for path in ordered_paths]
+    source_hashes = [json.loads(path.with_suffix(".metadata.json").read_text(encoding="utf-8"))["source_product_sha256"] for path in ordered_paths]
     source_metadata.update({
         "source_granule_name": "+".join(source_names),
         "source_granule_names": source_names,
@@ -484,6 +515,13 @@ def _read_input() -> dict[str, Any]:
     if end_date < start_date or (end_date - start_date).days > 366 or not start_date <= event_date <= end_date:
         raise WorkerFailure("INVALID_REQUEST", "The event date and observation window are not a valid selected range.")
     maturity = _required_env("RIVERSHIFT_MATURITY").upper()
+    main_band_polarization = os.environ.get("RIVERSHIFT_MAIN_BAND_POLARIZATION", "").strip() or None
+    flight_direction = os.environ.get("RIVERSHIFT_FLIGHT_DIRECTION", "").strip().upper() or None
+    frame_coverage = os.environ.get("RIVERSHIFT_FRAME_COVERAGE", "ALL").strip().upper()
+    if main_band_polarization not in {None, "HH", "HH+HV", "HH+HV+VH+VV", "VV", "VV+VH", "LH+LV", "RH+RV"}:
+        raise WorkerFailure("INVALID_REQUEST", "The main-band polarization discovery filter is unsupported.")
+    if flight_direction not in {None, "ASCENDING", "DESCENDING"} or frame_coverage not in {"ALL", "FULL", "PARTIAL"}:
+        raise WorkerFailure("INVALID_REQUEST", "The orbit-direction or frame-coverage discovery filter is unsupported.")
     frequency = _required_env("RIVERSHIFT_FREQUENCY")
     term = _required_env("RIVERSHIFT_COVARIANCE_TERM").upper()
     threshold_method = _required_env("RIVERSHIFT_THRESHOLD_METHOD").lower()
@@ -514,7 +552,9 @@ def _read_input() -> dict[str, Any]:
     return {
         "job_id": job_id, "fingerprint": fingerprint, "aoi_wkt": aoi_wkt, "aoi": aoi,
         "start_date": start_date, "end_date": end_date, "event_date": event_date,
-        "maturity": maturity, "frequency": frequency, "term": term,
+        "maturity": maturity, "main_band_polarization": main_band_polarization,
+        "flight_direction": flight_direction, "frame_coverage": frame_coverage,
+        "frequency": frequency, "term": term,
         "threshold_method": threshold_method, "threshold_db": threshold_db,
         "granule_names": sorted(set(granules)),
     }
@@ -623,12 +663,17 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
     selection_path = work_dir / "selected-observations.json"
 
     callbacks.send("running", "catalogue_discovery")
-    run_step("catalogue discovery", [
+    discovery_command = [
         sys.executable, "discover_gcov_products.py", "--aoi-wkt", request["aoi_wkt"],
         "--start-date", request["start_date"].isoformat(), "--end-date", request["end_date"].isoformat(),
-        "--maturity", request["maturity"], "--frame-coverage", "ALL", "--max-results", "2000",
-        "--out", str(catalogue_path),
-    ])
+        "--maturity", request["maturity"], "--frame-coverage", request["frame_coverage"],
+        "--max-results", "2000", "--out", str(catalogue_path),
+    ]
+    if request["main_band_polarization"]:
+        discovery_command.extend(["--main-band-polarization", request["main_band_polarization"]])
+    if request["flight_direction"]:
+        discovery_command.extend(["--flight-direction", request["flight_direction"]])
+    run_step("catalogue discovery", discovery_command)
     manifest = json.loads(catalogue_path.read_text(encoding="utf-8"))
     submitted = set(request["granule_names"])
     catalogue_rows = [row for row in manifest.get("products", []) if row.get("granule_name") in submitted]
@@ -684,7 +729,7 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
         "time_series_semantics": "actual NISAR acquisition dates; no daily interpolation",
         "dates_selected": dates,
         "event_window": event_window,
-        "event_observation_offset_days": (date.fromisoformat(event_window["event_observation"]) - request["event_date"]).days,
+        "event_proximal_observation_offset_days": (date.fromisoformat(event_window["event_proximal_observation"]) - request["event_date"]).days,
         "granule_names": sorted(set(selected_product_names)),
         "aoi_coverage_gate_percent": 90,
         "catalogue_audit_status": audit.get("status"),
@@ -751,7 +796,7 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
     flood_dir = work_dir / "analysis" / "flood"
     run_step("flood change screening", [
         sys.executable, "run_flood_analysis.py", "--before", str(window_paths["before"]),
-        "--during", str(window_paths["event_observation"]), "--after", str(window_paths["post_one"]),
+        "--during", str(window_paths["event_proximal_observation"]), "--after", str(window_paths["post_one"]),
         "--before-date", event_window["before"], "--during-date", event_window["event_observation"],
         "--after-date", event_window["post_one"], *threshold_args,
         "--input-units", "linear", "--maturity", request["maturity"],
@@ -812,7 +857,7 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
         "warnings": [
             "NISAR observations occur on actual acquisition dates; no daily raster observations or interpolation were created.",
             "Riverbank erosion and deposition are provisional radar-derived candidates, not field-confirmed changes.",
-            "The event date was supplied by the user and was not verified against an authoritative gauge feed.",
+            "The flood comparison uses the first qualifying NISAR acquisition on or after the user-supplied event date; it is not a measured peak-stage observation.",\n            "The event date was supplied by the user and was not verified against an authoritative gauge feed.",
         ],
     }
     manifest_path = _build_manifest(work_dir, inventory, selection)
@@ -851,7 +896,8 @@ def main() -> int:
         return 1
     except Exception:
         message = "An unexpected RiverShift worker error occurred; inspect the processing run logs."
-        print(f"RIVERSHIFT_PROCESSING_STATUS=FAIL message={message}", file=sys.stderr, flush=True)
+        print(f"RIVERSHIFT_PROCESSING_STATUS=FAIL type={type(sys.exc_info()[1]).__name__} message={message}", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
         if callbacks:
             try:
                 callbacks.send("failed", callbacks.stage, error_code="UNEXPECTED_WORKER_ERROR", error_message=message)
