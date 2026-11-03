@@ -41,6 +41,61 @@ def _earthaccess_granule_name(granule: Any) -> str | None:
     return None
 
 
+def _earthdata_http_auth_rejection(error: BaseException) -> int | None:
+    """Return 401/403 only when earthaccess exposes an explicit auth-denial status."""
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        response = getattr(current, "response", None)
+        status = getattr(response, "status_code", None)
+        if status in {401, 403}:
+            return int(status)
+        match = re.search(r"(?:Status code|HTTP(?: status)?)\s*[:=]?\s*(401|403)\b", str(current), re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+        for nested in (getattr(current, "__cause__", None), getattr(current, "__context__", None)):
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+    return None
+
+
+def _reauthenticate_with_username_password(earthaccess) -> bool:
+    """Replace an unverified bearer-token session with a fresh EDL password session.
+
+    earthaccess 0.19.0 treats an environment token as locally authenticated before
+    the first file request. Its module-level Auth cache must therefore be reset
+    before a username/password fallback can actually run.
+    """
+    token = os.environ.get("EARTHDATA_TOKEN", "").strip()
+    username = os.environ.get("EARTHDATA_USERNAME", "").strip()
+    password = os.environ.get("EARTHDATA_PASSWORD", "")
+    if not token or not username or not password:
+        return False
+
+    old_auth = getattr(earthaccess, "_auth", None)
+    old_store = getattr(earthaccess, "_store", None)
+    try:
+        os.environ.pop("EARTHDATA_TOKEN", None)
+        if not hasattr(earthaccess, "Auth") or not hasattr(earthaccess, "_auth"):
+            return False
+        earthaccess._auth = earthaccess.Auth()
+        earthaccess._store = None
+        earthaccess.login(strategy="environment")
+        return True
+    except Exception:
+        if old_auth is not None:
+            earthaccess._auth = old_auth
+        if hasattr(earthaccess, "_store"):
+            earthaccess._store = old_store
+        raise
+    finally:
+        os.environ["EARTHDATA_TOKEN"] = token
+
+
 def is_hdf5_file(path: Path) -> bool:
     """Recognize the HDF5 signature, including a permitted user block."""
     with path.open("rb") as stream:
@@ -202,15 +257,60 @@ def download_product(product: dict, output_dir: Path) -> dict:
                 threads=1,
                 show_progress=False,
             )
-        except Exception as exc:
+        except Exception as first_error:
+            denied_status = _earthdata_http_auth_rejection(first_error)
+            if denied_status not in {401, 403}:
+                print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+                    "stage": "earthaccess_download",
+                    "status": "FAIL",
+                    "error_type": type(first_error).__name__,
+                }), flush=True)
+                raise RuntimeError(
+                    "earthaccess could not download the exact NISAR GCOV granule; inspect the network/download diagnostics."
+                ) from None
+
             print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
-                "stage": "earthaccess_download",
-                "status": "FAIL",
-                "error_type": type(exc).__name__,
+                "stage": "earthdata_password_fallback",
+                "status": "START",
+                "reason": f"HTTP_{denied_status}",
             }), flush=True)
-            raise RuntimeError(
-                "earthaccess could not download the exact NISAR GCOV granule; inspect the network/authentication diagnostics."
-            ) from None
+            try:
+                if not _reauthenticate_with_username_password(earthaccess):
+                    raise RuntimeError("username_password_fallback_not_configured")
+                fallback_candidates = earthaccess.search_data(
+                    short_name=collection,
+                    granule_name=expected_name,
+                    downloadable=True,
+                    count=2,
+                )
+                exact_matches = [
+                    row for row in (fallback_candidates or [])
+                    if _earthaccess_granule_name(row) == expected_name
+                ]
+                if len(exact_matches) != 1:
+                    raise RuntimeError("exact_cmr_match_changed_after_authentication_fallback")
+                shutil.rmtree(temporary_dir, ignore_errors=True)
+                temporary_dir.mkdir(parents=True, exist_ok=False)
+                downloaded_paths = earthaccess.download(
+                    exact_matches,
+                    local_path=str(temporary_dir),
+                    threads=1,
+                    show_progress=False,
+                )
+            except Exception as fallback_error:
+                print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+                    "stage": "earthdata_password_fallback",
+                    "status": "FAIL",
+                    "error_type": type(fallback_error).__name__,
+                }), flush=True)
+                raise RuntimeError(
+                    "Earthdata rejected the pre-generated token and the username/password fallback could not download the exact GCOV granule."
+                ) from None
+            print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+                "stage": "earthdata_password_fallback",
+                "status": "PASS",
+                "auth_mode": "username_password_fallback",
+            }), flush=True)
 
         paths = [Path(item).resolve() for item in (downloaded_paths or [])]
         if len(paths) != 1:
