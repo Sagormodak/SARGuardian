@@ -1,6 +1,8 @@
 import numpy as np
 
-from river_shift.morphology import run_morphology_analysis, symmetric_boundary_distance_m
+from affine import Affine
+
+from river_shift.morphology import _orthogonal_pixel_sizes, run_morphology_analysis, symmetric_boundary_distance_m
 
 
 def test_morphology_finds_persistent_erosion_and_deposition_candidates(tmp_path, raster_writer):
@@ -38,3 +40,41 @@ def test_boundary_distance_is_symmetric_and_positive():
     )
     assert mean is not None and mean > 0
     assert p95 is not None and p95 > 0
+
+
+def test_boundary_distance_ignores_boundaries_adjacent_to_nodata():
+    support = np.ones((20, 20), dtype=bool)
+    support[:, 9] = False
+    before = np.zeros((20, 20), dtype=bool)
+    after = np.zeros((20, 20), dtype=bool)
+    before[:, 8] = True
+    after[:, 10] = True
+
+    mean, p95 = symmetric_boundary_distance_m(
+        before,
+        after,
+        pixel_size_y_m=10,
+        pixel_size_x_m=10,
+        valid_mask=support,
+    )
+
+    assert mean is None
+    assert p95 is None
+
+
+def test_orthogonal_pixel_sizes_use_full_affine_vector_lengths():
+    rotated = Affine.rotation(30) * Affine.scale(10, -20)
+
+    row_size, column_size = _orthogonal_pixel_sizes(rotated)
+
+    assert row_size == pytest.approx(20)
+    assert column_size == pytest.approx(10)
+
+
+def test_boundary_distance_rejects_sheared_affine_grid():
+    sheared = Affine(10, 2, 0, 0, -20, 0)
+
+    with pytest.raises(ValueError, match="orthogonal projected raster grid"):
+        _orthogonal_pixel_sizes(sheared)
+
+
