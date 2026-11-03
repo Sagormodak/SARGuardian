@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import type { Engine } from '../data/engineData';
 import { engines } from '../data/engineData';
 import { EngineCard } from '../components/EngineCard';
@@ -24,15 +23,7 @@ type HomeProps = {
 };
 
 export function Home({ user, authState, authError, firebaseConfigured, missingFirebaseConfig, showAuthModal = false, onCloseAuthModal, onSignIn, onSignOut, onSelectEngine, onOpenWorkspace }: HomeProps) {
-  const [previewEngine, setPreviewEngine] = useState<Engine | null>(null);
-
-  const handleEngineSelect = (engine: Engine) => {
-    if (engine.id === 'river-shift') {
-      setPreviewEngine(engine);
-      return;
-    }
-    onSelectEngine(engine);
-  };
+  const handleEngineSelect = (engine: Engine) => onSelectEngine(engine);
 
   return (
     <div className="home-page">
@@ -61,18 +52,7 @@ export function Home({ user, authState, authError, firebaseConfigured, missingFi
         {authState === 'error' && <section className="error-banner" role="alert">{authError}</section>}
         <HomeSections onOpenWorkspace={onOpenWorkspace} />
       </main>
-      {previewEngine && (
-        <div className="auth-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="river-preview-title">
-          <div className="auth-modal feature-preview-modal">
-            <button className="auth-modal-close" type="button" onClick={() => setPreviewEngine(null)} aria-label="Close research preview">×</button>
-            <p className="section-eyebrow">RESEARCH PREVIEW</p>
-            <h2 id="river-preview-title">{previewEngine.name}</h2>
-            <p>{previewEngine.description}</p>
-            <p>A reliable river-shift workflow needs validated water extents, seasonal controls, channel geometry and uncertainty reporting. It is not yet connected to a production processing pipeline.</p>
-            <button className="section-action" type="button" onClick={() => setPreviewEngine(null)}>Close</button>
-          </div>
-        </div>
-      )}
+
       {showAuthModal && !user && (
         <div className="auth-modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
           <div className="auth-modal glass-panel">
