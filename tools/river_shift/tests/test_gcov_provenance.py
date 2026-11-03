@@ -3,7 +3,7 @@ import hashlib
 
 import pytest
 
-from river_shift.raster_io import RasterContractError, validate_gcov_series
+from river_shift.raster_io import RasterContractError, gcov_source_provenance, validate_gcov_series
 
 
 def write_sidecar(raster_path, **overrides):
@@ -39,6 +39,55 @@ def test_gcov_series_requires_matching_provenance_for_every_date(tmp_path):
     records, complete = validate_gcov_series(paths, maturity="PROVISIONAL", frequency="frequencyA", term="HHHH")
     assert complete is True
     assert len(records) == 3
+
+
+
+def test_gcov_series_preserves_individual_granule_checksums_for_a_mosaic(tmp_path):
+    path = tmp_path / "mosaic.tif"
+    names = ["granule-left", "granule-right"]
+    hashes = ["a" * 64, "b" * 64]
+    aggregate = hashlib.sha256("\\n".join(sorted(hashes)).encode("ascii")).hexdigest()
+    write_sidecar(
+        path,
+        source_granule_name="+".join(names),
+        source_granule_names=names,
+        source_granule_sha256=hashes,
+        source_product_sha256=aggregate,
+        source_product_sha256_scope="sha256_of_sorted_source_granule_sha256_values",
+        mosaic_method="deterministic test mosaic",
+    )
+
+    records, complete = validate_gcov_series(
+        {"observation": str(path)},
+        maturity="PROVISIONAL",
+        frequency="frequencyA",
+        term="HHHH",
+    )
+    provenance = gcov_source_provenance(records)
+
+    assert complete is True
+    assert provenance["granule_names"] == names
+    assert provenance["source_granule_sha256"] == hashes
+    assert provenance["observation_sources"][0]["source_product_sha256"] == aggregate
+    assert provenance["observation_sources"][0]["mosaic_method"] == "deterministic test mosaic"
+
+
+def test_gcov_series_rejects_mosaic_provenance_with_unmatched_name_hash_lists(tmp_path):
+    path = tmp_path / "mosaic-bad.tif"
+    write_sidecar(
+        path,
+        source_granule_name="granule-left+granule-right",
+        source_granule_names=["granule-left", "granule-right"],
+        source_granule_sha256=["a" * 64],
+    )
+
+    with pytest.raises(RasterContractError, match="matching source granule names"):
+        validate_gcov_series(
+            {"observation": str(path)},
+            maturity="PROVISIONAL",
+            frequency="frequencyA",
+            term="HHHH",
+        )
 
 
 def test_gcov_series_rejects_mixed_processing_release(tmp_path):
