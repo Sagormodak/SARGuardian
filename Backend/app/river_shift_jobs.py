@@ -287,6 +287,22 @@ def create_river_shift_job(payload: CreateRiverShiftJobRequest, user: dict = Dep
         return _response(existing)
 
     try:
+        active_jobs = store.list_active_river_shift_jobs(owner_uid)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not check RiverShift account processing capacity.") from None
+    if active_jobs:
+        active = active_jobs[0]
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "RIVERSHIFT_JOB_ALREADY_ACTIVE",
+                "message": "This account already has an active RiverShift job. Wait for it to finish before starting another.",
+                "job_id": str(active.get("id", "")),
+                "state": str(active.get("state", "running")),
+            },
+        )
+
+    try:
         manifest, granule_names = _discover_manifest(payload)
     except HTTPException:
         raise
