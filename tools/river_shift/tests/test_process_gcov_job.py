@@ -17,6 +17,8 @@ from process_gcov_job import (
     select_event_compatible_group,
     select_general_compatible_group,
     select_general_date_window,
+    generalize_flood_result,
+    generalize_morphology_result,
     require_worker_source_provenance,
     build_source_granule_manifest,
     sha256_file,
@@ -98,6 +100,78 @@ def test_general_compatible_group_skips_groups_without_four_qualified_dates():
     assert selected_group["relative_orbit"] == "101"
     assert dates == ["2026-08-01", "2026-08-13", "2026-08-25", "2026-09-06"]
     assert window["before"] == "2026-08-01"
+
+
+def test_general_scan_flood_report_uses_comparison_labels_and_no_event_wording(tmp_path):
+    report_path = tmp_path / "river_shift_result.json"
+    report_path.write_text(json.dumps({
+        "schema_version": 1,
+        "engine": "RiverShift",
+        "analysis_type": "flood_inundation_screening",
+        "source": {"mission": "NISAR", "product": "GCOV"},
+        "inputs": {
+            "dates": {"before": "2026-08-01", "during": "2026-08-13", "after": "2026-08-25"},
+            "event_proximal_observation": "2026-08-13",
+        },
+        "method": {"threshold_method": "common_otsu"},
+        "metrics": {
+            "baseline_water_area_km2": 10.0,
+            "event_proximal_water_area_km2": 11.0,
+            "post_event_water_area_km2": 12.0,
+            "newly_water_covered_area_km2": 1.0,
+        },
+        "quality": {"status": "SCREENING_NOT_INDEPENDENTLY_VALIDATED", "warnings": ["event date"]},
+    }), encoding="utf-8")
+    selection = {
+        "analysis_mode": "general_scan",
+        "comparison_window": {
+            "baseline": "2026-08-01",
+            "comparison_one": "2026-08-13",
+            "comparison_two": "2026-08-25",
+        },
+    }
+
+    result = generalize_flood_result(report_path, selection)
+
+    assert result["analysis_type"] == "river_change_scan"
+    assert result["analysis_mode"] == "general_scan"
+    assert result["metrics"]["comparison_one_water_area_km2"] == 11.0
+    assert result["metrics"]["comparison_two_water_area_km2"] == 12.0
+    assert "post_event_water_area_km2" not in result["metrics"]
+    assert result["inputs"]["dates"] == {
+        "baseline": "2026-08-01",
+        "comparison_one": "2026-08-13",
+        "comparison_two": "2026-08-25",
+    }
+    assert all("event" not in warning.lower() for warning in result["quality"]["warnings"])
+
+
+def test_general_scan_morphology_report_uses_later_observation_wording(tmp_path):
+    report_path = tmp_path / "river_shift_result.json"
+    report_path.write_text(json.dumps({
+        "schema_version": 1,
+        "engine": "RiverShift",
+        "analysis_type": "river_morphology_screening",
+        "inputs": {"dates": {"before": "2026-08-01", "post_one": "2026-08-13", "post_two": "2026-08-25"}},
+        "method": {
+            "classification": "persistent_two_post_observation_water_land_transition",
+            "post_observations_required": 2,
+        },
+        "quality": {"warnings": ["Two post-event observations reduce transient-water confusion."]},
+    }), encoding="utf-8")
+    selection = {
+        "analysis_mode": "general_scan",
+        "comparison_window": {"baseline": "2026-08-01", "comparison_one": "2026-08-13", "comparison_two": "2026-08-25"},
+    }
+
+    result = generalize_morphology_result(report_path, selection)
+
+    assert result["analysis_mode"] == "general_scan"
+    assert result["method"]["classification"] == "persistent_two_later_observation_water_land_transition"
+    assert result["method"]["later_observations_required"] == 2
+    assert "post_observations_required" not in result["method"]
+    assert all("post-event" not in warning.lower() for warning in result["quality"]["warnings"])
+    assert "no event date supplied or inferred" in result["inputs"]["comparison_basis"]
 
 
 def test_source_granule_manifest_retains_download_and_hdf5_inventory_checksums(tmp_path):

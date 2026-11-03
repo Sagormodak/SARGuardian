@@ -375,6 +375,39 @@ def select_general_compatible_group(
     )
 
 
+def generalize_morphology_result(result_path: Path, selection: dict[str, Any]) -> dict[str, Any]:
+    """Remove event-specific labels from a general date-window morphology result."""
+    result = json.loads(Path(result_path).read_text(encoding="utf-8"))
+    if not isinstance(result, dict) or result.get("analysis_type") != "river_morphology_screening":
+        raise WorkerFailure("RESULT_CONTRACT_INVALID", "The general-scan morphology output did not produce its expected report.")
+    inputs, method, quality = result.get("inputs"), result.get("method"), result.get("quality")
+    if not isinstance(inputs, dict) or not isinstance(method, dict) or not isinstance(quality, dict):
+        raise WorkerFailure("RESULT_CONTRACT_INVALID", "The general-scan morphology report is incomplete.")
+    result["analysis_mode"] = "general_scan"
+    result["selection"] = selection
+    inputs["comparison_window"] = selection.get("comparison_window", {})
+    inputs["comparison_basis"] = "date-window comparison; no event date supplied or inferred"
+    if isinstance(inputs.get("dates"), dict):
+        inputs["dates"] = {
+            "baseline": inputs["dates"].get("before"),
+            "comparison_one": inputs["dates"].get("post_one"),
+            "comparison_two": inputs["dates"].get("post_two"),
+        }
+    method["classification"] = "persistent_two_later_observation_water_land_transition"
+    method["later_observations_required"] = method.pop("post_observations_required", 2)
+    quality["warnings"] = [
+        "Land-to-water and water-to-land transitions are provisional candidate zones, not confirmed geomorphic causation.",
+        "Persistence is evaluated against the two later actual acquisition dates in the selected date window; no event date was supplied or inferred.",
+        "All area and boundary comparisons use only the intersection of valid positive-power pixels across the three observations.",
+        "Boundary distance is a symmetric displacement proxy, not a signed transect-derived bank migration rate.",
+        "For braided rivers, interpret outer active-channel belt and individual threads separately.",
+        "Check bank protection, dredging, sand mining, embankments and seasonal channel stage before attributing change to a specific cause.",
+        "Threshold sensitivity is a deterministic method-robustness check, not a statistical confidence interval or total error budget.",
+    ]
+    Path(result_path).write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return result
+
+
 def generalize_flood_result(result_path: Path, selection: dict[str, Any]) -> dict[str, Any]:
     """Relabel the three-date water comparison without implying a flood event."""
     result = json.loads(Path(result_path).read_text(encoding="utf-8"))
@@ -1399,7 +1432,8 @@ def _build_manifest(work_dir: Path, outputs: list[dict[str, str]], selection: di
         "job_id": os.environ["RIVERSHIFT_JOB_ID"],
         "release_status": "PROVISIONAL",
         "independent_validation_status": "PENDING",
-        "event_date_status": "USER_SUPPLIED_NOT_INDEPENDENTLY_CONFIRMED",
+        "analysis_mode": selection.get("analysis_mode", "event_based"),
+        "event_date_status": "NOT_APPLICABLE" if selection.get("analysis_mode") == "general_scan" else "USER_SUPPLIED_NOT_INDEPENDENTLY_CONFIRMED",
         "selection": selection,
         "validated_outputs": outputs,
     }
@@ -1655,6 +1689,8 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
         "--input-units", "linear", "--maturity", request["maturity"],
         "--frequency", request["frequency"], "--term", request["term"], "--out-dir", str(morphology_dir),
     ])
+    if request["analysis_mode"] == "general_scan":
+        generalize_morphology_result(morphology_dir / "river_shift_result.json", selection)
 
     callbacks.send("running", "private_result_publication")
     _log_worker_stage("result_package_assembly", "START")

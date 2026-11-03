@@ -44,6 +44,7 @@ from process_gcov_job import (
     select_event_compatible_group,
     select_general_compatible_group,
     generalize_flood_result,
+    generalize_morphology_result,
     sha256_file,
 )
 from drive_upload_adapter import DriveUploadError, upload_validated_results
@@ -1425,6 +1426,8 @@ def _assemble_job(
         "--frequency", request["frequency"], "--term", request["term"],
         "--out-dir", str(morphology_dir),
     ], context={"analysis_mode": request["analysis_mode"], "comparison_window": selection.get("comparison_window")})
+    if request["analysis_mode"] == "general_scan":
+        generalize_morphology_result(morphology_dir / "river_shift_result.json", selection)
 
     callbacks.send("running", "result_package_assembly")
     _log_worker_stage("result_package_assembly", "START")
