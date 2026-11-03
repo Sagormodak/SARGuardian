@@ -434,11 +434,12 @@ class JobCallbacks:
         _log_worker_stage("signed_api_callback", "PASS", state=state, callback_stage=stage, sequence=sequence)
 
 
-def run_step(stage: str, command: list[str]) -> None:
+def run_step(stage: str, command: list[str], *, context: dict[str, Any] | None = None) -> None:
     started = time.monotonic()
     executable = Path(command[0]).name if command else "unknown"
     script = Path(command[1]).name if len(command) > 1 else None
-    _log_worker_stage("processing_command", "START", processing_step=stage, executable=executable, script=script)
+    safe_context = context or {}
+    _log_worker_stage("processing_command", "START", processing_step=stage, executable=executable, script=script, **safe_context)
     try:
         subprocess.run(command, cwd=TOOLS, check=True)
     except subprocess.CalledProcessError as exc:
@@ -450,6 +451,7 @@ def run_step(stage: str, command: list[str]) -> None:
             script=script,
             exit_code=exc.returncode,
             elapsed_seconds=round(time.monotonic() - started, 3),
+            **safe_context,
         )
         raise WorkerFailure(
             "SCIENCE_STEP_FAILED",
@@ -462,6 +464,7 @@ def run_step(stage: str, command: list[str]) -> None:
         executable=executable,
         script=script,
         elapsed_seconds=round(time.monotonic() - started, 3),
+        **safe_context,
     )
 
 
@@ -1044,10 +1047,14 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
             run_step("exact-product download", [
                 sys.executable, "download_gcov_product.py", "--catalogue", str(catalogue_for_download),
                 "--granule-name", name, "--out-dir", str(raw_dir), "--read-timeout", "900",
-            ])
+            ], context={"granule_name": name, "acquisition_date": observed_date})
             product_path = raw_dir / f"{name}.h5"
             inventory_path = raw_dir / f"{name}.gcov_inventory.json"
-            run_step("NISAR HDF5 inspection", [sys.executable, "inspect_gcov_product.py", "--product", str(product_path), "--out", str(inventory_path)])
+            run_step(
+                "NISAR HDF5 inspection",
+                [sys.executable, "inspect_gcov_product.py", "--product", str(product_path), "--out", str(inventory_path)],
+                context={"granule_name": name, "acquisition_date": observed_date},
+            )
             inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
             available = {(item.get("frequency"), item.get("term")) for item in inventory.get("available_diagonal_terms", [])}
             if (request["frequency"], request["term"]) not in available:
@@ -1057,7 +1064,7 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
                 sys.executable, "export_gcov_layer.py", "--product", str(product_path),
                 "--frequency", request["frequency"], "--term", request["term"],
                 "--maturity", request["maturity"], "--aoi-wkt", request["aoi_wkt"], "--out", str(raster_path),
-            ])
+            ], context={"granule_name": name, "acquisition_date": observed_date})
             exported.append(raster_path)
             # The exporter has already bound the HDF5 source checksum, download
             # receipt and native layer inventory into the COG sidecar. Retain
