@@ -1,6 +1,6 @@
-Temporary trigger marker for the September-only replay with expanded safe mosaic logs.
+Temporary trigger marker for the full two-date retained-mask replay with expanded safe mosaic logs.
 Source NISAR run: 41642281327.
-Observation date: 2026-09-10.
+Observation dates: 2026-07-12 and 2026-09-10.
 Workflow checks out current main and verifies retained COG checksums.
 No raw NISAR HDF5 download.
-No report/mask/AOI coordinate/public artifact upload.
+No private report, mask, AOI coordinate or raster artifact upload.
