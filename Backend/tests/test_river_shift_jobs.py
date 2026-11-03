@@ -261,13 +261,28 @@ def test_river_shift_artifact_download_is_owner_scoped_and_checksum_checked(monk
             "remote_verification": {"status": "PASS"},
         }],
     })
-    monkeypatch.setattr(river_module, "download_private_result", lambda _file_id: ({"size": str(len(result_bytes))}, result_bytes))
+    downloaded_paths = []
+
+    def write_valid_result(_file_id, destination, *, max_bytes):
+        downloaded_paths.append(destination)
+        assert max_bytes == len(result_bytes)
+        destination.write_bytes(result_bytes)
+        return {"bytes": len(result_bytes), "sha256": hashlib.sha256(result_bytes).hexdigest()}
+
+    monkeypatch.setattr(river_module, "download_private_result_to_path", write_valid_result)
     response = api.get(f"/api/river-shift/jobs/{job_id}/artifacts/0")
     assert response.status_code == 200
     assert response.content == result_bytes
     assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["content-length"] == str(len(result_bytes))
+    assert response.headers["x-content-sha256"] == hashlib.sha256(result_bytes).hexdigest()
+    assert downloaded_paths and not downloaded_paths[0].exists()
 
-    monkeypatch.setattr(river_module, "download_private_result", lambda _file_id: ({"size": "4"}, b"oops"))
+    def write_corrupt_result(_file_id, destination, *, max_bytes):
+        destination.write_bytes(b"oops")
+        return {"bytes": 4, "sha256": hashlib.sha256(b"oops").hexdigest()}
+
+    monkeypatch.setattr(river_module, "download_private_result_to_path", write_corrupt_result)
     corrupted = api.get(f"/api/river-shift/jobs/{job_id}/artifacts/0")
     assert corrupted.status_code == 409
 
