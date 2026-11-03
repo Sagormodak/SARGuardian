@@ -176,50 +176,35 @@ def test_download_requires_one_known_collection_maturity(maturity, monkeypatch, 
     assert fake.search_calls == []
     assert fake.download_calls == []
 
-def test_rejected_earthdata_token_falls_back_once_to_username_password(monkeypatch, tmp_path):
-    class TokenRejectingEarthaccess(FakeEarthaccess):
-        def login(self, **kwargs):
-            self.login_calls.append({
-                **kwargs,
-                "token_present": bool(os.environ.get("EARTHDATA_TOKEN")),
-            })
-            if os.environ.get("EARTHDATA_TOKEN"):
-                raise ValueError("do not expose provider detail")
-            return True
+def test_token_auth_rejection_without_password_fallback_fails_safely(monkeypatch, tmp_path, capsys):
+    class TokenRejectingOnDownload(FakeEarthaccess):
+        def __init__(self):
+            super().__init__(results=[_cmr_result()])
+            self._auth = object()
+            self._store = object()
 
-    fake = TokenRejectingEarthaccess(results=[_cmr_result()])
-    monkeypatch.setenv("EARTHDATA_TOKEN", "stale-token-test-value")
-    monkeypatch.setenv("EARTHDATA_USERNAME", "researcher@example.test")
-    monkeypatch.setenv("EARTHDATA_PASSWORD", "password-test-value")
-    monkeypatch.setattr("download_gcov_product._load_earthaccess", lambda: fake)
-
-    result = download_product(_catalogue_row(), tmp_path)
-
-    assert result["downloaded"] is True
-    assert fake.login_calls == [
-        {"strategy": "environment", "token_present": True},
-        {"strategy": "environment", "token_present": False},
-    ]
-    assert os.environ["EARTHDATA_TOKEN"] == "stale-token-test-value"
-
-
-def test_earthdata_token_failure_without_password_fallback_fails_safely(monkeypatch, tmp_path, capsys):
-    class TokenRejectingEarthaccess(FakeEarthaccess):
         def login(self, **kwargs):
             self.login_calls.append(kwargs)
-            raise ValueError("private auth response")
+            return True  # earthaccess accepts the token locally before first protected GET
 
-    fake = TokenRejectingEarthaccess(results=[_cmr_result()])
+        def download(self, granules, *, local_path, threads, show_progress):
+            raise RuntimeError("Download failed for product. Status code: 401")
+
+    fake = TokenRejectingOnDownload()
     monkeypatch.setenv("EARTHDATA_TOKEN", "stale-token-test-value")
     monkeypatch.delenv("EARTHDATA_USERNAME", raising=False)
     monkeypatch.delenv("EARTHDATA_PASSWORD", raising=False)
     monkeypatch.setattr("download_gcov_product._load_earthaccess", lambda: fake)
 
-    with pytest.raises(RuntimeError, match="Earthdata authentication failed"):
+    with pytest.raises(RuntimeError, match="username/password fallback could not download"):
         download_product(_catalogue_row(), tmp_path)
 
     assert fake.login_calls == [{"strategy": "environment"}]
-    assert "stale-token-test-value" not in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "stale-token-test-value" not in output
+    assert not (tmp_path / f"{GRANULE}.h5").exists()
+    assert not list(tmp_path.glob(".*.earthaccess-download"))
+
 
 def test_earthdata_auth_rejection_classifier_only_matches_401_or_403():
     assert _earthdata_http_auth_rejection(RuntimeError("Download failed. Status code: 401")) == 401
