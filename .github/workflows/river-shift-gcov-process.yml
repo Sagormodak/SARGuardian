@@ -30,6 +30,19 @@ on:
         required: true
         type: choice
         options: [PROVISIONAL, BETA]
+      main_band_polarization:
+        description: Exact main-band polarization filter used during catalogue discovery
+        required: false
+        type: string
+      flight_direction:
+        description: Exact orbit-direction filter used during catalogue discovery
+        required: false
+        type: string
+      frame_coverage:
+        description: NISAR filename frame-coverage filter used during catalogue discovery
+        required: true
+        type: choice
+        options: [ALL, FULL, PARTIAL]
       frequency:
         description: Requested NISAR frequency
         required: true
@@ -80,6 +93,9 @@ jobs:
       RIVERSHIFT_END_DATE: ${{ inputs.end_date }}
       RIVERSHIFT_EVENT_DATE: ${{ inputs.event_date }}
       RIVERSHIFT_MATURITY: ${{ inputs.maturity }}
+      RIVERSHIFT_MAIN_BAND_POLARIZATION: ${{ inputs.main_band_polarization }}
+      RIVERSHIFT_FLIGHT_DIRECTION: ${{ inputs.flight_direction }}
+      RIVERSHIFT_FRAME_COVERAGE: ${{ inputs.frame_coverage }}
       RIVERSHIFT_FREQUENCY: ${{ inputs.frequency }}
       RIVERSHIFT_COVARIANCE_TERM: ${{ inputs.covariance_term }}
       RIVERSHIFT_THRESHOLD_METHOD: ${{ inputs.threshold_method }}
