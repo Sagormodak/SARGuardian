@@ -37,7 +37,10 @@ def test_flood_analysis_outputs_masks_metrics_and_provenance(tmp_path, raster_wr
     assert len(result["uncertainty"]["classification_threshold_sensitivity"]["scenarios"]) == 5
     assert result["method"]["threshold_sensitivity_is_statistical_confidence_interval"] is False
     assert len(result["outputs"]["new_water_geojson_sha256"]) == 64
-    assert result["metrics"]["newly_water_covered_area_km2"] > 0\n    assert "event_proximal_water_area_km2" in result["metrics"]\n    assert "peak_water_area_km2" not in result["metrics"]\n    assert "not a measured peak-stage observation" in " ".join(result["quality"]["warnings"])
+    assert result["metrics"]["newly_water_covered_area_km2"] > 0
+    assert "event_proximal_water_area_km2" in result["metrics"]
+    assert "peak_water_area_km2" not in result["metrics"]
+    assert "not a measured peak-stage observation" in " ".join(result["quality"]["warnings"])
     assert (tmp_path / "out" / "newly_water_covered.geojson").exists()
     saved = json.loads((tmp_path / "out" / "river_shift_result.json").read_text())
     assert saved["inputs"]["dates"]["during"] == "2026-07-01"
