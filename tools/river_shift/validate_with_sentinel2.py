@@ -141,12 +141,27 @@ def _items_coverage_fraction(
         return 0.0
 
 
+def _processing_baseline(item: dict[str, Any]) -> str:
+    properties = item.get("properties") or {}
+    # STAC Sentinel-2 extension deprecates s2:processing_baseline in favour
+    # of the common processing:version field. Keep the legacy fallback for
+    # existing Planetary Computer catalogue records.
+    return str(properties.get("processing:version") or properties.get("s2:processing_baseline") or "unknown-baseline")
+
+
+def _generation_time(item: dict[str, Any]) -> str:
+    properties = item.get("properties") or {}
+    # Canonical STAC processing extension field first; Sentinel-2 legacy alias
+    # remains supported for existing catalogue items.
+    return str(properties.get("processing:datetime") or properties.get("s2:generation_time") or "")
+
+
 def _datatake_group_key(item: dict[str, Any]) -> tuple[str, str, str, str]:
     properties = item.get("properties") or {}
     platform = str(properties.get("platform") or properties.get("constellation") or "unknown-platform")
     datatake = properties.get("s2:datatake_id") or properties.get("instrument:datatake_id")
     observed_date = _item_date(item).isoformat()
-    processing_baseline = str(properties.get("s2:processing_baseline") or "unknown-baseline")
+    processing_baseline = _processing_baseline(item)
     # Never mosaic unrelated scenes just because they happen to share a UTC date.
     # If a provider omits datatake metadata, the item remains its own singleton.
     if isinstance(datatake, str) and datatake.strip():
@@ -200,11 +215,11 @@ def select_best_items(
                 continue
             current_properties = current.get("properties") or {}
             candidate_revision = (
-                str(properties.get("s2:generation_time") or ""),
+                _generation_time(row),
                 str(row.get("id") or ""),
             )
             current_revision = (
-                str(current_properties.get("s2:generation_time") or ""),
+                _generation_time(current),
                 str(current.get("id") or ""),
             )
             if candidate_revision > current_revision:
@@ -769,7 +784,7 @@ def run_crosscheck(
             "sentinel2_item_ids": [row.get("id") for row in selected_items],
             "sentinel2_product_uri": properties.get("s2:product_uri"),
             "sentinel2_datatake_id": properties.get("s2:datatake_id") or properties.get("instrument:datatake_id"),
-            "sentinel2_processing_baseline": properties.get("s2:processing_baseline"),
+            "sentinel2_processing_baseline": _processing_baseline(primary),
             "mgrs_tile": properties.get("s2:mgrs_tile"),
             "mgrs_tiles": raster_meta["sentinel2_mgrs_tiles"],
             "sentinel2_tile_count": len(selected_items),
@@ -791,7 +806,7 @@ def run_crosscheck(
             "mndwi_threshold": float(mndwi_threshold),
             "scl_clear_classes_used": list(SCL_VALID_CLASSES),
             "common_grid": "Sentinel-2 B11 20 m grid expanded to the full NISAR extent; adjacent MGRS tiles from one datatake are mosaicked",
-            "tile_mosaic_method": "same platform, datatake ID, acquisition date and processing baseline; duplicate MGRS items retain the latest s2:generation_time; clearest valid tile fills overlaps first",
+            "tile_mosaic_method": "same platform, datatake ID, acquisition date and processing baseline; duplicate MGRS items retain the latest processing:datetime (or legacy s2:generation_time); clearest valid tile fills overlaps first",
             "b03_resampling": "bilinear",
             "b11_resampling": "bilinear",
             "scl_and_nisar_mask_resampling": "nearest",
@@ -823,8 +838,8 @@ def run_crosscheck(
                 {
                     "item_id": row.get("id"),
                     "mgrs_tile": (row.get("properties") or {}).get("s2:mgrs_tile"),
-                    "processing_baseline": (row.get("properties") or {}).get("s2:processing_baseline"),
-                    "generation_time": (row.get("properties") or {}).get("s2:generation_time"),
+                    "processing_baseline": _processing_baseline(row),
+                    "generation_time": _generation_time(row) or None,
                     "cloud_cover_percent": float((row.get("properties") or {}).get("eo:cloud_cover")),
                     "unsigned_assets": {
                         key: _asset_href(row, key)
