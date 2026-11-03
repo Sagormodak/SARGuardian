@@ -1,6 +1,6 @@
 name: RiverShift NISAR GCOV processing
 
-run-name: RiverShift ${{{ inputs.job_id }}
+run-name: RiverShift ${{ inputs.job_id }}
 
 on:
   workflow_dispatch:
@@ -79,7 +79,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: river-shift-${{{ inputs.job_id }}
+  group: river-shift-${{ inputs.job_id }}
   cancel-in-progress: false
 
 jobs:
@@ -88,49 +88,49 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     outputs:
-      batch_1_matrix: ${{{ steps.prepare.outputs.batch_1_matrix }}
-      batch_2_matrix: ${{{ steps.prepare.outputs.batch_2_matrix }}
-      batch_3_matrix: ${{{ steps.prepare.outputs.batch_3_matrix }}
-      batch_4_matrix: ${{{ steps.prepare.outputs.batch_4_matrix }}
-      batch_1_count: ${{{ steps.prepare.outputs.batch_1_count }}
-      batch_2_count: ${{{ steps.prepare.outputs.batch_2_count }}
-      batch_3_count: ${{{ steps.prepare.outputs.batch_3_count }}
-      batch_4_count: ${{{ steps.prepare.outputs.batch_4_count }}
-      batch_count: ${{{ steps.prepare.outputs.batch_count }}
-      selected_count: ${{{ steps.prepare.outputs.selected_count }}
-      callback_sequence: ${{{ steps.prepare.outputs.callback_sequence }}
+      batch_1_matrix: ${{ steps.prepare.outputs.batch_1_matrix }}
+      batch_2_matrix: ${{ steps.prepare.outputs.batch_2_matrix }}
+      batch_3_matrix: ${{ steps.prepare.outputs.batch_3_matrix }}
+      batch_4_matrix: ${{ steps.prepare.outputs.batch_4_matrix }}
+      batch_1_count: ${{ steps.prepare.outputs.batch_1_count }}
+      batch_2_count: ${{ steps.prepare.outputs.batch_2_count }}
+      batch_3_count: ${{ steps.prepare.outputs.batch_3_count }}
+      batch_4_count: ${{ steps.prepare.outputs.batch_4_count }}
+      batch_count: ${{ steps.prepare.outputs.batch_count }}
+      selected_count: ${{ steps.prepare.outputs.selected_count }}
+      callback_sequence: ${{ steps.prepare.outputs.callback_sequence }}
     env:
       RIVERSHIFT_WORKER_PHASE: prepare
-      RIVERSHIFT_JOB_ID: ${{{ inputs.job_id }}
-      RIVERSHIFT_AOI_WKT: ${{{ inputs.aoi_wkt }}
-      RIVERSHIFT_START_DATE: ${{{ inputs.start_date }}
-      RIVERSHIFT_END_DATE: ${{{ inputs.end_date }}
-      RIVERSHIFT_EVENT_DATE: ${{{ inputs.event_date }}
-      RIVERSHIFT_MATURITY: ${{{ inputs.maturity }}
-      RIVERSHIFT_MAIN_BAND_POLARIZATION: ${{{ inputs.main_band_polarization }}
-      RIVERSHIFT_FLIGHT_DIRECTION: ${{{ inputs.flight_direction }}
-      RIVERSHIFT_FRAME_COVERAGE: ${{{ inputs.frame_coverage }}
-      RIVERSHIFT_FREQUENCY: ${{{ inputs.frequency }}
-      RIVERSHIFT_COVARIANCE_TERM: ${{{ inputs.covariance_term }}
-      RIVERSHIFT_THRESHOLD_METHOD: ${{{ inputs.threshold_method }}
-      RIVERSHIFT_THRESHOLD_DB: ${{{ inputs.threshold_db }}
-      RIVERSHIFT_GRANULE_NAMES_JSON: ${{{ inputs.granule_names_json }}
-      RIVERSHIFT_REQUEST_FINGERPRINT: ${{{ inputs.request_fingerprint }}
-      RIVERSHIFT_CALLBACK_URL: ${{{ inputs.callback_url }}
-      RIVERSHIFT_CALLBACK_SECRET: ${{{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
-      EARTHDATA_TOKEN: ${{{ secrets.EARTHDATA_TOKEN }}
-      EARTHDATA_USERNAME: ${{{ secrets.EARTHDATA_USERNAME }}
-      EARTHDATA_PASSWORD: ${{{ secrets.EARTHDATA_PASSWORD }}
-      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
-      GOOGLE_DRIVE_REFRESH_TOKEN: ${{{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
-      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_AOI_WKT: ${{ inputs.aoi_wkt }}
+      RIVERSHIFT_START_DATE: ${{ inputs.start_date }}
+      RIVERSHIFT_END_DATE: ${{ inputs.end_date }}
+      RIVERSHIFT_EVENT_DATE: ${{ inputs.event_date }}
+      RIVERSHIFT_MATURITY: ${{ inputs.maturity }}
+      RIVERSHIFT_MAIN_BAND_POLARIZATION: ${{ inputs.main_band_polarization }}
+      RIVERSHIFT_FLIGHT_DIRECTION: ${{ inputs.flight_direction }}
+      RIVERSHIFT_FRAME_COVERAGE: ${{ inputs.frame_coverage }}
+      RIVERSHIFT_FREQUENCY: ${{ inputs.frequency }}
+      RIVERSHIFT_COVARIANCE_TERM: ${{ inputs.covariance_term }}
+      RIVERSHIFT_THRESHOLD_METHOD: ${{ inputs.threshold_method }}
+      RIVERSHIFT_THRESHOLD_DB: ${{ inputs.threshold_db }}
+      RIVERSHIFT_GRANULE_NAMES_JSON: ${{ inputs.granule_names_json }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_CALLBACK_URL: ${{ inputs.callback_url }}
+      RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
       RIVERSHIFT_PREPARE_OUTPUT_DIR: prepared
       PYTHONUNBUFFERED: "1"
     steps:
       - name: Check out backend worker source
         uses: actions/checkout@v4
         with:
-          ref: ${{{ github.sha }}
+          ref: ${{ github.sha }}
       - name: Install pinned geospatial runtime
         uses: mamba-org/setup-micromamba@v3
         with:
@@ -172,7 +172,7 @@ jobs:
       - name: Upload immutable preparation manifest
         uses: actions/upload-artifact@v4
         with:
-          name: rivershift-prepared-${{{ inputs.job_id }}
+          name: rivershift-prepared-${{ inputs.job_id }}
           path: prepared/
           if-no-files-found: error
           retention-days: 1
@@ -183,7 +183,7 @@ jobs:
         run: echo "::notice::RiverShift prepares up to 15 independent product runners per batch. The next batch waits for the preceding batch barrier."
 
   batch_1:
-    name: Batch 1 · product ${{{ matrix.product_index }}/${{{ matrix.total_products }}
+    name: Batch 1 · product ${{ matrix.product_index }}/${{ matrix.total_products }}
     needs: prepare
     if: needs.prepare.result == 'success' && needs.prepare.outputs.batch_1_count != '0'
     runs-on: ubuntu-24.04
@@ -192,30 +192,30 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 15
-      matrix: ${{{ fromJSON(needs.prepare.outputs.batch_1_matrix) }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.batch_1_matrix) }}
     env:
       RIVERSHIFT_WORKER_PHASE: product
-      RIVERSHIFT_JOB_ID: ${{{ inputs.job_id }}
-      RIVERSHIFT_REQUEST_FINGERPRINT: ${{{ inputs.request_fingerprint }}
-      RIVERSHIFT_GRANULE_NAME: ${{{ matrix.granule_name }}
-      RIVERSHIFT_ACQUISITION_DATE: ${{{ matrix.acquisition_date }}
-      RIVERSHIFT_BATCH_NUMBER: ${{{ matrix.batch_number }}
-      RIVERSHIFT_BATCH_COUNT: ${{{ matrix.batch_count }}
-      RIVERSHIFT_PRODUCT_INDEX: ${{{ matrix.product_index }}
-      RIVERSHIFT_TOTAL_PRODUCTS: ${{{ matrix.total_products }}
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_GRANULE_NAME: ${{ matrix.granule_name }}
+      RIVERSHIFT_ACQUISITION_DATE: ${{ matrix.acquisition_date }}
+      RIVERSHIFT_BATCH_NUMBER: ${{ matrix.batch_number }}
+      RIVERSHIFT_BATCH_COUNT: ${{ matrix.batch_count }}
+      RIVERSHIFT_PRODUCT_INDEX: ${{ matrix.product_index }}
+      RIVERSHIFT_TOTAL_PRODUCTS: ${{ matrix.total_products }}
       RIVERSHIFT_PREPARED_DIR: prepared
       RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output
-      EARTHDATA_TOKEN: ${{{ secrets.EARTHDATA_TOKEN }}
-      EARTHDATA_USERNAME: ${{{ secrets.EARTHDATA_USERNAME }}
-      EARTHDATA_PASSWORD: ${{{ secrets.EARTHDATA_PASSWORD }}
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{{ github.sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
-          name: rivershift-prepared-${{{ inputs.job_id }}
+          name: rivershift-prepared-${{ inputs.job_id }}
           path: prepared/
       - uses: mamba-org/setup-micromamba@v3
         with:
@@ -236,7 +236,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rivershift-product-b01-${{{ matrix.granule_name }}
+          name: rivershift-product-b01-${{ matrix.granule_name }}
           path: product-output/
           if-no-files-found: warn
           retention-days: 1
@@ -249,25 +249,25 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
-      callback_sequence: ${{{ steps.report.outputs.callback_sequence }}
+      callback_sequence: ${{ steps.report.outputs.callback_sequence }}
     env:
       RIVERSHIFT_WORKER_PHASE: report-batch
-      RIVERSHIFT_JOB_ID: ${{{ inputs.job_id }}
-      RIVERSHIFT_REQUEST_FINGERPRINT: ${{{ inputs.request_fingerprint }}
-      RIVERSHIFT_CALLBACK_URL: ${{{ inputs.callback_url }}
-      RIVERSHIFT_CALLBACK_SECRET: ${{{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_CALLBACK_URL: ${{ inputs.callback_url }}
+      RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
       RIVERSHIFT_BATCH_NUMBER: "1"
-      RIVERSHIFT_CALLBACK_SEQUENCE: ${{{ needs.prepare.outputs.callback_sequence }}
+      RIVERSHIFT_CALLBACK_SEQUENCE: ${{ needs.prepare.outputs.callback_sequence }}
       RIVERSHIFT_PREPARED_DIR: prepared
       RIVERSHIFT_BATCH_RESULTS_DIR: batch-results
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{{ github.sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
-          name: rivershift-prepared-${{{ inputs.job_id }}
+          name: rivershift-prepared-${{ inputs.job_id }}
           path: prepared/
       - name: Download completed product receipts
         continue-on-error: true
@@ -287,7 +287,7 @@ jobs:
         run: python -u tools/river_shift/batched_gcov_job.py
 
   batch_2:
-    name: Batch 2 · product ${{{ matrix.product_index }}/${{{ matrix.total_products }}
+    name: Batch 2 · product ${{ matrix.product_index }}/${{ matrix.total_products }}
     needs: [prepare, batch_1_status]
     if: needs.prepare.result == 'success' && needs.batch_1_status.result == 'success' && needs.prepare.outputs.batch_2_count != '0'
     runs-on: ubuntu-24.04
@@ -296,30 +296,30 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 15
-      matrix: ${{{ fromJSON(needs.prepare.outputs.batch_2_matrix) }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.batch_2_matrix) }}
     env:
       RIVERSHIFT_WORKER_PHASE: product
-      RIVERSHIFT_JOB_ID: ${{{ inputs.job_id }}
-      RIVERSHIFT_REQUEST_FINGERPRINT: ${{{ inputs.request_fingerprint }}
-      RIVERSHIFT_GRANULE_NAME: ${{{ matrix.granule_name }}
-      RIVERSHIFT_ACQUISITION_DATE: ${{{ matrix.acquisition_date }}
-      RIVERSHIFT_BATCH_NUMBER: ${{{ matrix.batch_number }}
-      RIVERSHIFT_BATCH_COUNT: ${{{ matrix.batch_count }}
-      RIVERSHIFT_PRODUCT_INDEX: ${{{ matrix.product_index }}
-      RIVERSHIFT_TOTAL_PRODUCTS: ${{{ matrix.total_products }}
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_GRANULE_NAME: ${{ matrix.granule_name }}
+      RIVERSHIFT_ACQUISITION_DATE: ${{ matrix.acquisition_date }}
+      RIVERSHIFT_BATCH_NUMBER: ${{ matrix.batch_number }}
+      RIVERSHIFT_BATCH_COUNT: ${{ matrix.batch_count }}
+      RIVERSHIFT_PRODUCT_INDEX: ${{ matrix.product_index }}
+      RIVERSHIFT_TOTAL_PRODUCTS: ${{ matrix.total_products }}
       RIVERSHIFT_PREPARED_DIR: prepared
       RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output
-      EARTHDATA_TOKEN: ${{{ secrets.EARTHDATA_TOKEN }}
-      EARTHDATA_USERNAME: ${{{ secrets.EARTHDATA_USERNAME }}
-      EARTHDATA_PASSWORD: ${{{ secrets.EARTHDATA_PASSWORD }}
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{{ github.sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
-          name: rivershift-prepared-${{{ inputs.job_id }}
+          name: rivershift-prepared-${{ inputs.job_id }}
           path: prepared/
       - uses: mamba-org/setup-micromamba@v3
         with:
@@ -340,7 +340,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rivershift-product-b02-${{{ matrix.granule_name }}
+          name: rivershift-product-b02-${{ matrix.granule_name }}
           path: product-output/
           if-no-files-found: warn
           retention-days: 1
@@ -353,25 +353,25 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
-      callback_sequence: ${{{ steps.report.outputs.callback_sequence }}
+      callback_sequence: ${{ steps.report.outputs.callback_sequence }}
     env:
       RIVERSHIFT_WORKER_PHASE: report-batch
-      RIVERSHIFT_JOB_ID: ${{{ inputs.job_id }}
-      RIVERSHIFT_REQUEST_FINGERPRINT: ${{{ inputs.request_fingerprint }}
-      RIVERSHIFT_CALLBACK_URL: ${{{ inputs.callback_url }}
-      RIVERSHIFT_CALLBACK_SECRET: ${{{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_CALLBACK_URL: ${{ inputs.callback_url }}
+      RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
       RIVERSHIFT_BATCH_NUMBER: "2"
-      RIVERSHIFT_CALLBACK_SEQUENCE: ${{{ needs.batch_1_status.outputs.callback_sequence }}
+      RIVERSHIFT_CALLBACK_SEQUENCE: ${{ needs.batch_1_status.outputs.callback_sequence }}
       RIVERSHIFT_PREPARED_DIR: prepared
       RIVERSHIFT_BATCH_RESULTS_DIR: batch-results
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{{ github.sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
-          name: rivershift-prepared-${{{ inputs.job_id }}
+          name: rivershift-prepared-${{ inputs.job_id }}
           path: prepared/
       - name: Download completed product receipts
         continue-on-error: true
@@ -391,7 +391,7 @@ jobs:
         run: python -u tools/river_shift/batched_gcov_job.py
 
   batch_3:
-    name: Batch 3 · product ${{{ matrix.product_index }}/${{{ matrix.total_products }}
+    name: Batch 3 · product ${{ matrix.product_index }}/${{ matrix.total_products }}
     needs: [prepare, batch_2_status]
     if: needs.prepare.result == 'success' && needs.batch_2_status.result == 'success' && needs.prepare.outputs.batch_3_count != '0'
     runs-on: ubuntu-24.04
@@ -400,30 +400,30 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 15
-      matrix: ${{{ fromJSON(needs.prepare.outputs.batch_3_matrix) }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.batch_3_matrix) }}
     env:
       RIVERSHIFT_WORKER_PHASE: product
-      RIVERSHIFT_JOB_ID: ${{{ inputs.job_id }}
-      RIVERSHIFT_REQUEST_FINGERPRINT: ${{{ inputs.request_fingerprint }}
-      RIVERSHIFT_GRANULE_NAME: ${{{ matrix.granule_name }}
-      RIVERSHIFT_ACQUISITION_DATE: ${{{ matrix.acquisition_date }}
-      RIVERSHIFT_BATCH_NUMBER: ${{{ matrix.batch_number }}
-      RIVERSHIFT_BATCH_COUNT: ${{{ matrix.batch_count }}
-      RIVERSHIFT_PRODUCT_INDEX: ${{{ matrix.product_index }}
-      RIVERSHIFT_TOTAL_PRODUCTS: ${{{ matrix.total_products }}
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_GRANULE_NAME: ${{ matrix.granule_name }}
+      RIVERSHIFT_ACQUISITION_DATE: ${{ matrix.acquisition_date }}
+      RIVERSHIFT_BATCH_NUMBER: ${{ matrix.batch_number }}
+      RIVERSHIFT_BATCH_COUNT: ${{ matrix.batch_count }}
+      RIVERSHIFT_PRODUCT_INDEX: ${{ matrix.product_index }}
+      RIVERSHIFT_TOTAL_PRODUCTS: ${{ matrix.total_products }}
       RIVERSHIFT_PREPARED_DIR: prepared
       RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output
-      EARTHDATA_TOKEN: ${{{ secrets.EARTHDATA_TOKEN }}
-      EARTHDATA_USERNAME: ${{{ secrets.EARTHDATA_USERNAME }}
-      EARTHDATA_PASSWORD: ${{{ secrets.EARTHDATA_PASSWORD }}
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{{ github.sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
-          name: rivershift-prepared-${{{ inputs.job_id }}
+          name: rivershift-prepared-${{ inputs.job_id }}
           path: prepared/
       - uses: mamba-org/setup-micromamba@v3
         with:
@@ -444,7 +444,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rivershift-product-b03-${{{ matrix.granule_name }}
+          name: rivershift-product-b03-${{ matrix.granule_name }}
           path: product-output/
           if-no-files-found: warn
           retention-days: 1
@@ -457,25 +457,25 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
-      callback_sequence: ${{{ steps.report.outputs.callback_sequence }}
+      callback_sequence: ${{ steps.report.outputs.callback_sequence }}
     env:
       RIVERSHIFT_WORKER_PHASE: report-batch
-      RIVERSHIFT_JOB_ID: ${{{ inputs.job_id }}
-      RIVERSHIFT_REQUEST_FINGERPRINT: ${{{ inputs.request_fingerprint }}
-      RIVERSHIFT_CALLBACK_URL: ${{{ inputs.callback_url }}
-      RIVERSHIFT_CALLBACK_SECRET: ${{{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_CALLBACK_URL: ${{ inputs.callback_url }}
+      RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
       RIVERSHIFT_BATCH_NUMBER: "3"
-      RIVERSHIFT_CALLBACK_SEQUENCE: ${{{ needs.batch_2_status.outputs.callback_sequence }}
+      RIVERSHIFT_CALLBACK_SEQUENCE: ${{ needs.batch_2_status.outputs.callback_sequence }}
       RIVERSHIFT_PREPARED_DIR: prepared
       RIVERSHIFT_BATCH_RESULTS_DIR: batch-results
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{{ github.sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
-          name: rivershift-prepared-${{{ inputs.job_id }}
+          name: rivershift-prepared-${{ inputs.job_id }}
           path: prepared/
       - name: Download completed product receipts
         continue-on-error: true
@@ -495,7 +495,7 @@ jobs:
         run: python -u tools/river_shift/batched_gcov_job.py
 
   batch_4:
-    name: Batch 4 · product ${{{ matrix.product_index }}/${{{ matrix.total_products }}
+    name: Batch 4 · product ${{ matrix.product_index }}/${{ matrix.total_products }}
     needs: [prepare, batch_3_status]
     if: needs.prepare.result == 'success' && needs.batch_3_status.result == 'success' && needs.prepare.outputs.batch_4_count != '0'
     runs-on: ubuntu-24.04
@@ -504,30 +504,30 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 15
-      matrix: ${{{ fromJSON(needs.prepare.outputs.batch_4_matrix) }}
+      matrix: ${{ fromJSON(needs.prepare.outputs.batch_4_matrix) }}
     env:
       RIVERSHIFT_WORKER_PHASE: product
-      RIVERSHIFT_JOB_ID: ${{{ inputs.job_id }}
-      RIVERSHIFT_REQUEST_FINGERPRINT: ${{{ inputs.request_fingerprint }}
-      RIVERSHIFT_GRANULE_NAME: ${{{ matrix.granule_name }}
-      RIVERSHIFT_ACQUISITION_DATE: ${{{ matrix.acquisition_date }}
-      RIVERSHIFT_BATCH_NUMBER: ${{{ matrix.batch_number }}
-      RIVERSHIFT_BATCH_COUNT: ${{{ matrix.batch_count }}
-      RIVERSHIFT_PRODUCT_INDEX: ${{{ matrix.product_index }}
-      RIVERSHIFT_TOTAL_PRODUCTS: ${{{ matrix.total_products }}
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_GRANULE_NAME: ${{ matrix.granule_name }}
+      RIVERSHIFT_ACQUISITION_DATE: ${{ matrix.acquisition_date }}
+      RIVERSHIFT_BATCH_NUMBER: ${{ matrix.batch_number }}
+      RIVERSHIFT_BATCH_COUNT: ${{ matrix.batch_count }}
+      RIVERSHIFT_PRODUCT_INDEX: ${{ matrix.product_index }}
+      RIVERSHIFT_TOTAL_PRODUCTS: ${{ matrix.total_products }}
       RIVERSHIFT_PREPARED_DIR: prepared
       RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output
-      EARTHDATA_TOKEN: ${{{ secrets.EARTHDATA_TOKEN }}
-      EARTHDATA_USERNAME: ${{{ secrets.EARTHDATA_USERNAME }}
-      EARTHDATA_PASSWORD: ${{{ secrets.EARTHDATA_PASSWORD }}
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{{ github.sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
-          name: rivershift-prepared-${{{ inputs.job_id }}
+          name: rivershift-prepared-${{ inputs.job_id }}
           path: prepared/
       - uses: mamba-org/setup-micromamba@v3
         with:
@@ -548,7 +548,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rivershift-product-b04-${{{ matrix.granule_name }}
+          name: rivershift-product-b04-${{ matrix.granule_name }}
           path: product-output/
           if-no-files-found: warn
           retention-days: 1
@@ -561,25 +561,25 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
-      callback_sequence: ${{{ steps.report.outputs.callback_sequence }}
+      callback_sequence: ${{ steps.report.outputs.callback_sequence }}
     env:
       RIVERSHIFT_WORKER_PHASE: report-batch
-      RIVERSHIFT_JOB_ID: ${{{ inputs.job_id }}
-      RIVERSHIFT_REQUEST_FINGERPRINT: ${{{ inputs.request_fingerprint }}
-      RIVERSHIFT_CALLBACK_URL: ${{{ inputs.callback_url }}
-      RIVERSHIFT_CALLBACK_SECRET: ${{{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_CALLBACK_URL: ${{ inputs.callback_url }}
+      RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
       RIVERSHIFT_BATCH_NUMBER: "4"
-      RIVERSHIFT_CALLBACK_SEQUENCE: ${{{ needs.batch_3_status.outputs.callback_sequence }}
+      RIVERSHIFT_CALLBACK_SEQUENCE: ${{ needs.batch_3_status.outputs.callback_sequence }}
       RIVERSHIFT_PREPARED_DIR: prepared
       RIVERSHIFT_BATCH_RESULTS_DIR: batch-results
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{{ github.sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
-          name: rivershift-prepared-${{{ inputs.job_id }}
+          name: rivershift-prepared-${{ inputs.job_id }}
           path: prepared/
       - name: Download completed product receipts
         continue-on-error: true
@@ -761,41 +761,41 @@ jobs:
     timeout-minutes: 240
     env:
       RIVERSHIFT_WORKER_PHASE: assemble
-      RIVERSHIFT_JOB_ID: ${{{ inputs.job_id }}
-      RIVERSHIFT_AOI_WKT: ${{{ inputs.aoi_wkt }}
-      RIVERSHIFT_START_DATE: ${{{ inputs.start_date }}
-      RIVERSHIFT_END_DATE: ${{{ inputs.end_date }}
-      RIVERSHIFT_EVENT_DATE: ${{{ inputs.event_date }}
-      RIVERSHIFT_MATURITY: ${{{ inputs.maturity }}
-      RIVERSHIFT_MAIN_BAND_POLARIZATION: ${{{ inputs.main_band_polarization }}
-      RIVERSHIFT_FLIGHT_DIRECTION: ${{{ inputs.flight_direction }}
-      RIVERSHIFT_FRAME_COVERAGE: ${{{ inputs.frame_coverage }}
-      RIVERSHIFT_FREQUENCY: ${{{ inputs.frequency }}
-      RIVERSHIFT_COVARIANCE_TERM: ${{{ inputs.covariance_term }}
-      RIVERSHIFT_THRESHOLD_METHOD: ${{{ inputs.threshold_method }}
-      RIVERSHIFT_THRESHOLD_DB: ${{{ inputs.threshold_db }}
-      RIVERSHIFT_GRANULE_NAMES_JSON: ${{{ inputs.granule_names_json }}
-      RIVERSHIFT_REQUEST_FINGERPRINT: ${{{ inputs.request_fingerprint }}
-      RIVERSHIFT_CALLBACK_URL: ${{{ inputs.callback_url }}
-      RIVERSHIFT_CALLBACK_SECRET: ${{{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
-      RIVERSHIFT_CALLBACK_SEQUENCE: ${{{ needs.retry_status.outputs.callback_sequence }}
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_AOI_WKT: ${{ inputs.aoi_wkt }}
+      RIVERSHIFT_START_DATE: ${{ inputs.start_date }}
+      RIVERSHIFT_END_DATE: ${{ inputs.end_date }}
+      RIVERSHIFT_EVENT_DATE: ${{ inputs.event_date }}
+      RIVERSHIFT_MATURITY: ${{ inputs.maturity }}
+      RIVERSHIFT_MAIN_BAND_POLARIZATION: ${{ inputs.main_band_polarization }}
+      RIVERSHIFT_FLIGHT_DIRECTION: ${{ inputs.flight_direction }}
+      RIVERSHIFT_FRAME_COVERAGE: ${{ inputs.frame_coverage }}
+      RIVERSHIFT_FREQUENCY: ${{ inputs.frequency }}
+      RIVERSHIFT_COVARIANCE_TERM: ${{ inputs.covariance_term }}
+      RIVERSHIFT_THRESHOLD_METHOD: ${{ inputs.threshold_method }}
+      RIVERSHIFT_THRESHOLD_DB: ${{ inputs.threshold_db }}
+      RIVERSHIFT_GRANULE_NAMES_JSON: ${{ inputs.granule_names_json }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_CALLBACK_URL: ${{ inputs.callback_url }}
+      RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+      RIVERSHIFT_CALLBACK_SEQUENCE: ${{ needs.retry_status.outputs.callback_sequence }}
       RIVERSHIFT_PREPARED_DIR: prepared
       RIVERSHIFT_PRODUCT_ARTIFACTS_DIR: product-artifacts
       RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR: retry-product-artifacts
-      EARTHDATA_TOKEN: ${{{ secrets.EARTHDATA_TOKEN }}
-      EARTHDATA_USERNAME: ${{{ secrets.EARTHDATA_USERNAME }}
-      EARTHDATA_PASSWORD: ${{{ secrets.EARTHDATA_PASSWORD }}
-      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
-      GOOGLE_DRIVE_REFRESH_TOKEN: ${{{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
-      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{{ github.sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
-          name: rivershift-prepared-${{{ inputs.job_id }}
+          name: rivershift-prepared-${{ inputs.job_id }}
           path: prepared/
       - name: Download every batch's COGs and provenance receipts
         continue-on-error: true
