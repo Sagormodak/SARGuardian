@@ -93,8 +93,9 @@
 @media (max-width: 1000px) { .rs-hero { grid-template-columns: 1fr; }.rs-hero-visual { min-height: 200px; }.rs-workspace-grid { grid-template-columns: 1fr; } }
 @media (max-width: 620px) { .river-shift-page { padding-inline: 14px; }.rs-header { flex-wrap: wrap; padding: 13px 0; }.rs-brand { margin-left: 0; }.rs-header-actions { width: 100%; justify-content: center; }.rs-challenge-tag { width: 100%; text-align: center; }.rs-panel { padding: 16px; }.rs-fields-two, .rs-upload-grid { grid-template-columns: 1fr; }.rs-section-heading { flex-direction: column; }.rs-hero { margin-top: 30px; }.rs-map { min-height: 360px; }.rs-footer { flex-direction: column; } }
 
-.rs-data-sources { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin: 12px 0 16px; padding: 11px; border: 1px solid rgba(149, 194, 208, .14); border-radius: 10px; background: rgba(16, 37, 52, .48); }
+.rs-data-sources { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 9px; margin: 12px 0 16px; padding: 11px; border: 1px solid rgba(149, 194, 208, .14); border-radius: 10px; background: rgba(16, 37, 52, .48); }
 .rs-data-sources > div { display: grid; align-content: start; gap: 5px; min-width: 0; }
 .rs-data-sources strong { color: #9fe7dc; font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
 .rs-data-sources span { color: #91aebb; font-size: 10px; line-height: 1.55; }
+@media (max-width: 960px) { .rs-data-sources { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 760px) { .rs-data-sources { grid-template-columns: 1fr; } }
