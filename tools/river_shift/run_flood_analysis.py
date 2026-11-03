@@ -14,7 +14,7 @@ def main() -> int:
     parser.add_argument("--during", required=True, help="First qualifying event-proximal GCOV gamma0 acquisition; not necessarily peak flood stage.")
     parser.add_argument("--after", required=True, help="Post-event recovery GCOV gamma0 GeoTIFF.")
     parser.add_argument("--before-date", required=True)
-    parser.add_argument("--during-date", required=True, help="Actual acquisition date of the event-proximal image; not assumed flood-peak date."
+    parser.add_argument("--during-date", required=True, help="Actual acquisition date of the event-proximal image; not assumed flood-peak date.")
     parser.add_argument("--after-date", required=True)
     threshold = parser.add_mutually_exclusive_group(required=True)
     threshold.add_argument("--threshold-db", type=float, help="User-selected common threshold in dB.")
