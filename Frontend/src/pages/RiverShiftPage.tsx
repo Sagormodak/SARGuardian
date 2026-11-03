@@ -61,6 +61,8 @@ let mapsConfigured = false;
 
 function formatDate(value?: string | null): string {
   if (!value) return 'Not supplied';
+  const compact = /^(\d{4})(\d{2})(\d{2})T\d{6}(?:\.\d+)?Z?$/.exec(value);
+  if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString().slice(0, 10);
 }
@@ -400,6 +402,14 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       setRiverJobError('Add the event date from your independent event record before processing.');
       return;
     }
+    if (!startDate || !endDate || eventDate < startDate || eventDate > endDate) {
+      setRiverJobError('The event date must fall inside the selected NISAR observation window.');
+      return;
+    }
+    if (!catalogueIsCurrent) {
+      setRiverJobError('The catalogue results no longer match the current AOI, dates or discovery filters. Search the GCOV archive again before processing.');
+      return;
+    }
     if (maturity === 'ALL') {
       setRiverJobError('Choose one maturity. BETA and PROVISIONAL products cannot be mixed in a scientific time series.');
       return;
@@ -419,6 +429,9 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     try {
       const job = await createRiverShiftJob({
         aoiWkt, startDate, endDate, eventDate, maturity,
+        mainBandPolarization: polarization || null,
+        flightDirection: direction || null,
+        frameCoverage,
         frequency: scienceFrequency, covarianceTerm, thresholdMethod,
         ...(thresholdMethod === 'manual' ? { thresholdDb: Number(thresholdDb) } : {}),
         idempotencyKey: crypto.randomUUID().replace(/-/g, ''),
@@ -451,7 +464,17 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     event.preventDefault();
     setCatalogueError('');
     setCatalogue(null);
+    setCatalogueQueryKey('');
     setCatalogueBusy(true);
+    const queryKey = JSON.stringify({
+      aoiWkt: aoiWkt.trim(),
+      startDate,
+      endDate,
+      maturity,
+      polarization: polarization || null,
+      direction: direction || null,
+      frameCoverage,
+    });
     try {
       const coordinates = parseWktPolygon(aoiWkt);
       const response = await fetch(API_BASE + '/api/river-shift/catalog/search', {
@@ -474,6 +497,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
         throw new Error(detail);
       }
       setCatalogue(payload as CatalogueResponse);
+      setCatalogueQueryKey(queryKey);
       setCatalogueQueryKey(queryKey);
     } catch (error) {
       setCatalogueError(error instanceof Error ? error.message : 'Could not search the ASF catalogue.');
