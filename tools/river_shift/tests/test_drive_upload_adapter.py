@@ -410,10 +410,14 @@ def test_drive_stage_logger_emits_pass_and_failure_without_suppressing_errors(ca
     assert '"error": "expected safe error"' in output
 
 
-def test_oauth_refresh_failure_reports_safe_http_status_and_provider_error(capsys):
+def test_oauth_refresh_failure_reports_safe_http_status_subtype_and_recovery_guidance(capsys):
     class OAuthSession:
         def post(self, *_args, **_kwargs):
-            return FakeResponse(400, payload={"error": "invalid_grant", "error_description": "sensitive details are omitted"})
+            return FakeResponse(400, payload={
+                "error": "invalid_grant",
+                "error_subtype": "invalid_rapt",
+                "error_description": "sensitive details are omitted",
+            })
 
     drive = DriveClient.__new__(DriveClient)
     drive.session = OAuthSession()
@@ -424,11 +428,17 @@ def test_oauth_refresh_failure_reports_safe_http_status_and_provider_error(capsy
         "refresh_token": "do-not-log-this-refresh-token",
     })()
 
-    with pytest.raises(DriveUploadError, match="HTTP 400; oauth_error=invalid_grant"):
+    with pytest.raises(DriveUploadError, match="invalid_rapt") as error:
         drive._refresh_access_token()
+
+    assert "re-authorize the configured drive account" in str(error.value).lower()
+    assert "GOOGLE_DRIVE_OAUTH_CLIENT_JSON" in str(error.value)
+    assert "GOOGLE_DRIVE_REFRESH_TOKEN" in str(error.value)
+    assert "Workspace session-control policy" in str(error.value)
 
     output = capsys.readouterr().out
     assert "invalid_grant" in output
+    assert "oauth_error_subtype=invalid_rapt" in output
     assert "do-not-log-this-refresh-token" not in output
     assert "sensitive details are omitted" not in output
     assert '"status": "FAIL"' in output
