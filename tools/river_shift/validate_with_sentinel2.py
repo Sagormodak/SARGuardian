@@ -19,7 +19,7 @@ from typing import Any
 import numpy as np
 import rasterio
 import requests
-from pyproj import CRS, Transformer
+from pyproj import CRS, Geod, Transformer
 from rasterio.enums import Resampling
 from rasterio.transform import Affine
 from rasterio.vrt import WarpedVRT
@@ -113,24 +113,28 @@ def _items_coverage_fraction(
     aoi_geometry_wgs84: Any,
     analysis_crs: CRS,
 ) -> float:
-    """Measure the union of same-datatake tile footprints against the AOI."""
+    """Measure same-datatake tile union coverage without projection-edge gaps."""
     try:
-        project = Transformer.from_crs("EPSG:4326", analysis_crs, always_xy=True).transform
-        aoi_projected = transform_geometry(project, aoi_geometry_wgs84)
-        if aoi_projected.is_empty or aoi_projected.area <= 0:
-            return 0.0
         footprints = []
         for item in items:
             geometry = item.get("geometry")
             if not isinstance(geometry, dict):
                 continue
-            projected = transform_geometry(project, shape(geometry))
-            if not projected.is_empty:
-                footprints.append(projected)
-        if not footprints:
+            footprint = shape(geometry)
+            if not footprint.is_empty:
+                footprints.append(footprint)
+        if not footprints or aoi_geometry_wgs84.is_empty:
             return 0.0
-        covered = unary_union(footprints).intersection(aoi_projected)
-        return float(min(1.0, max(0.0, covered.area / aoi_projected.area)))
+        # GeoJSON/STAC footprints share longitude/latitude edges. A union in
+        # geographic coordinates preserves shared tile boundaries exactly;
+        # use ellipsoidal WGS84 area rather than degree-squared planar area.
+        covered = unary_union(footprints).intersection(aoi_geometry_wgs84)
+        geod = Geod(ellps="WGS84")
+        aoi_area = abs(float(geod.geometry_area_perimeter(aoi_geometry_wgs84)[0]))
+        covered_area = abs(float(geod.geometry_area_perimeter(covered)[0]))
+        if not math.isfinite(aoi_area) or aoi_area <= 0 or not math.isfinite(covered_area):
+            return 0.0
+        return float(min(1.0, max(0.0, covered_area / aoi_area)))
     except Exception:
         return 0.0
 
@@ -403,6 +407,7 @@ def _read_cross_sensor_arrays(
                 f"NISAR mask CRS must be projected in metres; found axis units {units!r}."
             )
         nisar_transform = nisar.transform
+        nisar_bounds_native = tuple(nisar.bounds)
         nisar_bounds_wgs84 = transform_bounds(nisar.crs, "EPSG:4326", *nisar.bounds, densify_pts=21)
         nisar_src = nisar.read(1, masked=True)
         nisar_valid = ~np.ma.getmaskarray(nisar_src)
@@ -442,8 +447,11 @@ def _read_cross_sensor_arrays(
             if pixel_size_x <= 0 or pixel_size_y <= 0:
                 raise CrosscheckError("Sentinel-2 B11 reference pixel size is invalid.")
 
+            # Transform directly from the exact NISAR source bounds. Sending
+            # projected bounds through WGS84 and back can introduce tiny edge
+            # drift that expands an aligned raster by an extra row/column.
             projected_aoi_bounds = transform_bounds(
-                "EPSG:4326", target_crs, *nisar_bounds_wgs84, densify_pts=21
+                nisar_crs, target_crs, *nisar_bounds_native, densify_pts=21
             )
             # Keep the native 20 m B11 pixel spacing and align the expanded
             # target grid to the first tile's pixel origin. The target covers
