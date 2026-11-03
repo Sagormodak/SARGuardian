@@ -198,6 +198,7 @@ class DriveClient:
                 failed_response = getattr(exc, "response", None)
                 status = getattr(failed_response, "status_code", None)
                 oauth_error = None
+                oauth_error_subtype = None
                 if failed_response is not None:
                     try:
                         error_payload = failed_response.json()
@@ -207,6 +208,9 @@ class DriveClient:
                         candidate = error_payload.get("error")
                         if isinstance(candidate, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", candidate):
                             oauth_error = candidate
+                        subtype = error_payload.get("error_subtype")
+                        if isinstance(subtype, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", subtype):
+                            oauth_error_subtype = subtype
                 if status in RETRYABLE_HTTP_STATUSES and attempt < MAX_RETRY_ATTEMPTS:
                     _log_drive_stage("oauth_token_refresh_attempt", "RETRY", attempt=attempt, http_status=status)
                     retry_after = getattr(failed_response, "headers", {}).get("Retry-After")
@@ -215,7 +219,23 @@ class DriveClient:
                 detail = f"HTTP {status}" if status else "HTTP status unavailable"
                 if oauth_error:
                     detail += f"; oauth_error={oauth_error}"
+                if oauth_error_subtype:
+                    detail += f"; oauth_error_subtype={oauth_error_subtype}"
                 _log_drive_stage("oauth_token_refresh_attempt", "FAIL", attempt=attempt, diagnostic=detail)
+                if oauth_error == "invalid_grant":
+                    guidance = (
+                        "Google rejected the stored refresh token. It may be expired or revoked, or it may have been "
+                        "issued for a different OAuth client. Re-authorize the configured Drive account with the exact "
+                        "OAuth client in GOOGLE_DRIVE_OAUTH_CLIENT_JSON, then replace GOOGLE_DRIVE_REFRESH_TOKEN in "
+                        "GitHub Actions secrets. For an External OAuth app in Testing status, refresh tokens expire "
+                        "after seven days unless only basic identity scopes were requested."
+                    )
+                    if oauth_error_subtype == "invalid_rapt":
+                        guidance += (
+                            " Google also reported invalid_rapt: a Google Workspace session-control policy requires "
+                            "the account to authenticate again; contact the Workspace administrator if this persists."
+                        )
+                    raise DriveUploadError(f"{guidance} ({detail}).") from None
                 raise DriveUploadError(f"Google Drive OAuth token refresh failed ({detail}).") from None
             except ValueError:
                 _log_drive_stage("oauth_token_refresh_attempt", "FAIL", attempt=attempt, diagnostic="invalid_json")
