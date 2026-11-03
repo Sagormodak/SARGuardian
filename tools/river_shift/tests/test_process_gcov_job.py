@@ -12,6 +12,7 @@ from process_gcov_job import (
     _read_input,
     select_covering_granules,
     select_date_window,
+    select_event_compatible_group,
 )
 
 
@@ -109,6 +110,26 @@ def test_selected_observation_window_fails_closed_without_four_dates():
 
     with pytest.raises(WorkerFailure, match="at least four comparable"):
         select_date_window(rows, date(2026, 4, 10))
+
+
+
+def test_group_selection_skips_highest_ranked_group_without_event_bracket():
+    def rows(values):
+        return [
+            {"acquisition_date": value, "passes_coverage_gate": True, "granule_names": ["scene"]}
+            for value in values
+        ]
+
+    first = {"relative_orbit": "101", "dates": rows(("2026-04-01", "2026-04-10", "2026-04-20", "2026-05-01"))}
+    second = {"relative_orbit": "151", "dates": rows(("2026-04-20", "2026-05-15", "2026-05-31", "2026-06-15"))}
+
+    selected_group, dates, event_window = select_event_compatible_group(
+        [first, second], date(2026, 5, 2)
+    )
+
+    assert selected_group is second
+    assert dates == ["2026-04-20", "2026-05-15", "2026-05-31", "2026-06-15"]
+    assert event_window["event_proximal_observation"] == "2026-05-15"
 
 
 def test_covering_scene_selection_can_mosaic_multiple_real_footprints():
