@@ -286,7 +286,22 @@ def _dispatch(settings: Any, job_id: UUID, request_snapshot: dict[str, Any], gra
             if response.status != 204:
                 raise RuntimeError("GitHub Actions did not accept the RiverShift workflow dispatch.")
     except HTTPError as exc:
-        raise RuntimeError(f"GitHub Actions rejected RiverShift dispatch (HTTP {exc.code}).") from None
+        # GitHub returns a JSON validation message for common workflow_dispatch
+        # HTTP 422 errors. Preserve only its public "message" field so the API
+        # can diagnose invalid workflow inputs without logging request headers,
+        # bearer tokens, or the complete submitted AOI/input payload.
+        detail = ""
+        try:
+            error_payload = json.loads(exc.read(16_384).decode("utf-8", errors="replace"))
+            if isinstance(error_payload, dict) and isinstance(error_payload.get("message"), str):
+                detail = re.sub(r"\\s+", " ", error_payload["message"]).strip()
+                detail = detail[:240]
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            detail = ""
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(
+            f"GitHub Actions rejected RiverShift dispatch (HTTP {exc.code}){suffix}."
+        ) from None
     except (URLError, TimeoutError):
         raise RuntimeError("Could not reach GitHub Actions to dispatch RiverShift processing.") from None
 
