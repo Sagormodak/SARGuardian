@@ -44,6 +44,15 @@ class DriveConfig:
     parent_folder_id: str
 
 
+def _md5_file(path: Path) -> str:
+    """Calculate Drive's integrity checksum without loading large rasters into memory."""
+    digest = hashlib.md5()  # nosec: Google Drive exposes MD5 as its remote integrity field.
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -184,7 +193,7 @@ class DriveClient:
         # metadata and compare byte count plus MD5 before allowing cleanup.
         remote = self._json("GET", f"{DRIVE_API}/files/{quote(identifier, safe='')}",
                             params={"fields": "id,name,size,md5Checksum,mimeType"})
-        expected_md5 = hashlib.md5(path.read_bytes()).hexdigest()  # nosec: Drive's published integrity field
+        expected_md5 = _md5_file(path)
         if (remote.get("id") != identifier or remote.get("name") != path.name
                 or str(remote.get("size")) != str(path.stat().st_size)
                 or remote.get("md5Checksum") != expected_md5):
