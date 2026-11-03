@@ -9,6 +9,7 @@ from shapely.geometry import Polygon, mapping
 from process_gcov_job import (
     WorkerFailure,
     _configure_earthdata_credentials,
+    _ensure_credentials,
     _product_date,
     _read_input,
     select_covering_granules,
@@ -277,3 +278,46 @@ def test_earthdata_credentials_require_a_token_or_complete_login(monkeypatch, tm
 
     with pytest.raises(WorkerFailure, match="EARTHDATA_TOKEN"):
         _configure_earthdata_credentials()
+
+def test_drive_preflight_uses_list_and_create_for_the_parent(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("EARTHDATA_TOKEN", "test-earthdata-token")
+    monkeypatch.setenv(
+        "GOOGLE_DRIVE_OAUTH_CLIENT_JSON",
+        json.dumps({"client_id": "test-client", "client_secret": "test-client-secret"}),
+    )
+    monkeypatch.setenv("GOOGLE_DRIVE_REFRESH_TOKEN", "test-refresh-token")
+    monkeypatch.setenv("GOOGLE_DRIVE_PARENT_FOLDER_ID", "parent-folder-123")
+
+    folder_calls = []
+    privacy_checks = []
+
+    class FakeDrive:
+        def __init__(self, config):
+            self.config = config
+
+        def verify_authenticated_account(self):
+            return None
+
+        def find_or_create_folder(self, name, parent_id):
+            folder_calls.append((name, parent_id))
+            return "fixed-rivershift-folder-id"
+
+        def require_private_folder(self, folder_id):
+            privacy_checks.append(folder_id)
+
+        def verify_parent_folder(self, _folder_id):
+            raise AssertionError("parent metadata GET must not be used as the access gate")
+
+    monkeypatch.setattr("process_gcov_job.DriveClient", FakeDrive)
+
+    _ensure_credentials()
+
+    assert folder_calls == [("RiverShift", "parent-folder-123")]
+    assert privacy_checks == ["fixed-rivershift-folder-id"]
+    output = capsys.readouterr().out
+    assert '"stage": "drive_parent_folder_access"' in output
+    assert '"verification_method": "list_children_then_find_or_create"' in output
+    assert "parent-folder-123" not in output
+    assert "test-refresh-token" not in output
+
