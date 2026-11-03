@@ -42,15 +42,15 @@ Options:
 - `--mndwi-threshold`: water when MNDWI is greater than this value (default 0.0).
 - `--minimum-common-support`: minimum fraction of NISAR-valid pixels also valid in the optical clear-sky comparison grid (default 0.80).
 
-Scene selection ranks AOI footprint overlap first, then date proximity and cloud cover. A single scene is selected. If that tile and clear SCL support do not cover the minimum fraction, the report says `INSUFFICIENT_OPTICAL_SPATIAL_SUPPORT`; it does not publish agreement metrics from a small sliver of the AOI.
+Scene selection first groups eligible STAC items by the same Sentinel-2 platform, `s2:datatake_id`, acquisition date and processing baseline. It then ranks each datatake group by union footprint coverage, date proximity and mean cloud cover. Adjacent MGRS tiles from the winning group are mosaicked onto one B11 20 m grid expanded to the full NISAR mask extent. Duplicate records for one MGRS tile are reduced to the latest processing generation. The canonical STAC properties `processing:version` and `processing:datetime` are preferred; legacy Sentinel-2 aliases remain supported. No different date, platform, datatake or processing baseline is combined.
 
 ## Outputs
 
 The script writes `sentinel2_cross_sensor_agreement.json` containing:
-- exact STAC collection, item ID, product URI, MGRS tile, platform, date/time and cloud cover;
+- exact STAC collection, all selected item IDs, datatake ID, processing baseline, MGRS tiles, per-tile generation time, platform, acquisition date/time and cloud cover;
 - unsigned source B03/B11/SCL asset hrefs (temporary signed URLs are not retained);
 - NISAR input filename and SHA-256;
-- date offset, tile footprint overlap and cloud-free common support;
+- date offset, union footprint overlap, clear common support and per-tile clear-pixel contribution;
 - separate confusion matrices and agreement, precision, recall, specificity, balanced accuracy, F1, IoU, Cohen's kappa and water-area bias for SCL water and MNDWI water;
 - the optical threshold, resampling choices and quality warnings.
 
@@ -72,9 +72,15 @@ If no suitable scene exists, the tool writes `NO_MATCHING_SENTINEL2_SCENE_WITHIN
 - Cloud cover percentage is scene-level metadata; the SCL common-support mask is also applied locally.
 - A short date offset does not guarantee identical river stage, rainfall or channel condition.
 - MNDWI threshold choice can alter water/non-water classification and must be reviewed.
-- The tool selects one Sentinel-2 tile. AOIs spanning multiple MGRS tiles may not achieve sufficient coverage; split the AOI or implement a validated multi-tile mosaic rather than treating partial coverage as AOI-wide.
+- A same-datatake mosaic can combine adjacent MGRS tiles, but it cannot remove clouds, shadow, snow or missing optical coverage. A mosaic may still fail the 80% common-support gate; do not weaken that gate or report metrics from only a small subset.
 - Cross-sensor agreement does not prove sediment deposition, erosion causality, bankline movement or flood depth.
 - Results remain provisional until a reviewer verifies scene suitability, co-registration, temporal comparability and reference quality.
+
+## Retained-run mosaic replay evidence
+
+A retained-data replay was performed for the NISAR acquisition dated **2026-07-12** using the source RiverShift run `41642281327`. The selected Sentinel-2 scene was acquired **2026-07-02** with scene cloud cover of **73.31%**. After clear SCL screening, only **11.03%** of the NISAR-valid comparison area had common optical support, well below the unchanged **80%** threshold. The result is `INSUFFICIENT_OPTICAL_SPATIAL_SUPPORT`; F1, IoU and other agreement metrics are therefore **not calculated**. This is a valid no-score outcome, not zero agreement and not evidence that the NISAR classification is wrong.
+
+The September 2026 retained-mask replay has not yet produced a valid comparison report; do not quote a September support fraction or metric until its diagnostic replay completes successfully.
 
 ## Primary references
 
