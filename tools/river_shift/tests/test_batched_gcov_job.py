@@ -87,10 +87,10 @@ def test_preview_size_guard_keeps_largest_display_features_instead_of_failing(tm
         warnings.filterwarnings("ignore", message=".*shapely.ops.transform.*", category=DeprecationWarning)
         preview = write_web_preview(
             source,
-        destination,
-        project,
-        unproject,
-        pixel_size_m=10.0,
+            destination,
+            project,
+            unproject,
+            pixel_size_m=10.0,
             max_bytes=18_000,
         )
 
