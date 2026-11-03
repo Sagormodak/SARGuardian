@@ -95,7 +95,7 @@ def test_download_rejects_foreign_redirect_before_writing_product(monkeypatch, t
         history=[SimpleNamespace(url="https://attacker.example/redirect")],
     )
     session = FakeDownloadSession(response)
-    monkeypatch.setattr("download_gcov_product.requests.Session", lambda: session)
+    monkeypatch.setattr("download_gcov_product._build_authenticated_asf_session", lambda: session)
 
     with pytest.raises(RuntimeError, match="redirected outside"):
         download_product(_download_product_row(), tmp_path, 30)
@@ -138,4 +138,34 @@ def test_download_accepts_hdf5_signature_and_writes_hash_receipt(monkeypatch, tm
     receipt = json.loads((tmp_path / f"{name}.download.json").read_text())
     assert receipt["sha256"] == result["sha256"]
 
+def test_hdf5_signature_is_the_exact_eight_byte_format_signature(tmp_path):
+    from download_gcov_product import HDF5_SIGNATURE, is_hdf5_file
 
+    assert HDF5_SIGNATURE == bytes.fromhex("894844460d0a1a0a")
+    assert len(HDF5_SIGNATURE) == 8
+    path = tmp_path / "valid.h5"
+    path.write_bytes(HDF5_SIGNATURE + b"content")
+    assert is_hdf5_file(path)
+
+
+def test_hdf5_signature_is_recognized_after_a_valid_user_block(tmp_path):
+    from download_gcov_product import HDF5_SIGNATURE, is_hdf5_file
+
+    path = tmp_path / "user-block.h5"
+    path.write_bytes((b"\x00" * 512) + HDF5_SIGNATURE + b"content")
+    assert is_hdf5_file(path)
+
+
+def test_redirect_chain_allows_cloudfront_only_when_authorized_by_asf_session():
+    cloudfront = SimpleNamespace(
+        history=[SimpleNamespace(url="https://nisar.asf.earthdatacloud.nasa.gov/product.h5")],
+        url="https://d123example.cloudfront.net/signed/product.h5",
+    )
+    attacker = SimpleNamespace(
+        history=[SimpleNamespace(url="https://nisar.asf.earthdatacloud.nasa.gov/product.h5")],
+        url="https://attacker.example/product.h5",
+    )
+
+    assert trusted_redirect_chain(cloudfront, {"cloudfront.net"})
+    assert not trusted_redirect_chain(attacker, {"cloudfront.net"})
+    assert not trusted_redirect_chain(cloudfront, set())
