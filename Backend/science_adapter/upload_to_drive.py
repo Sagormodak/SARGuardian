@@ -52,18 +52,33 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def load_drive_config(environ: dict[str, str] | None = None) -> DriveConfig:
+def load_drive_config(
+    environ: dict[str, str] | None = None,
+    *,
+    require_parent_folder: bool = True,
+) -> DriveConfig:
+    """Load Drive credentials; private file reads do not need a parent folder."""
     values = environ if environ is not None else os.environ
     raw_client = values.get("GOOGLE_DRIVE_OAUTH_CLIENT_JSON", "").strip()
     refresh_token = values.get("GOOGLE_DRIVE_REFRESH_TOKEN", "").strip()
+    # The parent-folder name is canonical. Keep the old name only as a
+    # compatibility fallback for existing non-RiverShift upload integrations.
     parent_folder_id = (
-        values.get("GOOGLE_DRIVE_FOLDER_ID", "").strip()
-        or values.get("GOOGLE_DRIVE_PARENT_FOLDER_ID", "").strip()
+        values.get("GOOGLE_DRIVE_PARENT_FOLDER_ID", "").strip()
+        or values.get("GOOGLE_DRIVE_FOLDER_ID", "").strip()
     )
-    if not raw_client or not refresh_token or not parent_folder_id:
-        raise DriveUploadError("Google Drive result storage is not fully configured; check GOOGLE_DRIVE_OAUTH_CLIENT_JSON, GOOGLE_DRIVE_REFRESH_TOKEN and GOOGLE_DRIVE_FOLDER_ID or GOOGLE_DRIVE_PARENT_FOLDER_ID.")
-    if not FOLDER_ID_PATTERN.fullmatch(parent_folder_id):
-        raise DriveUploadError("Configured Google Drive folder identifier is invalid.")
+    if not raw_client or not refresh_token or (require_parent_folder and not parent_folder_id):
+        raise DriveUploadError(
+            "Google Drive result storage is not fully configured; check "
+            "GOOGLE_DRIVE_OAUTH_CLIENT_JSON, GOOGLE_DRIVE_REFRESH_TOKEN and "
+            "GOOGLE_DRIVE_PARENT_FOLDER_ID."
+        )
+    # A private artifact read addresses an existing Drive file by its receipt
+    # ID. Its parent folder is irrelevant and must not block read-only access.
+    if require_parent_folder and not FOLDER_ID_PATTERN.fullmatch(parent_folder_id):
+        raise DriveUploadError("Configured Google Drive parent folder identifier is invalid.")
+    if not require_parent_folder and not FOLDER_ID_PATTERN.fullmatch(parent_folder_id):
+        parent_folder_id = ""
     try:
         parsed = json.loads(raw_client)
     except json.JSONDecodeError as exc:
@@ -368,7 +383,7 @@ def upload_validated_results(work_dir: Path, *, config: DriveConfig | None = Non
 
 def download_private_result(file_id: str, *, config: DriveConfig | None = None, session: Any | None = None) -> tuple[dict[str, Any], bytes]:
     """Used only after API job-owner authorization; never exposed to browsers."""
-    return DriveClient(config or load_drive_config(), session=session).download_file(file_id)
+    return DriveClient(config or load_drive_config(require_parent_folder=False), session=session).download_file(file_id)
 
 def download_private_result_to_path(
     file_id: str,
@@ -379,7 +394,7 @@ def download_private_result_to_path(
     max_bytes: int | None = None,
 ) -> dict[str, Any]:
     """Download an owner-authorized private result without holding the ZIP in memory."""
-    return DriveClient(config or load_drive_config(), session=session).download_file_to_path(
+    return DriveClient(config or load_drive_config(require_parent_folder=False), session=session).download_file_to_path(
         file_id, destination, max_bytes=max_bytes,
     )
 

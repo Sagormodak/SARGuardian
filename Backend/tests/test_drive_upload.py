@@ -120,7 +120,7 @@ def test_accepts_parent_folder_environment_name_used_by_github_actions() -> None
     assert config.parent_folder_id == "13BIAepPGLlYYmscUlNPeMCdtepYshjT4"
 
 
-def test_prefers_legacy_folder_id_when_both_drive_folder_names_are_present() -> None:
+def test_prefers_parent_folder_id_when_both_drive_folder_names_are_present() -> None:
     config = drive.load_drive_config({
         "GOOGLE_DRIVE_OAUTH_CLIENT_JSON": json.dumps({"web": {
             "client_id": "client",
@@ -132,7 +132,19 @@ def test_prefers_legacy_folder_id_when_both_drive_folder_names_are_present() -> 
         "GOOGLE_DRIVE_PARENT_FOLDER_ID": "14BIAepPGLlYYmscUlNPeMCdtepYshjT4",
     })
 
-    assert config.parent_folder_id == "13BIAepPGLlYYmscUlNPeMCdtepYshjT4"
+    assert config.parent_folder_id == "14BIAepPGLlYYmscUlNPeMCdtepYshjT4"
+
+
+def test_upload_configuration_still_requires_the_parent_folder_id() -> None:
+    with pytest.raises(drive.DriveUploadError, match="GOOGLE_DRIVE_PARENT_FOLDER_ID"):
+        drive.load_drive_config({
+            "GOOGLE_DRIVE_OAUTH_CLIENT_JSON": json.dumps({"web": {
+                "client_id": "client",
+                "client_secret": "secret",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }}),
+            "GOOGLE_DRIVE_REFRESH_TOKEN": "refresh",
+        })
 
 
 def test_rejects_incomplete_or_untrusted_google_oauth_configuration() -> None:
@@ -215,3 +227,30 @@ def test_streaming_private_drive_download_enforces_inventory_size_and_removes_pa
     assert not destination.exists()
     assert session.response.was_closed is True
 
+
+
+def test_private_artifact_download_does_not_require_a_parent_folder_environment(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    payload = b"private-river-shift-preview" * 100
+    monkeypatch.setenv("GOOGLE_DRIVE_OAUTH_CLIENT_JSON", json.dumps({"web": {
+        "client_id": "client",
+        "client_secret": "secret",
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }}))
+    monkeypatch.setenv("GOOGLE_DRIVE_REFRESH_TOKEN", "refresh")
+    monkeypatch.delenv("GOOGLE_DRIVE_PARENT_FOLDER_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_DRIVE_FOLDER_ID", raising=False)
+
+    session = StreamingDriveSession(payload)
+    destination = tmp_path / "private-preview.geojson"
+    receipt = drive.download_private_result_to_path(
+        "private-file-123456",
+        destination,
+        session=session,
+        max_bytes=len(payload),
+    )
+
+    assert destination.read_bytes() == payload
+    assert receipt == {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+    assert session.response.was_closed is True
