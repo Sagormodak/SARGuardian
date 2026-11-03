@@ -150,6 +150,13 @@ def test_prepare_source_observations_rejects_mixed_gcov_comparison_signatures(tm
     metadata = json.loads(sidecar.read_text(encoding="utf-8"))
     metadata["covariance_term"] = "VVVV"
     sidecar.write_text(json.dumps(metadata), encoding="utf-8")
+    worker_path = sidecar.parent / "worker-result.json"
+    worker = json.loads(worker_path.read_text(encoding="utf-8"))
+    for file_record in worker["files"]:
+        if file_record["name"] == sidecar.name:
+            file_record["sha256"] = replay.sha256_file(sidecar)
+            file_record["bytes"] = sidecar.stat().st_size
+    worker_path.write_text(json.dumps(worker), encoding="utf-8")
     prepared = _prepared(tmp_path, names)
 
     try:
