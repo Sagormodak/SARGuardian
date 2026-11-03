@@ -21,7 +21,7 @@ TRUSTED_ASF_HOSTS = {
     "datapool.asf.alaska.edu",
 }
 TRUSTED_EARTHDATA_AUTH_HOSTS = {"urs.earthdata.nasa.gov"}
-HDF5_SIGNATURE = b"\\x89HDF\\r\\n\\x1a\\n"
+HDF5_SIGNATURE = bytes.fromhex("894844460d0a1a0a")
 
 
 def trusted_asf_url(value: str) -> bool:
