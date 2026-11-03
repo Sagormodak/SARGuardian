@@ -41,7 +41,9 @@ class FakeResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise requests.HTTPError(f"HTTP {self.status_code}")
+            error = requests.HTTPError(f"HTTP {self.status_code}")
+            error.response = self
+            raise error
 
     def json(self):
         return self.payload
@@ -296,3 +298,27 @@ def test_drive_stage_logger_emits_pass_and_failure_without_suppressing_errors(ca
     assert '"stage": "failing_stage"' in output
     assert '"status": "FAIL"' in output
     assert '"error": "expected safe error"' in output
+
+
+def test_oauth_refresh_failure_reports_safe_http_status_and_provider_error(capsys):
+    class OAuthSession:
+        def post(self, *_args, **_kwargs):
+            return FakeResponse(400, payload={"error": "invalid_grant", "error_description": "sensitive details are omitted"})
+
+    drive = DriveClient.__new__(DriveClient)
+    drive.session = OAuthSession()
+    drive.config = type("Config", (), {
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "client_id": "client-id",
+        "client_secret": "client-secret",
+        "refresh_token": "do-not-log-this-refresh-token",
+    })()
+
+    with pytest.raises(DriveUploadError, match="HTTP 400; oauth_error=invalid_grant"):
+        drive._refresh_access_token()
+
+    output = capsys.readouterr().out
+    assert "invalid_grant" in output
+    assert "do-not-log-this-refresh-token" not in output
+    assert "sensitive details are omitted" not in output
+    assert '"status": "FAIL"' in output
