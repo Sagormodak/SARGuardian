@@ -17,6 +17,7 @@ from .raster_io import (
     write_mask_geojson,
     sha256_file,
     validate_gcov_series,
+    gcov_source_provenance,
 )
 from .water_detection import classify_open_water, otsu_threshold_db
 
@@ -56,6 +57,7 @@ def run_flood_analysis(
         {"before": before_path, "during": during_path, "after": after_path},
         maturity=maturity, frequency=frequency, term=polarization_term,
     )
+    source_provenance = gcov_source_provenance(series_metadata or [])
 
     if dates:
         ordered_dates = [date.fromisoformat(dates[key]) for key in ("before", "during", "after")]
@@ -159,8 +161,9 @@ def run_flood_analysis(
             "frequency": frequency,
             "covariance_term": polarization_term,
             "quantity": "gamma0_power_or_declared_input_units",
-            "granule_names": [metadata["source_granule_name"] for metadata in series_metadata],
-            "source_granule_sha256": [metadata["source_product_sha256"] for metadata in series_metadata],
+            "granule_names": source_provenance["granule_names"],
+            "source_granule_sha256": source_provenance["source_granule_sha256"],
+            "observation_sources": source_provenance["observation_sources"],
         },
         "inputs": {
             "before": str(before_path),
