@@ -1,5 +1,13 @@
 from pathlib import Path
 
+import sys
+
+# The original command-line tools live beside this tests/ directory. Expose
+# that folder for both standalone RiverShift CI and the repository-wide pytest suite.
+_RIVERSHIFT_ROOT = str(Path(__file__).resolve().parents[1])
+if _RIVERSHIFT_ROOT not in sys.path:
+    sys.path.insert(0, _RIVERSHIFT_ROOT)
+
 import numpy as np
 import pytest
 import rasterio
