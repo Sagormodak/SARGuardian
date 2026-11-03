@@ -143,7 +143,9 @@ def test_general_scan_flood_report_uses_comparison_labels_and_no_event_wording(t
         "comparison_one": "2026-08-13",
         "comparison_two": "2026-08-25",
     }
-    assert all("event" not in warning.lower() for warning in result["quality"]["warnings"])
+    warnings = [warning.lower() for warning in result["quality"]["warnings"]]
+    assert any("no event date was supplied" in warning for warning in warnings)
+    assert all("post-event" not in warning and "event-proximal" not in warning for warning in warnings)
 
 
 def test_general_scan_morphology_report_uses_later_observation_wording(tmp_path):
