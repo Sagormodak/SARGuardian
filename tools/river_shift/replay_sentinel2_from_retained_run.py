@@ -329,6 +329,41 @@ def run_replay(
     }
 
 
+def emit_replay_summary(summary: dict[str, Any]) -> None:
+    """Emit stable, privacy-safe replay diagnostics for workflow logs."""
+    print("RIVERSHIFT_CROSS_SENSOR_STATUS=" + str(summary.get("status")))
+    print("RIVERSHIFT_CROSS_SENSOR_OBSERVATION_DATE=" + str(summary.get("observation_date")))
+    print("RIVERSHIFT_CROSS_SENSOR_NISAR_DATES=" + ",".join(summary.get("selected_dates") or []))
+    obs = summary.get("sentinel2_observation") or {}
+    support = summary.get("spatial_support") or {}
+    mgrs_tiles = obs.get("mgrs_tiles") or support.get("sentinel2_mgrs_tiles") or []
+    print("RIVERSHIFT_SENTINEL2_ITEM_ID=" + str(obs.get("sentinel2_item_id") or "not-found"))
+    print("RIVERSHIFT_SENTINEL2_ITEM_IDS=" + ",".join(obs.get("sentinel2_item_ids") or []))
+    print("RIVERSHIFT_SENTINEL2_DATE=" + str(obs.get("sentinel2_date") or "not-found"))
+    print("RIVERSHIFT_SENTINEL2_DATATAKE_ID=" + str(obs.get("sentinel2_datatake_id") or "not-reported"))
+    print("RIVERSHIFT_SENTINEL2_PROCESSING_BASELINE=" + str(obs.get("sentinel2_processing_baseline") or "not-reported"))
+    print("RIVERSHIFT_SENTINEL2_MGRS_TILES=" + (",".join(str(value) for value in mgrs_tiles) or "not-reported"))
+    print("RIVERSHIFT_SENTINEL2_TILE_COUNT=" + str(obs.get("sentinel2_tile_count", support.get("sentinel2_tile_count", 0))))
+    print("RIVERSHIFT_SENTINEL2_CLOUD_COVER_MEAN=" + str(obs.get("cloud_cover_percent")))
+    print("RIVERSHIFT_SENTINEL2_CLOUD_COVER_MAX=" + str(obs.get("maximum_tile_cloud_cover_percent")))
+    print("RIVERSHIFT_SENTINEL2_AOI_FOOTPRINT_OVERLAP=" + str(obs.get("aoi_footprint_overlap_fraction")))
+    print("RIVERSHIFT_CROSS_SENSOR_COMMON_SUPPORT=" + str(support.get("common_support_fraction")))
+    print("RIVERSHIFT_SENTINEL2_TILE_CLEAR_PIXEL_COUNTS=" + json.dumps(
+        support.get("tile_common_clear_pixel_counts") or {}, sort_keys=True, separators=(",", ":")
+    ))
+    metrics = summary.get("metrics")
+    if isinstance(metrics, dict):
+        for name in ("scl_water_class", "mndwi_water_class"):
+            values = metrics.get(name) or {}
+            print(f"RIVERSHIFT_SENTINEL2_{name.upper()}_F1=" + str(values.get("f1_score")))
+            print(f"RIVERSHIFT_SENTINEL2_{name.upper()}_IOU=" + str(values.get("intersection_over_union")))
+    else:
+        print("RIVERSHIFT_SENTINEL2_METRICS=NOT_AVAILABLE")
+    print("RIVERSHIFT_CROSS_SENSOR_REPLAY_MANIFEST=" + str(summary.get("replay_manifest") or "not-reported"))
+    for warning in summary.get("warnings", []):
+        print("RIVERSHIFT_CROSS_SENSOR_WARNING=" + str(warning)[:300])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--products-dir", required=True, type=Path)
@@ -353,26 +388,7 @@ def main() -> int:
             mndwi_threshold=args.mndwi_threshold,
             minimum_common_support=args.minimum_common_support,
         )
-        print("RIVERSHIFT_CROSS_SENSOR_STATUS=" + str(summary["status"]))
-        print("RIVERSHIFT_CROSS_SENSOR_OBSERVATION_DATE=" + summary["observation_date"])
-        print("RIVERSHIFT_CROSS_SENSOR_NISAR_DATES=" + ",".join(summary["selected_dates"]))
-        obs = summary.get("sentinel2_observation") or {}
-        print("RIVERSHIFT_SENTINEL2_ITEM_ID=" + str(obs.get("sentinel2_item_id") or "not-found"))
-        print("RIVERSHIFT_SENTINEL2_DATE=" + str(obs.get("sentinel2_date") or "not-found"))
-        print("RIVERSHIFT_SENTINEL2_CLOUD_COVER=" + str(obs.get("cloud_cover_percent")))
-        support = summary.get("spatial_support") or {}
-        print("RIVERSHIFT_CROSS_SENSOR_COMMON_SUPPORT=" + str(support.get("common_support_fraction")))
-        metrics = summary.get("metrics")
-        if isinstance(metrics, dict):
-            for name in ("scl_water_class", "mndwi_water_class"):
-                values = metrics.get(name) or {}
-                print(f"RIVERSHIFT_SENTINEL2_{name.upper()}_F1=" + str(values.get("f1_score")))
-                print(f"RIVERSHIFT_SENTINEL2_{name.upper()}_IOU=" + str(values.get("intersection_over_union")))
-        else:
-            print("RIVERSHIFT_SENTINEL2_METRICS=NOT_AVAILABLE")
-        print("RIVERSHIFT_CROSS_SENSOR_REPLAY_MANIFEST=" + summary["replay_manifest"])
-        for warning in summary.get("warnings", []):
-            print("RIVERSHIFT_CROSS_SENSOR_WARNING=" + str(warning)[:300])
+        emit_replay_summary(summary)
         return 0
     except (ReplayError, CrosscheckError, OSError, ValueError) as exc:
         detail = str(exc).strip() or type(exc).__name__
