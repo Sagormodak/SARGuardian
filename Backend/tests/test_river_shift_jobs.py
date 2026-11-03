@@ -178,7 +178,7 @@ def test_discovery_manifest_counts_compact_timestamps_and_preserves_selected_fil
     manifest, names = river_module._discover_manifest(request)
 
     assert manifest["unique_dates"] == ["2026-08-02", "2026-08-14", "2026-08-26", "2026-09-07", "2026-09-19"]
-    assert len(names) == 5
+    assert len(names) == 6
     assert seen == {
         "polarization": "HH+HV",
         "direction": "DESCENDING",
