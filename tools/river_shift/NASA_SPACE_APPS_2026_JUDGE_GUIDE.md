@@ -172,7 +172,9 @@ A second manual workflow, [RiverShift retained-run Sentinel-2 cross-sensor repla
 | Repository access | Public backend and Dynamic GitHub repositories. | Verify links in a signed-out browser before final submission. |
 | Project page | This guide and a ready-to-copy project-page draft. | Team must fill required fields and click Submit during the NASA submission window. |
 
-### Women participation bonus (+5%)
+### Team participation and rubric notes
 
-The score sheet applies a **5% bonus to the aggregate** when the team includes one or more women members. This must be supported by the real team roster and actual contributions. Add the relevant member(s) and role(s) to the NASA project page; do not claim the bonus until the team confirms the participation information.
+The public NASA Space Apps 2026 information checked on **4 November 2026** confirms the challenge schedule and team cap, but does not publish a global judging score sheet or a women-participation **+5%** bonus on the public event page. Do not present that bonus as an official NASA global rule. If a Local Event or organiser supplies a separate scoring rubric containing such a bonus, cite that exact local document and label it **local-event-specific**; do not transfer it to Global Judging without official confirmation.
+
+The team page should list only real members and their actual contributions. The official event page is https://www.spaceappschallenge.org/2026/.
 
