@@ -1,0 +1,64 @@
+name: RiverShift worker tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "tools/river_shift/**"
+      - ".github/workflows/river-shift-gcov-process.yml"
+      - ".github/workflows/river-shift-tests.yml"
+  push:
+    branches:
+      - main
+      - feat/river-shift-gcov-worker-20261103
+    paths:
+      - "tools/river_shift/**"
+      - ".github/workflows/river-shift-gcov-process.yml"
+      - ".github/workflows/river-shift-tests.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: river-shift-tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  river-shift-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out worker source
+        uses: actions/checkout@v4
+
+      - name: Install the same pinned geospatial environment as the worker
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+
+      - name: Validate worker modules compile
+        shell: micromamba-shell {0}
+        run: |
+          python --version
+          gdalinfo --version
+          python -m compileall -q tools/river_shift
+          echo "RIVERSHIFT_PYTHON_COMPILE=PASS"
+
+      - name: Validate RiverShift workflow dispatch contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby -e 'require "yaml"; YAML.load_file(".github/workflows/river-shift-gcov-process.yml"); puts "RIVERSHIFT_WORKFLOW_YAML=PASS"'
+          grep -Fq 'run-name: RiverShift ${{ inputs.job_id }}' .github/workflows/river-shift-gcov-process.yml
+          grep -q 'RIVERSHIFT_CALLBACK_SECRET:' .github/workflows/river-shift-gcov-process.yml
+          grep -q 'RIVERSHIFT_REQUEST_FINGERPRINT:' .github/workflows/river-shift-gcov-process.yml
+          grep -q 'python tools/river_shift/process_gcov_job.py' .github/workflows/river-shift-gcov-process.yml
+
+      - name: Validate standalone processing tests
+        shell: micromamba-shell {0}
+        env:
+          PYTHONPATH: ${{ github.workspace }}/tools/river_shift
+        run: |
+          pytest -q tools/river_shift/tests

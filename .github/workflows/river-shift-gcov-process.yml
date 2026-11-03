@@ -1,0 +1,121 @@
+name: RiverShift NISAR GCOV processing
+
+run-name: RiverShift ${{ inputs.job_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Owner-scoped RiverShift job UUID
+        required: true
+        type: string
+      aoi_wkt:
+        description: User-selected WGS84 AOI polygon
+        required: true
+        type: string
+      start_date:
+        description: First allowed acquisition date (YYYY-MM-DD)
+        required: true
+        type: string
+      end_date:
+        description: Last allowed acquisition date (YYYY-MM-DD)
+        required: true
+        type: string
+      event_date:
+        description: User-supplied event date; independently unverified
+        required: true
+        type: string
+      maturity:
+        description: One NISAR collection maturity; never mix BETA and PROVISIONAL
+        required: true
+        type: choice
+        options: [PROVISIONAL, BETA]
+      frequency:
+        description: Requested NISAR frequency
+        required: true
+        type: choice
+        options: [frequencyA, frequencyB]
+      covariance_term:
+        description: Requested real-valued diagonal GCOV term
+        required: true
+        type: choice
+        options: [HHHH, HVHV, VVVV, VHVH, RHRH, RVRV]
+      threshold_method:
+        description: Common water threshold
+        required: true
+        type: choice
+        options: [otsu, manual]
+      threshold_db:
+        description: Manual dB threshold; blank for Otsu
+        required: false
+        type: string
+      granule_names_json:
+        description: Exact granule names from the accepted CMR manifest
+        required: true
+        type: string
+      request_fingerprint:
+        description: Immutable API-generated request fingerprint
+        required: true
+        type: string
+      callback_url:
+        description: Public HTTPS base URL of the Dynamic API
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: river-shift-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+jobs:
+  process:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_AOI_WKT: ${{ inputs.aoi_wkt }}
+      RIVERSHIFT_START_DATE: ${{ inputs.start_date }}
+      RIVERSHIFT_END_DATE: ${{ inputs.end_date }}
+      RIVERSHIFT_EVENT_DATE: ${{ inputs.event_date }}
+      RIVERSHIFT_MATURITY: ${{ inputs.maturity }}
+      RIVERSHIFT_FREQUENCY: ${{ inputs.frequency }}
+      RIVERSHIFT_COVARIANCE_TERM: ${{ inputs.covariance_term }}
+      RIVERSHIFT_THRESHOLD_METHOD: ${{ inputs.threshold_method }}
+      RIVERSHIFT_THRESHOLD_DB: ${{ inputs.threshold_db }}
+      RIVERSHIFT_GRANULE_NAMES_JSON: ${{ inputs.granule_names_json }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_CALLBACK_URL: ${{ inputs.callback_url }}
+      RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID || secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID || secrets.GOOGLE_DRIVE_FOLDER_ID }}
+
+    steps:
+      - name: Check out backend worker source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Install GDAL and geospatial dependencies
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+
+      - name: Verify runtime
+        shell: micromamba-shell {0}
+        run: |
+          python --version
+          gdalinfo --version
+          python -c "import rasterio, shapely, pyproj, scipy; print('RIVERSHIFT_GEOSPATIAL_RUNTIME=PASS')"
+
+      - name: Discover, download, process, retain private results and report callbacks
+        shell: micromamba-shell {0}
+        run: python tools/river_shift/process_gcov_job.py
