@@ -815,6 +815,20 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
         </aside>
       </section>
 
+      {riverJobBusy && (
+        <section className="rs-panel rs-job-feedback" role="status" aria-live="polite">
+          <div className="rs-info-banner">
+            <strong>Submitting RiverShift job…</strong>{' '}
+            The API is validating the AOI and confirming the NASA CMR acquisition manifest before dispatch.
+            No NISAR product download starts until this step succeeds.
+          </div>
+        </section>
+      )}
+      {riverJobError && (
+        <section className="rs-panel rs-job-feedback" aria-live="assertive">
+          <p className="rs-error" role="alert">{riverJobError}</p>
+        </section>
+      )}
       {riverJob && <section className="rs-panel rs-job-panel" aria-live="polite">
         <div className="rs-section-heading"><div><p className="rs-kicker">LIVE SCIENCE JOB</p><h2>{riverJob.state.replace(/_/g, ' ')} · {riverJob.stage.replace(/_/g, ' ')}</h2></div>
           <span className="rs-chip">{riverJob.maturity} · {riverJob.frequency} / {riverJob.covariance_term}</span></div>
@@ -843,7 +857,6 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
         {!!riverJob.artifact_manifest?.length && <div className="rs-artifact-list"><strong>Private result files · checksum verified</strong>{riverJob.artifact_manifest.map((artifact, index) => artifact.bytes <= 4_000_000
           ? <button className="rs-secondary-button" key={`${artifact.path}-${index}`} type="button" onClick={() => void saveRiverArtifact(index, artifact.name)}>{artifact.name} · {(artifact.bytes / 1_000_000).toFixed(2)} MB</button>
           : <span className="rs-muted" key={`${artifact.path}-${index}`}>{artifact.name} · {(artifact.bytes / 1_000_000).toFixed(2)} MB · stored privately; too large for in-app download</span>)}</div>}
-        {riverJobError && <p className="rs-error" role="alert">{riverJobError}</p>}
       </section>}
 
       <section className="rs-panel rs-results-panel">
