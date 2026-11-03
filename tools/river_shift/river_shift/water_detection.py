@@ -51,6 +51,24 @@ def remove_small_components(mask: np.ndarray, valid: np.ndarray, minimum_pixels:
     return keep[labels]
 
 
+def valid_backscatter_mask(
+    backscatter: np.ndarray, valid: np.ndarray, *, units: str,
+) -> np.ndarray:
+    """Identify measurable backscatter samples before area or threshold calculations."""
+    array = np.asarray(backscatter, dtype=np.float64)
+    support = np.asarray(valid, dtype=bool)
+    if array.shape != support.shape:
+        raise ValueError("Backscatter raster and validity mask must have identical shapes.")
+    if units not in {"linear", "db"}:
+        raise ValueError("units must be either 'linear' or 'db'.")
+    result = support & np.isfinite(array)
+    if units == "linear":
+        # Zero/negative power has no finite logarithmic value and must not be
+        # counted as observed non-water in an area denominator.
+        result &= array > 0
+    return result
+
+
 def classify_open_water(
     backscatter: np.ndarray,
     valid: np.ndarray,
@@ -65,9 +83,12 @@ def classify_open_water(
     Flooded vegetation can produce strong double-bounce returns and may be missed.
     """
     array = np.asarray(backscatter, dtype=np.float64)
-    valid_mask = np.asarray(valid, dtype=bool) & np.isfinite(array)
+    valid_mask = valid_backscatter_mask(array, valid, units=units)
+    if not np.isfinite(threshold_db):
+        raise ValueError("threshold_db must be finite.")
+    if minimum_pixels < 0:
+        raise ValueError("minimum_pixels cannot be negative.")
     if units == "linear":
-        valid_mask &= array > 0
         values_db = np.full(array.shape, np.nan, dtype=np.float64)
         values_db[valid_mask] = 10.0 * np.log10(array[valid_mask])
     elif units == "db":
