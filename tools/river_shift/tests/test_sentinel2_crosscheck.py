@@ -464,12 +464,12 @@ def test_same_datatake_tile_mosaic_fills_full_aoi_support_from_adjacent_tiles(tm
         dtype=np.uint8, nodata=0, pixel_size=20,
     )
     href_to_path = {
-        "https://example.test/left/B03.tif": str(b03_left),
-        "https://example.test/left/B11.tif": str(b11_left),
-        "https://example.test/left/SCL.tif": str(scl_left),
-        "https://example.test/right/B03.tif": str(b03_right),
-        "https://example.test/right/B11.tif": str(b11_right),
-        "https://example.test/right/SCL.tif": str(scl_right),
+        "https://example.test/same-datatake-left/B03.tif": str(b03_left),
+        "https://example.test/same-datatake-left/B11.tif": str(b11_left),
+        "https://example.test/same-datatake-left/SCL.tif": str(scl_left),
+        "https://example.test/same-datatake-right/B03.tif": str(b03_right),
+        "https://example.test/same-datatake-right/B11.tif": str(b11_right),
+        "https://example.test/same-datatake-right/SCL.tif": str(scl_right),
     }
     monkeypatch.setattr(
         crosscheck,
@@ -632,7 +632,7 @@ def test_cross_sensor_reader_mosaics_adjacent_same_datatake_tiles_across_full_ni
                 pixel_size=20,
                 nodata=0,
             )
-            signed_paths[f"https://example.test/{tile_id}/{band}.tif"] = str(asset_path)
+            signed_paths[f"https://example.test/tile-{tile_id}/{band}.tif"] = str(asset_path)
         items.append(_item(
             f"tile-{tile_id}",
             box(88.0, 24.0, 89.0, 25.0),
