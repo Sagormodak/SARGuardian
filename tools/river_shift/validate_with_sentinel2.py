@@ -23,7 +23,7 @@ from pyproj import CRS, Transformer
 from rasterio.enums import Resampling
 from rasterio.vrt import WarpedVRT
 from rasterio.warp import reproject, transform_bounds
-from rasterio.windows import from_bounds, transform as window_transform
+from rasterio.windows import Window, from_bounds, transform as window_transform
 from shapely.geometry import box, shape
 from shapely.ops import transform as transform_geometry
 
@@ -33,6 +33,7 @@ SAS_SIGN_URL = "https://planetarycomputer.microsoft.com/api/sas/v1/sign"
 COLLECTION = "sentinel-2-l2a"
 SCL_VALID_CLASSES = (4, 5, 6)
 MAX_TARGET_PIXELS = 12_000_000
+MAX_SOURCE_PIXELS = 40_000_000
 USER_AGENT = "SARGuardian-RiverShift-Sentinel2-Crosscheck/1.0"
 
 
@@ -292,6 +293,10 @@ def _read_cross_sensor_arrays(
     with rasterio.open(nisar_path) as nisar:
         if nisar.count < 1 or nisar.crs is None:
             raise CrosscheckError("NISAR mask must be a single-band georeferenced raster.")
+        if nisar.width * nisar.height > MAX_SOURCE_PIXELS:
+            raise CrosscheckError(
+                f"NISAR source mask has {nisar.width * nisar.height:,} pixels, over the safe limit {MAX_SOURCE_PIXELS:,}."
+            )
         nisar_crs = CRS.from_user_input(nisar.crs)
         if not nisar_crs.is_projected:
             raise CrosscheckError("NISAR water mask must use a projected CRS.")
@@ -415,10 +420,7 @@ def _read_cross_sensor_arrays(
             }
             return nisar_on_b11 == 1, scl_water, index, common_valid, nisar_valid_on_b11, {
                 **metadata,
-                "mndwi_valid": index_valid,
                 "pixel_area_m2": float(pixel_area),
-                "b11_values": b11_values,
-                "b03_values": b03_values,
             }
     except CrosscheckError:
         raise
