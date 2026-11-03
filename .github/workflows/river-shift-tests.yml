@@ -14,6 +14,7 @@ on:
       - feat/river-shift-15-product-batches-20261103
       - fix/river-shift-drive-uploader-logging-20261103
       - fix/river-shift-delayed-product-retry-20261103
+      - fix/river-shift-workflow-expression-hotfix-20261103
     paths:
       - "tools/river_shift/**"
       - ".github/workflows/river-shift-gcov-process.yml"
