@@ -754,23 +754,21 @@ def write_mask_web_preview(
                     source_width / float(preview_width),
                     source_height / float(preview_height),
                 )
-                sampled_values = np.zeros((preview_height, preview_width), dtype=np.uint8)
-                # Resampling.max is supported by GDAL warp operations, not
-                # RasterIO reads. Warp onto a coarser grid in the same CRS so
-                # isolated positive source pixels survive downsampling.
-                reproject(
-                    source=rasterio.band(source, 1),
-                    destination=sampled_values,
-                    src_transform=source_transform,
-                    src_crs=source_crs_value,
-                    src_nodata=source_nodata,
-                    dst_transform=preview_transform,
-                    dst_crs=source_crs_value,
-                    dst_nodata=0,
-                    resampling=Resampling.max,
-                    init_dest_nodata=True,
+                # Average resampling is supported by RasterIO reads. A binary
+                # source mask is converted to fractional occupancy; any value
+                # above zero means at least one source candidate cell overlaps
+                # the display cell. Float output prevents sparse positives
+                # from rounding down to zero.
+                sampled = source.read(
+                    1,
+                    out_shape=(preview_height, preview_width),
+                    masked=True,
+                    resampling=Resampling.average,
+                    out_dtype="float32",
                 )
-                candidate = sampled_values == 1
+                sampled_mask = np.ma.getmaskarray(sampled)
+                sampled_values = np.asarray(sampled.filled(0), dtype=np.float32)
+                candidate = (sampled_values > 0.0) & ~sampled_mask
                 candidate_cells = int(np.count_nonzero(candidate))
                 pixel_x_m = math.hypot(preview_transform.a, preview_transform.d)
                 pixel_y_m = math.hypot(preview_transform.b, preview_transform.e)
@@ -828,7 +826,7 @@ def write_mask_web_preview(
                     },
                     "river_shift_preview": {
                         "status": "DISPLAY_ONLY",
-                        "method": "max_aggregated_binary_mask_then_polygonize",
+                        "method": "average_occupancy_gt_zero_then_polygonize",
                         "source_mask": mask_path.name,
                         "source_mask_sha256": source_mask_sha256,
                         "source_width": source_width,
@@ -841,7 +839,7 @@ def write_mask_web_preview(
                         "feature_count": len(features),
                         "features_omitted_for_size": 0,
                         "warning": (
-                            "DISPLAY ONLY: geometry is generated from a max-aggregated lower-resolution copy of the "
+                            "DISPLAY ONLY: geometry is generated from a average-aggregated lower-resolution copy of the "
                             "binary NISAR-derived mask. It preserves detected candidate cells for visual context, "
                             "but is not a survey-grade boundary or displacement measurement. Full-resolution "
                             "private masks, GeoJSON and scientific metrics are unchanged."
@@ -942,7 +940,7 @@ def create_web_previews(
             layer_type=layer_type,
             source_file=source_path.name,
             output_file=destination.name,
-            preview_method="max_aggregated_binary_mask_then_polygonize",
+            preview_method="average_occupancy_gt_zero_then_polygonize",
         )
         preview = write_mask_web_preview(
             source_path,
@@ -981,13 +979,13 @@ def create_web_previews(
         },
         "river_shift_preview": {
             "status": "DISPLAY_ONLY",
-            "method": "separate_max_aggregated_mask_footprints_per_class",
+            "method": "separate_average_aggregated_mask_footprints_per_class",
             "class_count": len({feature["properties"]["river_shift_layer"] for feature in change_features}),
             "feature_count": len(change_features),
             "features_omitted_for_size": 0,
             "warning": (
                 "Red: persistent erosion candidate; green: persistent deposition candidate; blue: newly water-covered "
-                "candidate. Each class is represented independently from its own max-aggregated binary mask. "
+                "candidate. Each class is represented independently from its own average-aggregated binary mask. "
                 "These are provisional display footprints, not signed bank-migration measurements."
             ),
         },
