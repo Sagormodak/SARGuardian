@@ -790,3 +790,77 @@ def test_best_datatake_keeps_latest_generation_per_tile_within_one_processing_ba
     assert {row["id"] for row in selected} == {"left-latest-generation", "right-tile"}
     assert len(selected) == 2
     assert {row["properties"]["s2:processing_baseline"] for row in selected} == {"05.11"}
+
+
+
+def test_canonical_stac_processing_fields_group_and_select_latest_tile_generation():
+    aoi = box(88.0, 24.0, 89.0, 25.0)
+    left_old = _item(
+        "canonical-left-old",
+        box(88.0, 24.0, 88.5, 25.0),
+        "2026-09-15",
+        15.0,
+        datatake_id="S2B_20260915T043701",
+        mgrs_tile="45RYJ",
+        processing_baseline="05.11",
+    )
+    left_old["properties"].pop("s2:processing_baseline")
+    left_old["properties"]["processing:version"] = "05.11"
+    left_old["properties"].pop("s2:generation_time")
+    left_old["properties"]["processing:datetime"] = "2026-09-16T01:00:00Z"
+
+    left_latest = _item(
+        "canonical-left-latest",
+        box(88.0, 24.0, 88.5, 25.0),
+        "2026-09-15",
+        25.0,
+        datatake_id="S2B_20260915T043701",
+        mgrs_tile="45RYJ",
+        processing_baseline="05.11",
+    )
+    left_latest["properties"].pop("s2:processing_baseline")
+    left_latest["properties"]["processing:version"] = "05.11"
+    left_latest["properties"].pop("s2:generation_time")
+    left_latest["properties"]["processing:datetime"] = "2026-09-17T01:00:00Z"
+
+    right = _item(
+        "canonical-right",
+        box(88.5, 24.0, 89.0, 25.0),
+        "2026-09-15",
+        30.0,
+        datatake_id="S2B_20260915T043701",
+        mgrs_tile="45RZJ",
+        processing_baseline="05.11",
+    )
+    right["properties"].pop("s2:processing_baseline")
+    right["properties"]["processing:version"] = "05.11"
+    right["properties"].pop("s2:generation_time")
+    right["properties"]["processing:datetime"] = "2026-09-17T01:01:00Z"
+
+    old_baseline = _item(
+        "canonical-other-baseline",
+        box(88.0, 24.0, 88.5, 25.0),
+        "2026-09-15",
+        1.0,
+        datatake_id="S2B_20260915T043701",
+        mgrs_tile="45RYJ",
+        processing_baseline="05.12",
+    )
+    old_baseline["properties"].pop("s2:processing_baseline")
+    old_baseline["properties"]["processing:version"] = "05.12"
+    old_baseline["properties"].pop("s2:generation_time")
+    old_baseline["properties"]["processing:datetime"] = "2026-09-18T01:00:00Z"
+
+    selected = crosscheck.select_best_items(
+        [left_old, left_latest, right, old_baseline],
+        observation_date=date(2026, 9, 15),
+        aoi_geometry_wgs84=aoi,
+        analysis_crs=CRS.from_epsg(32645),
+        max_day_offset=1,
+        max_cloud_cover=40,
+    )
+
+    assert selected is not None
+    assert {row["id"] for row in selected} == {"canonical-left-latest", "canonical-right"}
+    assert {crosscheck._processing_baseline(row) for row in selected} == {"05.11"}
+    assert crosscheck._generation_time(left_latest) == "2026-09-17T01:00:00Z"
