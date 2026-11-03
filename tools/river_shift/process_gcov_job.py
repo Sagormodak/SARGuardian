@@ -324,13 +324,31 @@ def _mosaic_date_rasters(paths: list[Path], destination: Path) -> Path:
         raise WorkerFailure("RASTER_MOSAIC_FAILED", "Could not combine the selected same-date scene rasters safely.") from None
     finally:
         vrt.unlink(missing_ok=True)
-    source_metadata = json.loads(ordered_paths[0].with_suffix(".metadata.json").read_text(encoding="utf-8"))
-    source_names = [json.loads(path.with_suffix(".metadata.json").read_text(encoding="utf-8"))["source_granule_name"] for path in ordered_paths]
-    source_hashes = [json.loads(path.with_suffix(".metadata.json").read_text(encoding="utf-8"))["source_product_sha256"] for path in ordered_paths]
+    metadata_rows = [
+        json.loads(path.with_suffix(".metadata.json").read_text(encoding="utf-8"))
+        for path in ordered_paths
+    ]
+    source_metadata = dict(metadata_rows[0])
+    source_names = [
+        name
+        for row in metadata_rows
+        for name in row.get("source_granule_names", [row["source_granule_name"]])
+    ]
+    source_hashes = [
+        digest
+        for row in metadata_rows
+        for digest in row.get("source_granule_sha256", [row["source_product_sha256"]])
+    ]
+    aggregate_source_sha256 = (
+        source_hashes[0] if len(source_hashes) == 1
+        else hashlib.sha256("\n".join(sorted(source_hashes)).encode("ascii")).hexdigest()
+    )
     source_metadata.update({
         "source_granule_name": "+".join(source_names),
         "source_granule_names": source_names,
-        "source_product_sha256": hashlib.sha256("\n".join(sorted(source_hashes)).encode("ascii")).hexdigest(),
+        "source_granule_sha256": source_hashes,
+        "source_product_sha256": aggregate_source_sha256,
+        "source_product_sha256_scope": "single_granule" if len(source_hashes) == 1 else "sha256_of_sorted_source_granule_sha256_values",
         "output_cog": str(destination.resolve()),
         "output_cog_sha256": sha256_file(destination),
         "mosaic_method": "GDAL VRT; first valid source pixel in deterministic granule-name order",
