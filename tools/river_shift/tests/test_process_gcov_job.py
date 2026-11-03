@@ -84,7 +84,7 @@ def test_earthdata_username_password_create_private_parseable_netrc(monkeypatch,
 
     path = tmp_path / ".netrc"
     credentials = netrc(str(path)).authenticators("urs.earthdata.nasa.gov")
-    assert credentials == ("researcher@example.test", None, 'secret "value" \\ with slash')
+    assert credentials == ("researcher@example.test", "", 'secret "value" \\ with slash')
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
@@ -92,7 +92,7 @@ def test_earthdata_netrc_rejects_control_characters(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("EARTHDATA_TOKEN", raising=False)
     monkeypatch.setenv("EARTHDATA_USERNAME", "researcher@example.test")
-    monkeypatch.setenv("EARTHDATA_PASSWORD", "secret\\npassword")
+    monkeypatch.setenv("EARTHDATA_PASSWORD", "secret\npassword")
 
     with pytest.raises(WorkerFailure, match="unsupported control characters"):
         _configure_earthdata_credentials()
