@@ -199,7 +199,7 @@ def test_workflow_hdf5_checks_are_safe_with_pipefail():
 def test_retry_job_is_not_gated_by_the_retry_count_output():
     repository_root = Path(__file__).resolve().parents[3]
     workflow = (repository_root / ".github" / "workflows" / "river-shift-gcov-process.yml").read_text(encoding="utf-8")
-    retry_job = workflow.split("\\n  retry:\\n", 1)[1].split("\\n  retry_status:\\n", 1)[0]
+    retry_job = workflow.split("\n  retry:\n", 1)[1].split("\n  retry_status:\n", 1)[0]
 
     # The matrix itself is the authoritative queue. Do not suppress the retry
     # job based on a second scalar output that can diverge from that matrix.
