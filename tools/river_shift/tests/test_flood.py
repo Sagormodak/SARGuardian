@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 
 from river_shift.flood import run_flood_analysis
 
@@ -44,6 +45,37 @@ def test_flood_analysis_outputs_masks_metrics_and_provenance(tmp_path, raster_wr
     assert (tmp_path / "out" / "newly_water_covered.geojson").exists()
     saved = json.loads((tmp_path / "out" / "river_shift_result.json").read_text())
     assert saved["inputs"]["dates"]["during"] == "2026-07-01"
+
+
+def test_flood_area_comparison_excludes_nonpositive_linear_power(tmp_path, raster_writer):
+    before = np.full((20, 20), 0.3, dtype=np.float32)
+    during = np.full((20, 20), 0.3, dtype=np.float32)
+    after = np.full((20, 20), 0.3, dtype=np.float32)
+    before[0, 0] = 0.0
+    during[0, 1] = -0.1
+
+    paths = [
+        raster_writer("before-zero.tif", before),
+        raster_writer("during-negative.tif", during),
+        raster_writer("after-positive.tif", after),
+    ]
+    result = run_flood_analysis(
+        before_path=str(paths[0]),
+        during_path=str(paths[1]),
+        after_path=str(paths[2]),
+        output_dir=str(tmp_path / "positive-power-out"),
+        units="linear",
+        threshold_db=-12.0,
+        use_otsu=False,
+        maturity="PROVISIONAL",
+        frequency="frequencyA",
+        polarization_term="HHHH",
+    )
+
+    assert result["metrics"]["comparison_valid_pixel_count"] == 398
+    assert result["metrics"]["comparison_valid_pixel_fraction"] == pytest.approx(398 / 400)
+    assert result["quality"]["valid_comparison_pixel_fraction"] == pytest.approx(398 / 400)
+
 
 
 def test_flood_analysis_rejects_different_grids(tmp_path, raster_writer):
