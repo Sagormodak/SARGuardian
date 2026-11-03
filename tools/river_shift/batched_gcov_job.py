@@ -879,6 +879,15 @@ def _assemble_job(
     if prepared.get("job_id") != request["job_id"] or prepared.get("request_fingerprint") != request["fingerprint"]:
         raise WorkerFailure("REQUEST_MISMATCH", "The assembly runner received a prepared artifact for a different RiverShift request.")
 
+    callbacks.send("running", "assembly_preflight")
+    _log_worker_stage("assembly_private_storage_preflight", "START")
+    _ensure_credentials()
+    _log_worker_stage(
+        "assembly_private_storage_preflight", "PASS",
+        storage_root="RiverShift",
+        parent_variable="GOOGLE_DRIVE_PARENT_FOLDER_ID",
+    )
+
     _log_worker_stage(
         "product_batch_import", "START",
         expected_product_count=len(prepared.get("selected_product_names", [])),
@@ -1000,9 +1009,12 @@ def _assemble_job(
     ], context={"event_window": event_window})
 
     callbacks.send("running", "private_result_publication")
-    _log_worker_stage("assembly_private_storage_preflight", "START")
-    _ensure_credentials()
-    _log_worker_stage("assembly_private_storage_preflight", "PASS", storage_root="RiverShift", parent_variable="GOOGLE_DRIVE_PARENT_FOLDER_ID")
+    _log_worker_stage(
+        "private_result_publication", "START",
+        output_count=len(inventory),
+        storage_provider="Google Drive",
+        folder="RiverShift",
+    )
     _log_worker_stage("result_package_assembly", "START")
     output_root = work_dir / "outputs"
     inventory = []
