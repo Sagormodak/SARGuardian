@@ -511,3 +511,165 @@ def test_same_datatake_tile_mosaic_fills_full_aoi_support_from_adjacent_tiles(tm
     assert scl_water.tolist() == [[True, False]]
     assert np.isfinite(mndwi).all()
     assert nisar_water.shape == (1, 2)
+
+
+
+def test_best_sentinel_datatake_groups_adjacent_tiles_without_mixing_dates_or_platforms():
+    aoi = box(88.0, 24.0, 89.0, 25.0)
+    left = _item(
+        "same-datatake-left",
+        box(88.0, 24.0, 88.5, 25.0),
+        "2026-09-15",
+        18.0,
+        datatake_id="S2B_20260915T043701",
+        mgrs_tile="45RYJ",
+    )
+    right = _item(
+        "same-datatake-right",
+        box(88.5, 24.0, 89.0, 25.0),
+        "2026-09-15",
+        24.0,
+        datatake_id="S2B_20260915T043701",
+        mgrs_tile="45RZJ",
+    )
+    different_datatake = _item(
+        "different-datatake",
+        box(88.0, 24.0, 88.5, 25.0),
+        "2026-09-15",
+        1.0,
+        datatake_id="S2B_OTHER_PASS",
+        mgrs_tile="45RYJ",
+    )
+    different_platform = _item(
+        "different-platform",
+        box(88.5, 24.0, 89.0, 25.0),
+        "2026-09-15",
+        1.0,
+        datatake_id="S2B_20260915T043701",
+        platform="sentinel-2a",
+        mgrs_tile="45RZJ",
+    )
+    different_date = _item(
+        "different-date",
+        box(88.5, 24.0, 89.0, 25.0),
+        "2026-09-16",
+        1.0,
+        datatake_id="S2B_20260915T043701",
+        mgrs_tile="45RZJ",
+    )
+
+    selected = crosscheck.select_best_items(
+        [left, right, different_datatake, different_platform, different_date],
+        observation_date=date(2026, 9, 15),
+        aoi_geometry_wgs84=aoi,
+        analysis_crs=CRS.from_epsg(32645),
+        max_day_offset=1,
+        max_cloud_cover=40,
+    )
+
+    assert selected is not None
+    assert {row["id"] for row in selected} == {"same-datatake-left", "same-datatake-right"}
+    assert len(selected) == 2
+    assert crosscheck._items_coverage_fraction(selected, aoi, CRS.from_epsg(32645)) == pytest.approx(1.0)
+
+
+def _write_geotiff_at(
+    path: Path,
+    data: np.ndarray,
+    *,
+    x_origin: float,
+    pixel_size: float = 20.0,
+    nodata=None,
+):
+    data = np.asarray(data)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=data.shape[1],
+        height=data.shape[0],
+        count=1,
+        dtype=data.dtype,
+        crs="EPSG:32645",
+        transform=from_origin(x_origin, 2700000, pixel_size, pixel_size),
+        nodata=nodata,
+    ) as destination:
+        destination.write(data, 1)
+    return path
+
+
+def test_cross_sensor_reader_mosaics_adjacent_same_datatake_tiles_across_full_nisar_extent(tmp_path, monkeypatch):
+    nisar_data = np.array(
+        [
+            [1, 1, 0, 0],
+            [1, 1, 0, 0],
+        ],
+        dtype=np.uint8,
+    )
+    nisar_path = _write_geotiff_at(
+        tmp_path / "nisar-mask.tif",
+        nisar_data,
+        x_origin=500000,
+        pixel_size=20,
+        nodata=255,
+    )
+    signed_paths = {}
+    items = []
+    for tile_id, x_origin, green_value, water_class, mgrs_tile in (
+        ("left", 500000, 30, 6, "45RYJ"),
+        ("right", 500040, 10, 4, "45RZJ"),
+    ):
+        arrays = {
+            "B03": np.full((2, 2), green_value, dtype=np.uint16),
+            "B11": np.full((2, 2), 10, dtype=np.uint16),
+            "SCL": np.full((2, 2), water_class, dtype=np.uint8),
+        }
+        for band, values in arrays.items():
+            asset_path = _write_geotiff_at(
+                tmp_path / f"{tile_id}-{band}.tif",
+                values,
+                x_origin=x_origin,
+                pixel_size=20,
+                nodata=0,
+            )
+            signed_paths[f"https://example.test/{tile_id}/{band}.tif"] = str(asset_path)
+        items.append(_item(
+            f"tile-{tile_id}",
+            box(88.0, 24.0, 89.0, 25.0),
+            "2026-09-15",
+            20.0,
+            datatake_id="S2B_20260915T043701",
+            mgrs_tile=mgrs_tile,
+        ))
+
+    monkeypatch.setattr(
+        crosscheck,
+        "_signed_asset_url",
+        lambda href: signed_paths[href],
+    )
+
+    nisar_water, scl_water, mndwi, common_valid, nisar_support, metadata = (
+        crosscheck._read_cross_sensor_arrays(
+            nisar_path=nisar_path,
+            item=items,
+        )
+    )
+
+    assert nisar_water.tolist() == nisar_data.astype(bool).tolist()
+    assert scl_water.tolist() == [
+        [True, True, False, False],
+        [True, True, False, False],
+    ]
+    assert np.allclose(mndwi[:, :2], 0.5)
+    assert np.allclose(mndwi[:, 2:], 0.0)
+    assert common_valid.all()
+    assert nisar_support.all()
+    assert metadata["sentinel2_width"] == 4
+    assert metadata["sentinel2_height"] == 2
+    assert metadata["sentinel2_tile_count"] == 2
+    assert metadata["sentinel2_mgrs_tiles"] == ["45RYJ", "45RZJ"]
+    assert metadata["tile_common_clear_pixel_counts"] == {
+        "tile-left": 4,
+        "tile-right": 4,
+    }
+    assert metadata["common_support_fraction"] == pytest.approx(1.0)
