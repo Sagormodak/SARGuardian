@@ -11,10 +11,11 @@ import hashlib
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import requests
 
@@ -29,6 +30,16 @@ GOOGLE_TOKEN_URIS = frozenset({
 FOLDER_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
 RESUMABLE_THRESHOLD_BYTES = 5 * 1024 * 1024
 RESUMABLE_CHUNK_BYTES = 8 * 1024 * 1024
+MAX_RETRY_ATTEMPTS = 5
+RETRYABLE_HTTP_STATUSES = {408, 425, 429, 500, 502, 503, 504}
+
+def _retry_delay(attempt: int, retry_after: str | None = None) -> float:
+    if retry_after:
+        try:
+            return min(max(float(retry_after), 0.0), 30.0)
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return min(0.5 * (2 ** max(0, attempt - 1)), 8.0)
 
 
 class DriveUploadError(RuntimeError):
@@ -223,39 +234,192 @@ class DriveClient:
             raise DriveUploadError("Google Drive did not return a valid upload response.")
         return payload
 
+    def _query_resumable_status(self, upload_url: str, total: int) -> dict[str, Any]:
+        """Resolve ambiguous chunk failures using Google's acknowledged byte offset."""
+        headers = {"Content-Length": "0", "Content-Range": f"bytes */{total}"}
+        for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
+            response = None
+            try:
+                response = self.session.put(upload_url, data=b"", headers=self._headers() | headers, timeout=60)
+            except requests.RequestException as exc:
+                if attempt >= MAX_RETRY_ATTEMPTS:
+                    raise DriveUploadError("Google Drive resumable status check failed after network retries.") from exc
+                time.sleep(_retry_delay(attempt))
+                continue
+
+            status = response.status_code
+            if status in {200, 201}:
+                try:
+                    payload = response.json()
+                except (ValueError, AttributeError) as exc:
+                    raise DriveUploadError("Google Drive resumable status returned invalid final metadata.") from exc
+                finally:
+                    response.close()
+                if not isinstance(payload, dict):
+                    raise DriveUploadError("Google Drive resumable status returned invalid final metadata.")
+                return {"complete": True, "offset": total, "payload": payload}
+
+            if status == 308:
+                value = response.headers.get("Range", "")
+                response.close()
+                if not value:
+                    return {"complete": False, "offset": 0}
+                match = re.fullmatch(r"bytes=0-(\\d+)", value.strip())
+                if not match:
+                    raise DriveUploadError("Google Drive resumable status returned an invalid acknowledged byte range.")
+                offset = int(match.group(1)) + 1
+                if not 0 <= offset <= total:
+                    raise DriveUploadError("Google Drive resumable status returned an out-of-range byte offset.")
+                return {"complete": False, "offset": offset}
+
+            retry_after = response.headers.get("Retry-After")
+            response.close()
+            if status in RETRYABLE_HTTP_STATUSES and attempt < MAX_RETRY_ATTEMPTS:
+                time.sleep(_retry_delay(attempt, retry_after))
+                continue
+            if status in {404, 410}:
+                raise DriveUploadError("Google Drive resumable upload session expired.")
+            raise DriveUploadError(f"Google Drive resumable status check failed (HTTP {status}).")
+        raise DriveUploadError("Google Drive resumable status retries were exhausted.")
+
     def _upload_resumable(self, path: Path, metadata: dict[str, Any], method: str, url: str) -> dict[str, Any]:
-        """Bound memory use for lossless archives and large GeoTIFFs."""
+        """Stream chunks and resume only from offsets confirmed by Google Drive."""
+        total = path.stat().st_size
+        if total <= 0:
+            raise DriveUploadError("Cannot publish an empty RiverShift artifact.")
         try:
             response = self.session.request(
-                method, url, headers=self._headers() | {"X-Upload-Content-Type": "application/octet-stream"},
-                params={"uploadType": "resumable", "fields": "id"}, json=metadata, timeout=60,
+                method,
+                url,
+                headers=self._headers() | {
+                    "X-Upload-Content-Type": "application/octet-stream",
+                    "X-Upload-Content-Length": str(total),
+                },
+                params={"uploadType": "resumable", "fields": "id,name,size,md5Checksum,mimeType"},
+                json=metadata,
+                timeout=60,
             )
             response.raise_for_status()
             upload_url = response.headers.get("Location")
-            if not isinstance(upload_url, str) or not upload_url.startswith("https://"):
-                raise DriveUploadError("Google Drive did not create a resumable upload session.")
-            total = path.stat().st_size
-            offset = 0
-            with path.open("rb") as stream:
-                while offset < total:
-                    chunk = stream.read(min(RESUMABLE_CHUNK_BYTES, total - offset))
-                    if not chunk:
-                        raise DriveUploadError("Local result file changed during resumable upload.")
-                    end = offset + len(chunk) - 1
-                    response = self.session.put(upload_url, headers=self._headers() | {
-                        "Content-Length": str(len(chunk)), "Content-Range": f"bytes {offset}-{end}/{total}"},
-                        data=chunk, timeout=300)
-                    if end + 1 < total:
-                        if response.status_code not in {200, 201, 308}:
-                            response.raise_for_status()
-                    else:
-                        response.raise_for_status()
-                        payload = response.json()
-                    offset = end + 1
         except (OSError, requests.RequestException, ValueError) as exc:
-            raise DriveUploadError("Could not resumably upload a validated result file to Google Drive.") from exc
-        if not isinstance(payload, dict):
-            raise DriveUploadError("Google Drive did not return a valid resumable upload response.")
+            raise DriveUploadError("Could not create a Google Drive resumable upload session.") from exc
+        finally:
+            if "response" in locals():
+                response.close()
+
+        parsed = urlsplit(upload_url or "")
+        if parsed.scheme != "https" or parsed.hostname not in {"www.googleapis.com", "upload.googleapis.com"}:
+            raise DriveUploadError("Google Drive returned an untrusted resumable upload URL.")
+
+        offset = 0
+        payload: dict[str, Any] | None = None
+        with path.open("rb") as stream:
+            while offset < total and payload is None:
+                chunk_start = offset
+                stream.seek(chunk_start)
+                chunk = stream.read(min(RESUMABLE_CHUNK_BYTES, total - chunk_start))
+                if not chunk:
+                    raise DriveUploadError("Local RiverShift artifact changed during resumable upload.")
+                chunk_end = chunk_start + len(chunk)
+                chunk_headers = self._headers() | {
+                    "Content-Length": str(len(chunk)),
+                    "Content-Range": f"bytes {chunk_start}-{chunk_end - 1}/{total}",
+                }
+
+                attempt = 1
+                while True:
+                    response = None
+                    try:
+                        response = self.session.put(
+                            upload_url,
+                            headers=chunk_headers,
+                            data=chunk,
+                            timeout=300,
+                        )
+                    except requests.RequestException:
+                        if attempt >= MAX_RETRY_ATTEMPTS:
+                            raise DriveUploadError("Google Drive artifact chunk upload failed after network retries.") from None
+                        state = self._query_resumable_status(upload_url, total)
+                        if state["complete"]:
+                            payload = state["payload"]
+                            offset = total
+                            break
+                        server_offset = state["offset"]
+                        if server_offset < chunk_start:
+                            raise DriveUploadError("Google Drive resumable upload offset moved backwards.")
+                        if server_offset > chunk_end:
+                            raise DriveUploadError("Google Drive acknowledged bytes beyond the submitted chunk.")
+                        if server_offset > chunk_start:
+                            offset = server_offset
+                            break
+                        time.sleep(_retry_delay(attempt))
+                        attempt += 1
+                        continue
+
+                    status = response.status_code
+                    if status in {200, 201}:
+                        try:
+                            candidate = response.json()
+                        except (ValueError, AttributeError) as exc:
+                            raise DriveUploadError("Google Drive returned invalid final upload metadata.") from exc
+                        finally:
+                            response.close()
+                        if not isinstance(candidate, dict):
+                            raise DriveUploadError("Google Drive returned invalid final upload metadata.")
+                        payload = candidate
+                        offset = total
+                        break
+
+                    if status == 308:
+                        value = response.headers.get("Range", "")
+                        response.close()
+                        if not value:
+                            server_offset = 0
+                        else:
+                            match = re.fullmatch(r"bytes=0-(\\d+)", value.strip())
+                            if not match:
+                                raise DriveUploadError("Google Drive returned an invalid acknowledged byte range.")
+                            server_offset = int(match.group(1)) + 1
+                        if server_offset < chunk_start or server_offset > chunk_end:
+                            raise DriveUploadError("Google Drive acknowledged an invalid resumable upload offset.")
+                        if server_offset > chunk_start:
+                            offset = server_offset
+                            break
+                        if attempt >= MAX_RETRY_ATTEMPTS:
+                            raise DriveUploadError("Google Drive resumable upload made no progress.")
+                        time.sleep(_retry_delay(attempt))
+                        attempt += 1
+                        continue
+
+                    retry_after = response.headers.get("Retry-After")
+                    response.close()
+                    if status in RETRYABLE_HTTP_STATUSES:
+                        if attempt >= MAX_RETRY_ATTEMPTS:
+                            raise DriveUploadError(f"Google Drive chunk upload failed after retries (HTTP {status}).")
+                        state = self._query_resumable_status(upload_url, total)
+                        if state["complete"]:
+                            payload = state["payload"]
+                            offset = total
+                            break
+                        server_offset = state["offset"]
+                        if server_offset < chunk_start or server_offset > chunk_end:
+                            raise DriveUploadError("Google Drive resumable upload returned an invalid acknowledged offset.")
+                        if server_offset > chunk_start:
+                            offset = server_offset
+                            break
+                        time.sleep(_retry_delay(attempt, retry_after))
+                        attempt += 1
+                        continue
+
+                    if status in {404, 410}:
+                        raise DriveUploadError("Google Drive resumable upload session expired.")
+                    raise DriveUploadError(f"Google Drive chunk upload failed (HTTP {status}).")
+
+        if payload is None:
+            state = self._query_resumable_status(upload_url, total)
+            if not state["complete"]:
+                raise DriveUploadError("Google Drive acknowledged all chunks but did not confirm final artifact metadata.")
+            payload = state["payload"]
         return payload
 
     def download_file_to_path(self, file_id: str, destination: Path, *, max_bytes: int | None = None) -> dict[str, Any]:
