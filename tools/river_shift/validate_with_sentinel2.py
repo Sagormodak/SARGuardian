@@ -73,6 +73,20 @@ def _asset_href(item: dict[str, Any], key: str) -> str:
     return href
 
 
+def _is_projected_metre_crs(crs: CRS) -> bool:
+    """Require a projected CRS whose horizontal axes use true metres."""
+    if not crs.is_projected or not crs.axis_info:
+        return False
+    for axis in crs.axis_info[:2]:
+        unit_name = str(axis.unit_name or "").strip().lower()
+        conversion = axis.unit_conversion_factor
+        if unit_name not in {"metre", "meter", "metres", "meters", "m"}:
+            return False
+        if conversion is None or not math.isclose(float(conversion), 1.0, rel_tol=0.0, abs_tol=1e-12):
+            return False
+    return True
+
+
 def _item_coverage_fraction(
     item: dict[str, Any],
     aoi_geometry_wgs84: Any,
@@ -298,11 +312,11 @@ def _read_cross_sensor_arrays(
                 f"NISAR source mask has {nisar.width * nisar.height:,} pixels, over the safe limit {MAX_SOURCE_PIXELS:,}."
             )
         nisar_crs = CRS.from_user_input(nisar.crs)
-        if not nisar_crs.is_projected:
-            raise CrosscheckError("NISAR water mask must use a projected CRS.")
-        units = str(nisar_crs.linear_units or "").lower()
-        if units not in {"metre", "meter", "metres", "meters", "m"}:
-            raise CrosscheckError(f"NISAR mask CRS must use metres; found {units!r}.")
+        if not _is_projected_metre_crs(nisar_crs):
+            units = [axis.unit_name for axis in nisar_crs.axis_info[:2]]
+            raise CrosscheckError(
+                f"NISAR mask CRS must be projected in metres; found axis units {units!r}."
+            )
         nisar_transform = nisar.transform
         nisar_bounds_wgs84 = transform_bounds(nisar.crs, "EPSG:4326", *nisar.bounds, densify_pts=21)
         nisar_aoi_wgs84 = box(*nisar_bounds_wgs84)
@@ -324,9 +338,11 @@ def _read_cross_sensor_arrays(
             if b11.crs is None or not CRS.from_user_input(b11.crs).is_projected:
                 raise CrosscheckError("Sentinel-2 B11 asset must use a projected CRS.")
             b11_crs = CRS.from_user_input(b11.crs)
-            b11_units = str(b11_crs.linear_units or "").lower()
-            if b11_units not in {"metre", "meter", "metres", "meters", "m"}:
-                raise CrosscheckError("Sentinel-2 B11 grid must use metre units.")
+            if not _is_projected_metre_crs(b11_crs):
+                units = [axis.unit_name for axis in b11_crs.axis_info[:2]]
+                raise CrosscheckError(
+                    f"Sentinel-2 B11 grid must use projected metre units; found {units!r}."
+                )
             projected_aoi_bounds = transform_bounds(
                 "EPSG:4326", b11.crs, *nisar_bounds_wgs84, densify_pts=21
             )
