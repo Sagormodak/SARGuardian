@@ -8,6 +8,7 @@ from shapely.geometry import Polygon, mapping
 from process_gcov_job import (
     WorkerFailure,
     _configure_earthdata_credentials,
+    _product_date,
     select_covering_granules,
     select_date_window,
 )
@@ -16,18 +17,34 @@ from process_gcov_job import (
 def test_selected_observations_use_a_real_event_window_and_never_interpolate():
     rows = [
         {"acquisition_date": value, "passes_coverage_gate": True, "granule_names": [f"scene-{index}"]}
-        for index, value in enumerate(("2026-04-01", "2026-04-10", "2026-04-20", "2026-05-01", "2026-05-15", "2026-05-31"))
+        for index, value in enumerate(("2026-04-01", "2026-04-10", "2026-04-20", "2026-05-01", "2026-05-15", "2026-05-31", "2026-06-15"))
     ]
 
     selected, event_window = select_date_window(rows, date(2026, 5, 2))
 
     assert selected == [row["acquisition_date"] for row in rows]
     assert event_window == {
-        "before": "2026-04-20",
-        "event_observation": "2026-05-01",
-        "post_one": "2026-05-15",
-        "post_two": "2026-05-31",
+        "before": "2026-05-01",
+        "event_proximal_observation": "2026-05-15",
+        "post_one": "2026-05-31",
+        "post_two": "2026-06-15",
     }
+
+
+def test_event_window_does_not_use_pre_event_scene_as_event_observation():
+    rows = [
+        {"acquisition_date": value, "passes_coverage_gate": True, "granule_names": ["scene"]}
+        for value in ("2026-04-01", "2026-04-10", "2026-04-20", "2026-05-01")
+    ]
+    with pytest.raises(WorkerFailure, match="one qualifying acquisition before"):
+        select_date_window(rows, date(2026, 5, 2))
+
+
+def test_compact_and_iso_acquisition_timestamps_are_normalized():
+    assert _product_date({"start_time_utc": "20260627T124243"}) == "2026-06-27"
+    assert _product_date({"start_time_utc": "2026-06-27T12:42:43.000Z"}) == "2026-06-27"
+    assert _product_date({"granule_name": "NISAR_L2_PR_GCOV_024_019_D_076_4005_DHDH_A_20260627T124243_20260627T124249_P05023_N_P_J_001"}) == "2026-06-27"
+    assert _product_date({"start_time_utc": "invalid"}) is None
 
 
 def test_selected_observation_window_fails_closed_without_four_dates():
