@@ -1347,7 +1347,9 @@ def _assemble_job(
         source_provenance_sha256=sha256_file(provenance_path),
     )
     dates = prepared["dates"]
-    analysis_window = prepared["analysis_window"]
+    analysis_window = prepared.get("analysis_window") or prepared.get("event_window")
+    if not isinstance(analysis_window, dict):
+        raise WorkerFailure("PREPARED_JOB_INVALID", "The prepared job is missing its immutable comparison window.")
     selection = prepared["selection"]
     source_granule_manifest_path = provenance_path
     reference_date = dates[0]
