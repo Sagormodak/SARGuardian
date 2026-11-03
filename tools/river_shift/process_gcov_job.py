@@ -159,10 +159,12 @@ def require_worker_source_provenance(
             frequency=frequency,
             term=term,
         )
-    except (RasterContractError, OSError, ValueError):
+    except (RasterContractError, OSError, ValueError) as exc:
+        detail = str(exc).strip() or type(exc).__name__
         raise WorkerFailure(
             "SOURCE_PROVENANCE_INVALID",
-            "At least one aligned NISAR observation failed its source, maturity, layer or raster checksum provenance contract.",
+            "At least one aligned NISAR observation failed its source, maturity, layer or raster checksum provenance contract. "
+            f"Validation detail: {detail[:300]}",
         ) from None
     if not complete or len(records) != len(observation_paths):
         raise WorkerFailure(
