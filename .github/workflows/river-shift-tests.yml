@@ -39,11 +39,20 @@ jobs:
           cache-environment: true
           generate-run-shell: true
 
-      - name: Validate worker modules compile
+      - name: Validate worker modules compile and GDAL drivers
         shell: micromamba-shell {0}
         run: |
+          set -euo pipefail
           python --version
           gdalinfo --version
+          gdal_formats="$(gdalinfo --formats)"
+          for driver in HDF5 netCDF; do
+            if ! grep -Eiq "^[[:space:]]*${driver}[[:space:]]+-" <<< "$gdal_formats"; then
+              echo "::error::Required GDAL driver ${driver} is unavailable in the RiverShift test environment."
+              exit 1
+            fi
+            printf 'RIVERSHIFT_GDAL_DRIVER_%s=PASS\\n' "$driver"
+          done
           python -m compileall -q tools/river_shift
           echo "RIVERSHIFT_PYTHON_COMPILE=PASS"
 
