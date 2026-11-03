@@ -922,9 +922,13 @@ def _report_retry_wave() -> None:
     callbacks.send(
         "running",
         "delayed_retry_wave_completed",
-        retry_count=len(retry_rows),
-        retry_success_count=passed,
-        retry_failure_count=failed,
+        result_summary={
+            "retry_count": len(retry_rows),
+            "retry_success_count": passed,
+            "retry_failure_count": failed,
+            "retries_per_product": 1,
+            "further_automatic_retries": 0,
+        },
     )
     _write_output("callback_sequence", str(callbacks.sequence))
     _write_output("retry_success_count", str(passed))
