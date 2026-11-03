@@ -673,3 +673,44 @@ def test_river_shift_artifact_download_logs_safe_drive_failure_diagnostics(monke
     assert "artifact_name=river_change_candidates_preview.geojson" in caplog.text
     assert "private-file-id-123" not in caplog.text
     assert "body text must never enter" not in caplog.text
+
+def test_river_shift_artifact_download_logs_google_oauth_error_code_without_response_details(monkeypatch, caplog) -> None:
+    store = RiverShiftStore()
+    api = configure(monkeypatch, store)
+    created = api.post("/api/river-shift/jobs", json=payload()).json()
+    job_id = created["id"]
+    store.rows[job_id].update({
+        "state": "succeeded",
+        "artifact_manifest": [{
+            "name": "river_shift_timeseries_preview.json",
+            "path": "outputs/time-series/river_shift_timeseries_preview.json",
+            "bytes": 12,
+            "sha256": "b" * 64,
+            "drive_file_id": "private-file-id-456",
+        }],
+    })
+
+    class OAuthResponse:
+        status_code = 400
+
+        @staticmethod
+        def json():
+            return {"error": "invalid_grant", "error_description": "do-not-log-this-sensitive-detail"}
+
+    class OAuthRefreshError(RuntimeError):
+        response = OAuthResponse()
+
+    def fail_private_download(*_args, **_kwargs):
+        raise river_module.DriveUploadError(
+            "Could not authenticate to Google Drive result storage."
+        ) from OAuthRefreshError("OAuth token refresh failed")
+
+    monkeypatch.setattr(river_module, "download_private_result_to_path", fail_private_download)
+    with caplog.at_level("WARNING", logger=river_module.__name__):
+        response = api.get(f"/api/river-shift/jobs/{job_id}/artifacts/0")
+
+    assert response.status_code == 503
+    assert "upstream_http_status=400" in caplog.text
+    assert "upstream_error_code=invalid_grant" in caplog.text
+    assert "do-not-log-this-sensitive-detail" not in caplog.text
+    assert "private-file-id-456" not in caplog.text

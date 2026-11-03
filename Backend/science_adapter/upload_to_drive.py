@@ -52,6 +52,47 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _parse_oauth_client(raw_client_json: str) -> tuple[str, str, str]:
+    """Accept the same OAuth-client JSON shapes as the working GitHub Actions worker."""
+    try:
+        document = json.loads(raw_client_json)
+    except json.JSONDecodeError as exc:
+        raise DriveUploadError("Google Drive OAuth client JSON is invalid.") from exc
+    if not isinstance(document, dict):
+        raise DriveUploadError("Google Drive OAuth client JSON is invalid.")
+    # Google exports may be wrapped as installed/web credentials, or contain
+    # client_id/client_secret at the root. The worker supports all three.
+    client = document.get("installed") or document.get("web") or document
+    if not isinstance(client, dict):
+        raise DriveUploadError("Google Drive OAuth client JSON is invalid.")
+    client_id = client.get("client_id")
+    client_secret = client.get("client_secret")
+    token_uri = client.get("token_uri") or "https://oauth2.googleapis.com/token"
+    if not isinstance(client_id, str) or not client_id.strip() or not isinstance(client_secret, str) or not client_secret.strip():
+        raise DriveUploadError("Google Drive OAuth client JSON is incomplete.")
+    if not isinstance(token_uri, str) or token_uri not in GOOGLE_TOKEN_URIS:
+        raise DriveUploadError("Google Drive OAuth client uses an unsupported token endpoint.")
+    return client_id.strip(), client_secret.strip(), token_uri
+
+
+def _parse_refresh_token(raw_secret: str) -> str:
+    """Accept bare refresh tokens and token.json inputs exactly like the worker."""
+    try:
+        parsed = json.loads(raw_secret)
+    except json.JSONDecodeError:
+        token = raw_secret
+    else:
+        if isinstance(parsed, dict):
+            token = parsed.get("refresh_token")
+        elif isinstance(parsed, str):
+            token = parsed
+        else:
+            token = None
+    if not isinstance(token, str) or not token.strip():
+        raise DriveUploadError("Google Drive refresh token is missing or has an unsupported format.")
+    return token.strip()
+
+
 def load_drive_config(
     environ: dict[str, str] | None = None,
     *,
@@ -60,14 +101,14 @@ def load_drive_config(
     """Load Drive credentials; private file reads do not need a parent folder."""
     values = environ if environ is not None else os.environ
     raw_client = values.get("GOOGLE_DRIVE_OAUTH_CLIENT_JSON", "").strip()
-    refresh_token = values.get("GOOGLE_DRIVE_REFRESH_TOKEN", "").strip()
+    raw_refresh_token = values.get("GOOGLE_DRIVE_REFRESH_TOKEN", "").strip()
     # The parent-folder name is canonical. Keep the old name only as a
     # compatibility fallback for existing non-RiverShift upload integrations.
     parent_folder_id = (
         values.get("GOOGLE_DRIVE_PARENT_FOLDER_ID", "").strip()
         or values.get("GOOGLE_DRIVE_FOLDER_ID", "").strip()
     )
-    if not raw_client or not refresh_token or (require_parent_folder and not parent_folder_id):
+    if not raw_client or not raw_refresh_token or (require_parent_folder and not parent_folder_id):
         raise DriveUploadError(
             "Google Drive result storage is not fully configured; check "
             "GOOGLE_DRIVE_OAUTH_CLIENT_JSON, GOOGLE_DRIVE_REFRESH_TOKEN and "
@@ -79,22 +120,9 @@ def load_drive_config(
         raise DriveUploadError("Configured Google Drive parent folder identifier is invalid.")
     if not require_parent_folder and not FOLDER_ID_PATTERN.fullmatch(parent_folder_id):
         parent_folder_id = ""
-    try:
-        parsed = json.loads(raw_client)
-    except json.JSONDecodeError as exc:
-        raise DriveUploadError("Google Drive OAuth client JSON is invalid.") from exc
-    client = (parsed.get("web") or parsed.get("installed")) if isinstance(parsed, dict) else None
-    if not isinstance(client, dict):
-        raise DriveUploadError("Google Drive OAuth client JSON must contain web or installed credentials.")
-    client_id = client.get("client_id")
-    client_secret = client.get("client_secret")
-    token_uri = client.get("token_uri")
-    if not all(isinstance(value, str) and value.strip() for value in (client_id, client_secret, token_uri)):
-        raise DriveUploadError("Google Drive OAuth client JSON is incomplete.")
-    if token_uri not in GOOGLE_TOKEN_URIS:
-        raise DriveUploadError("Google Drive OAuth client uses an unsupported token endpoint.")
+    client_id, client_secret, token_uri = _parse_oauth_client(raw_client)
+    refresh_token = _parse_refresh_token(raw_refresh_token)
     return DriveConfig(client_id, client_secret, token_uri, refresh_token, parent_folder_id)
-
 
 class DriveClient:
     def __init__(self, config: DriveConfig, session: requests.Session | Any | None = None) -> None:

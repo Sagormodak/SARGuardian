@@ -261,6 +261,13 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     && jobFrame.date === currentJobFrameMetadata.date ? jobFrame.data : null;
   const hasJobPreviewOverlay = Boolean(jobPreview && riverJobId && jobPreview.jobId === riverJobId
     && (jobPreview.changeLayer || currentJobFrame));
+  const activeJobPreview = jobPreview && riverJobId && jobPreview.jobId === riverJobId ? jobPreview : null;
+  const hasLiveJobResult = Boolean(riverJob?.state === 'succeeded' && activeJobPreview
+    && (activeJobPreview.report || activeJobPreview.changeLayer));
+  const hasLiveJobResultPending = Boolean(riverJob?.state === 'succeeded' && riverJobArtifactManifest?.length
+    && !hasLiveJobResult);
+  const explorerReport = report ?? activeJobPreview?.report ?? null;
+  const activeJobPreviewError = activeJobPreview?.error || '';
   const verifiedGeoJSONFiles = useMemo(() => {
     if (!report || report.analysis_type === 'water_timeseries_screening') return [];
     return geoJSONFiles.filter((file) => isRiverShiftGeoJSONApproved(report, file.sha256));
@@ -709,7 +716,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     jobFrameDate,
   ]);
 
-  const resultType = useMemo(() => report ? report.analysis_type.replace(/_/g, ' ') : 'No result imported', [report]);
+  const resultType = explorerReport ? explorerReport.analysis_type.replace(/_/g, ' ') : 'No result loaded';
 
   return (
     <main className="river-shift-page">
@@ -900,7 +907,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
           </div>
         </section>
       )}
-      {riverJobError && (
+      {riverJobError && riverJobError !== activeJobPreviewError && (
         <section className="rs-panel rs-job-feedback" aria-live="assertive">
           <p className="rs-error" role="alert">{riverJobError}</p>
         </section>
@@ -930,7 +937,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
           </section>
         )}
         {jobPreview?.jobId === riverJob.id && jobPreview.error && <p className="rs-warning-inline" role="status">{jobPreview.error}</p>}
-        {!!riverJob.artifact_manifest?.length && <div className="rs-artifact-list"><strong>Private result files · checksum verified</strong>{riverJob.artifact_manifest.map((artifact, index) => artifact.bytes <= 4_000_000
+        {!!riverJob.artifact_manifest?.length && <div className="rs-artifact-list"><strong>Private result files · upload checksum verified</strong><p className="rs-muted">Upload receipts preserve the original size and checksum. In-app downloads and previews are checked again before use.</p>{riverJob.artifact_manifest.map((artifact, index) => artifact.bytes <= 4_000_000
           ? <button className="rs-secondary-button" key={`${artifact.path}-${index}`} type="button" onClick={() => void saveRiverArtifact(index, artifact.name)}>{artifact.name} · {(artifact.bytes / 1_000_000).toFixed(2)} MB</button>
           : <span className="rs-muted" key={`${artifact.path}-${index}`}>{artifact.name} · {(artifact.bytes / 1_000_000).toFixed(2)} MB · stored privately; too large for in-app download</span>)}</div>}
       </section>}
@@ -941,9 +948,11 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
           <span className="rs-chip">NO SYNTHETIC METRICS</span>
         </div>
         <p className="rs-muted">
-          Run the documented CLI scripts in tools/river_shift, then import their result JSON and GeoJSON here.
+          Live RiverShift jobs load their checksum-checked report and map previews here automatically.
+          The import controls below are optional and are intended for external or offline research results.
           Catalogue rows are never presented as measured flood or erosion results.
         </p>
+        <p className="rs-kicker">OPTIONAL MANUAL / RESEARCH IMPORT</p>
         <div className="rs-upload-grid">
           <label className="rs-upload"><span>Import result JSON</span><small>Flood, morphology or validation report</small>
             <input type="file" accept=".json,application/json" onChange={(event) => void loadReport(event.target.files?.[0])} />
@@ -954,7 +963,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
         </div>
         {reportError && <p className="rs-error" role="alert">{reportError}</p>}
         {geoJSONError && <p className="rs-error" role="alert">{geoJSONError}</p>}
-        {report && <ReportPanel report={report} />}
+        {explorerReport && <ReportPanel report={explorerReport} />}
         {report?.analysis_type === 'water_timeseries_screening' && (
           <section className="rs-timeseries" aria-label="Observed acquisition playback">
             <div className="rs-section-heading"><div><p className="rs-kicker">OBSERVED ACQUISITIONS</p><h3>Water change playback</h3></div>
@@ -994,7 +1003,15 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
           {hasJobPreviewOverlay && !hasVerifiedOverlay && <p className="rs-warning-inline">Provisional map preview is drawn from the checksum-bound full-resolution binary masks using lower-resolution occupancy footprints. The map is for visual orientation only; full-resolution masks and scientific measurements remain authoritative and PROVISIONAL.</p>}
           {report && geoJSONFiles.length > 0 && !hasVerifiedOverlay && <p className="rs-warning-inline" role="status">Loaded GeoJSON is not drawn: the report is not VERIFIED, the checksum does not match, or the complete time-series layer set is missing.</p>}
         </section>
-        {!report && <div className="rs-empty-state"><strong>{resultType}</strong><p>No scientific result is loaded. Run a script and import its JSON report; no demo measurement is shown here.</p></div>}
+        {!report && !hasLiveJobResult && <div className="rs-empty-state">
+          <strong>{hasLiveJobResultPending ? 'Live processing finished · preview not loaded' : resultType}</strong>
+          <p>{hasLiveJobResultPending
+            ? 'A successful live job and its private result files are on record, but the automatic preview has not loaded. See the storage message above; manual import is not required for a live job.'
+            : 'No live result or external report is loaded yet. Start the live processing workflow above; manual JSON and GeoJSON import is optional.'}</p>
+        </div>}
+        {hasLiveJobResult && !report && <p className="rs-info-banner" role="status">
+          Live NISAR result loaded automatically from the completed job. No CLI run or manual file import is needed. The preview remains PROVISIONAL until independent validation is attached.
+        </p>}
       </section>
 
       <footer className="rs-footer">
