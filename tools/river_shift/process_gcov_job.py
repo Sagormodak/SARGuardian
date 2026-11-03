@@ -37,7 +37,7 @@ from shapely.ops import transform
 ROOT = Path(__file__).resolve().parents[2]
 TOOLS = Path(__file__).resolve().parent
 MAX_SELECTED_DATES = 12
-MAX_SELECTED_GRANULES = 24
+MAX_SELECTED_GRANULES = 48
 MAX_GRANULES_PER_DATE = 4
 MAX_WEB_PREVIEW_BYTES = 3_500_000
 
@@ -372,7 +372,7 @@ def select_covering_granules(
 
 
 class JobCallbacks:
-    def __init__(self, job_id: str, fingerprint: str, callback_base: str) -> None:
+    def __init__(self, job_id: str, fingerprint: str, callback_base: str, *, initial_sequence: int = 0) -> None:
         self.job_id = str(UUID(job_id))
         if not re.fullmatch(r"[a-f0-9]{64}", fingerprint):
             raise WorkerFailure("INVALID_REQUEST", "Request fingerprint is invalid.")
@@ -383,7 +383,9 @@ class JobCallbacks:
             raise WorkerFailure("WORKER_CONFIGURATION_INVALID", "Callback URL must be a public HTTPS API base URL.")
         base = callback_base.rstrip("/")
         self.endpoint = f"{base}/api/river-shift/jobs/{self.job_id}/callback"
-        self.sequence = 0
+        if isinstance(initial_sequence, bool) or not isinstance(initial_sequence, int) or initial_sequence < 0:
+            raise WorkerFailure("INVALID_REQUEST", "Callback sequence must be a non-negative integer.")
+        self.sequence = initial_sequence
         self.stage = "worker_startup"
         self.run_id = _required_env("GITHUB_RUN_ID")
         server = os.environ.get("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
@@ -593,6 +595,10 @@ def write_web_preview(
             metric_features.append((feature, metric))
     except Exception:
         raise WorkerFailure("PREVIEW_GENERATION_FAILED", f"Could not prepare a map preview for {source_path.name}.") from None
+    # Display-only previews may be simplified and omit small patches. Keep the
+    # largest AOI features first so a dense candidate layer cannot fail an
+    # otherwise valid scientific analysis merely because of a web payload cap.
+    metric_features.sort(key=lambda item: item[1].area, reverse=True)
 
     pixel_area = max(float(pixel_size_m) ** 2, 1.0)
     minimum_area = 4.0 * pixel_area
@@ -628,9 +634,46 @@ def write_web_preview(
             destination.write_bytes(encoded)
             return preview
         tolerance *= 2.0
+
+    # Last-resort display budget: retain the largest simplified candidate
+    # polygons and explicitly report how many small patches were omitted.
+    # Full-resolution GeoJSON and metrics remain untouched and authoritative.
+    tolerance = max(float(pixel_size_m) * 128.0, 128.0)
+    features = []
+    for feature, metric in metric_features:
+        if metric.area < minimum_area:
+            continue
+        simplified = metric.simplify(tolerance, preserve_topology=True)
+        if simplified.is_empty:
+            continue
+        features.append({
+            "type": "Feature",
+            "properties": dict(feature.get("properties") or {}),
+            "geometry": mapping(transform(unproject, simplified)),
+        })
+    original_count = len(features)
+    while features:
+        omitted = original_count - len(features)
+        preview["features"] = features
+        preview["river_shift_preview"]["simplification_tolerance_m"] = round(tolerance, 3)
+        preview["river_shift_preview"]["features_omitted_for_size"] = omitted
+        preview["river_shift_preview"]["warning"] = (
+            "DISPLAY ONLY: boundaries were simplified and the smallest patches were omitted to fit the map payload. "
+            "Use the full private GeoJSON for detailed GIS review. Scientific metrics use the full-resolution analysis."
+        )
+        encoded = json.dumps(preview, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        if len(encoded) <= max_bytes:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(encoded)
+            return preview
+        # Remove a deterministic tail of the smallest remaining features.
+        keep = max(1, int(len(features) * 0.75))
+        if keep == len(features):
+            keep -= 1
+        features = features[:keep]
     raise WorkerFailure(
         "PREVIEW_TOO_LARGE",
-        f"The selected AOI produces a web map preview larger than {max_bytes} bytes after safe simplification; narrow the AOI before processing.",
+        f"Even the coarsely simplified display-only map could not fit the {max_bytes}-byte preview budget; full scientific outputs remain available.",
     )
 
 
@@ -658,7 +701,7 @@ def create_web_previews(
     ]
     change_features = []
     for source_path, destination, layer_type in sources:
-        preview = write_web_preview(source_path, destination, project, unproject, pixel_size, max_bytes=1_100_000)
+        preview = write_web_preview(source_path, destination, project, unproject, pixel_size, max_bytes=MAX_WEB_PREVIEW_BYTES)
         layers.append({"path": destination.relative_to(work_dir).as_posix(), "sha256": sha256_file(destination)})
         for feature in preview["features"]:
             properties = dict(feature.get("properties") or {})
