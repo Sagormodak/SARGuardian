@@ -27,7 +27,9 @@ from .persistence import (
     PersistenceError,
     get_job_store,
 )
-from .river_shift import RiverShiftCatalogRequest, search_gcov_catalogue
+from .river_shift import (
+    FlightDirection, FrameCoverage, Polarization, RiverShiftCatalogRequest, search_gcov_catalogue,
+)
 from science_adapter.geometry import validate_wkt
 from science_adapter.upload_to_drive import DriveUploadError, download_private_result_to_path
 
@@ -46,6 +48,9 @@ class CreateRiverShiftJobRequest(BaseModel):
     end_date: date
     event_date: date
     maturity: Literal["BETA", "PROVISIONAL"] = "PROVISIONAL"
+    main_band_polarization: Polarization | None = None
+    flight_direction: FlightDirection | None = None
+    frame_coverage: FrameCoverage = "ALL"
     frequency: Literal["frequencyA", "frequencyB"] = "frequencyA"
     covariance_term: Literal["HHHH", "HVHV", "VVVV", "VHVH", "RHRH", "RVRV"] = "HHHH"
     threshold_method: Literal["otsu", "manual"] = "otsu"
@@ -163,6 +168,35 @@ def request_fingerprint(request_snapshot: dict[str, Any], manifest_snapshot: dic
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _acquisition_date(value: Any, granule_name: Any = None) -> str | None:
+    """Normalize CMR ISO and NISAR filename timestamps to one UTC calendar date."""
+    candidates: list[str] = []
+    if isinstance(value, str) and value.strip():
+        candidates.append(value.strip())
+    if isinstance(granule_name, str):
+        parts = granule_name.removesuffix(".h5").split("_")
+        if len(parts) == 18 and parts[0] == "NISAR" and parts[1] == "L2" and parts[3] == "GCOV":
+            candidates.append(parts[11])
+
+    for candidate in candidates:
+        compact = re.fullmatch(r"(\d{8}T\d{6})(?:\.\d+)?Z?", candidate)
+        if compact:
+            try:
+                return datetime.strptime(compact.group(1), "%Y%m%dT%H%M%S").date().isoformat()
+            except ValueError:
+                continue
+        try:
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
+                return date.fromisoformat(candidate).isoformat()
+            parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone(UTC)
+            return parsed.date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
 def _discover_manifest(payload: CreateRiverShiftJobRequest) -> tuple[dict[str, Any], list[str]]:
     aoi = validate_wkt(payload.aoi_wkt)
     catalogue = search_gcov_catalogue(RiverShiftCatalogRequest(
@@ -170,16 +204,20 @@ def _discover_manifest(payload: CreateRiverShiftJobRequest) -> tuple[dict[str, A
         start_date=payload.start_date,
         end_date=payload.end_date,
         maturity=payload.maturity,
-        frame_coverage="ALL",
+        main_band_polarization=payload.main_band_polarization,
+        flight_direction=payload.flight_direction,
+        frame_coverage=payload.frame_coverage,
         max_results=100,
     ))
     products = [item.model_dump(mode="json") for item in catalogue.products]
     names = sorted({str(item["granule_name"]) for item in products if item.get("granule_name")})
-    dates = sorted({
-        str(item.get("start_time_utc") or "")[:10]
+    date_values = {
+        observed
         for item in products
-        if isinstance(item.get("start_time_utc"), str) and len(str(item.get("start_time_utc"))) >= 10
-    })
+        if (observed := _acquisition_date(item.get("start_time_utc"), item.get("granule_name"))) is not None
+        and payload.start_date.isoformat() <= observed <= payload.end_date.isoformat()
+    }
+    dates = sorted(date_values)
     if len(dates) < 4:
         raise HTTPException(
             status_code=422,
@@ -192,6 +230,11 @@ def _discover_manifest(payload: CreateRiverShiftJobRequest) -> tuple[dict[str, A
         "source": "NASA CMR UMM-G / ASF DAAC",
         "endpoint": catalogue.query.get("endpoint"),
         "collection_short_names": catalogue.query.get("collection_short_names"),
+        "discovery_filters": {
+            "main_band_polarization": payload.main_band_polarization,
+            "flight_direction": payload.flight_direction,
+            "frame_coverage": payload.frame_coverage,
+        },
         "reported_cmr_hits": catalogue.query.get("reported_cmr_hits"),
         "product_count": len(products),
         "unique_dates": dates,
@@ -216,6 +259,9 @@ def _dispatch(settings: Any, job_id: UUID, request_snapshot: dict[str, Any], gra
         "end_date": request_snapshot["end_date"],
         "event_date": request_snapshot["event_date"],
         "maturity": request_snapshot["maturity"],
+        "main_band_polarization": request_snapshot.get("main_band_polarization") or "",
+        "flight_direction": request_snapshot.get("flight_direction") or "",
+        "frame_coverage": request_snapshot.get("frame_coverage", "ALL"),
         "frequency": request_snapshot["frequency"],
         "covariance_term": request_snapshot["covariance_term"],
         "threshold_method": request_snapshot["threshold_method"],
