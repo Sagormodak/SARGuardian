@@ -1,6 +1,6 @@
 # RiverShift scientific tools
 
-RiverShift is a separate, reproducible NISAR-based river surface-change module in SARGuardian_Dynamic.
+RiverShift is a separate NISAR GCOV processing engine. Its authenticated UI/API and owner-scoped job records live in moshiour0/SARGuardian_Dynamic; this folder contains only the isolated scientific processing worker in moshiour0/SARGuardian-backend.
 
 ## Development scope
 This folder provides a first local scientific workflow:
@@ -22,7 +22,7 @@ Processing is limited by NISAR coverage, the AOI's available comparable acquisit
 See `docs/RIVERSHIFT_PROCESSING_SETUP.md` for the GitHub and backend settings required before live job dispatch can run.
 
 ## Environment
-- Python 3.11 or newer.
+- Python 3.13, as pinned by environment.yml.
 - GDAL 3.13.0 or newer with HDF5 support.
 - Rasterio compatible with the installed GDAL runtime.
 - Earthdata Login/ASF access for product downloads.
