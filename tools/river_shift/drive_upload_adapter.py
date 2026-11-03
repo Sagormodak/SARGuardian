@@ -183,17 +183,47 @@ class DriveClient:
                                  params={"fields": "permissions(type,role,allowFileDiscovery)"}).get("permissions")
         if not isinstance(permissions, list):
             raise DriveUploadError("Google Drive returned invalid folder permissions.")
-        if any(isinstance(item, dict) and item.get("type") == "anyone" for item in permissions):
-            raise DriveUploadError("Configured Google Drive result storage is public; private result retention is blocked.")
+        shared_types = {"anyone", "domain", "group"}
+        if any(isinstance(item, dict) and item.get("type") in shared_types for item in permissions):
+            raise DriveUploadError("Configured Google Drive result folder is shared beyond its owner; private result retention is blocked.")
 
     def upload_file(self, path: Path, parent_id: str) -> dict[str, Any]:
+        expected_bytes = path.stat().st_size
+        if expected_bytes <= 0:
+            raise DriveUploadError("Cannot publish an empty RiverShift result artifact.")
+        expected_md5 = _md5_file(path)
         existing = self._find_named_file(path.name, parent_id)
+
+        # Scientific outputs are immutable within a job folder. A worker rerun
+        # may reuse byte-identical artifacts, but it must never silently replace
+        # a different raster/report under the same result path. The root manifest
+        # is the only mutable file because it is refreshed with remote receipts.
+        if existing and path.name != "result-manifest.json":
+            remote = self._json(
+                "GET",
+                f"{DRIVE_API}/files/{quote(existing, safe='')}",
+                params={"fields": "id,name,size,md5Checksum,mimeType"},
+            )
+            if (remote.get("id") == existing and remote.get("name") == path.name
+                    and str(remote.get("size")) == str(expected_bytes)
+                    and remote.get("md5Checksum") == expected_md5):
+                return {
+                    "drive_file_id": existing,
+                    "name": path.name,
+                    "bytes": expected_bytes,
+                    "md5": expected_md5,
+                    "remote_md5": remote["md5Checksum"],
+                    "status": "PASS",
+                    "reused": True,
+                }
+            raise DriveUploadError("A prior RiverShift artifact has different bytes; immutable overwrite is blocked.")
+
         method = "PATCH" if existing else "POST"
         url = f"{DRIVE_UPLOAD_API}/files/{quote(existing, safe='')}" if existing else f"{DRIVE_UPLOAD_API}/files"
         metadata: dict[str, Any] = {"name": path.name}
         if not existing:
             metadata["parents"] = [parent_id]
-        if path.stat().st_size > RESUMABLE_THRESHOLD_BYTES:
+        if expected_bytes > RESUMABLE_THRESHOLD_BYTES:
             payload = self._upload_resumable(path, metadata, method, url)
         else:
             payload = self._upload_multipart(path, metadata, method, url)
@@ -204,13 +234,13 @@ class DriveClient:
         # metadata and compare byte count plus MD5 before allowing cleanup.
         remote = self._json("GET", f"{DRIVE_API}/files/{quote(identifier, safe='')}",
                             params={"fields": "id,name,size,md5Checksum,mimeType"})
-        expected_md5 = _md5_file(path)
         if (remote.get("id") != identifier or remote.get("name") != path.name
-                or str(remote.get("size")) != str(path.stat().st_size)
+                or str(remote.get("size")) != str(expected_bytes)
                 or remote.get("md5Checksum") != expected_md5):
             raise DriveUploadError("Google Drive did not verify the uploaded result bytes.")
-        return {"drive_file_id": identifier, "name": path.name, "bytes": path.stat().st_size,
-                "md5": expected_md5, "remote_md5": remote["md5Checksum"], "status": "PASS"}
+        return {"drive_file_id": identifier, "name": path.name, "bytes": expected_bytes,
+                "md5": expected_md5, "remote_md5": remote["md5Checksum"], "status": "PASS",
+                "reused": False}
 
     def _upload_multipart(self, path: Path, metadata: dict[str, Any], method: str, url: str) -> dict[str, Any]:
         try:
