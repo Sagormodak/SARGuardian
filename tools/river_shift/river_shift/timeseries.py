@@ -91,9 +91,9 @@ def run_water_timeseries_analysis(
         water_area = float(water.sum() * pixel_area_m2 / 1_000_000.0)
         mask_path = out / f"water_{row['date']}_mask.tif"
         geojson_path = out / f"water_{row['date']}.geojson"
-        write_mask(mask_path, water, valid, profiles[row["date"]])
+        write_mask(mask_path, water, common_valid, profiles[row["date"]])
         polygon_count = write_mask_geojson(
-            geojson_path, water, valid, profiles[row["date"]], class_name="open_water_candidate",
+            geojson_path, water, common_valid, profiles[row["date"]], class_name="open_water_candidate",
         )
         metadata = sidecars[index] if sidecars else None
         frames.append({
@@ -115,7 +115,7 @@ def run_water_timeseries_analysis(
     for offset in (-sensitivity_delta_db, -sensitivity_delta_db / 2, 0.0, sensitivity_delta_db / 2, sensitivity_delta_db):
         scenario_threshold = float(threshold_db + offset)
         scenario_frames = []
-        for row, array, valid in zip(ordered, arrays, valids):
+        for row, array in zip(ordered, arrays):
             scenario_water = classify_open_water(
                 array, common_valid, units=units, threshold_db=scenario_threshold, minimum_pixels=min_pixels,
             )
