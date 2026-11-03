@@ -1,0 +1,12 @@
+name: rivershift
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - gdal>=3.13,<4
+  - rasterio>=1.4,<2
+  - numpy>=2,<3
+  - scipy>=1.13,<2
+  - shapely>=2,<3
+  - requests>=2.32,<3
+  - pyproj>=3.6,<4
