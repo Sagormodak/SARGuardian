@@ -635,7 +635,7 @@ def run_crosscheck(
         max_day_offset=max_day_offset,
         max_cloud_cover=max_cloud_cover,
     )
-    selected = select_best_item(
+    selected_items = select_best_items(
         items,
         observation_date=observation_date,
         aoi_geometry_wgs84=aoi_geometry,
@@ -643,7 +643,7 @@ def run_crosscheck(
         max_day_offset=max_day_offset,
         max_cloud_cover=max_cloud_cover,
     )
-    if selected is None:
+    if selected_items is None:
         report = {
             "status": "NO_MATCHING_SENTINEL2_SCENE_WITHIN_FILTER",
             "analysis_type": "sentinel2_cross_sensor_agreement_screen",
@@ -657,7 +657,7 @@ def run_crosscheck(
             },
             "metrics": None,
             "warnings": [
-                "No Sentinel-2 L2A scene with the required B03/B11/SCL assets met the requested date, cloud and AOI-overlap filters.",
+                "No Sentinel-2 L2A datatake with the required B03/B11/SCL assets met the requested date, cloud and AOI-overlap filters.",
                 "No comparison metrics were calculated; absence of a match is not zero agreement.",
             ],
             "sources": {"stac_api": STAC_SEARCH_URL, "collection": COLLECTION, "provider": "Copernicus Sentinel-2 via Microsoft Planetary Computer"},
@@ -665,13 +665,23 @@ def run_crosscheck(
         _write_json(report_path, report)
         return report
 
-    properties = selected.get("properties") or {}
-    acquisition_datetime = str(properties.get("datetime"))
-    acquisition_date = _item_date(selected)
-    coverage_fraction = _item_coverage_fraction(selected, aoi_geometry, nisar_crs)
+    primary = selected_items[0]
+    properties = primary.get("properties") or {}
+    acquisition_datetimes = sorted(
+        str((row.get("properties") or {}).get("datetime") or "")
+        for row in selected_items
+    )
+    acquisition_datetime = acquisition_datetimes[0]
+    acquisition_dates = {_item_date(row) for row in selected_items}
+    if len(acquisition_dates) != 1:
+        raise CrosscheckError("Selected Sentinel-2 datatake contains inconsistent acquisition dates.")
+    acquisition_date = next(iter(acquisition_dates))
+    coverage_fraction = _items_coverage_fraction(
+        selected_items, aoi_geometry, nisar_crs
+    )
     nisar_water, scl_water, mndwi_index, common_valid, nisar_support, raster_meta = _read_cross_sensor_arrays(
         nisar_path=nisar_mask_path,
-        item=selected,
+        item=selected_items,
     )
     common_valid = common_valid & np.isfinite(mndwi_index)
     common_count = int(np.count_nonzero(common_valid))
@@ -689,7 +699,7 @@ def run_crosscheck(
     if coverage_fraction < minimum_common_support or support_fraction < minimum_common_support:
         status = "INSUFFICIENT_OPTICAL_SPATIAL_SUPPORT"
         warnings.append(
-            "The selected single Sentinel-2 tile and/or clear common-valid support covers less than the configured threshold; no agreement score is published."
+            "The selected same-datatake Sentinel-2 tile mosaic and/or clear common-valid support covers less than the configured threshold; no agreement score is published."
         )
     else:
         metrics = {
@@ -712,13 +722,25 @@ def run_crosscheck(
         "observation": {
             "requested_nisar_date": observation_date.isoformat(),
             "sentinel2_datetime_utc": acquisition_datetime,
+            "sentinel2_datetimes_utc": acquisition_datetimes,
             "sentinel2_date": acquisition_date.isoformat(),
             "absolute_date_offset_days": abs((acquisition_date - observation_date).days),
-            "sentinel2_item_id": selected.get("id"),
+            "sentinel2_item_id": primary.get("id"),
+            "sentinel2_item_ids": [row.get("id") for row in selected_items],
             "sentinel2_product_uri": properties.get("s2:product_uri"),
+            "sentinel2_datatake_id": properties.get("s2:datatake_id"),
             "mgrs_tile": properties.get("s2:mgrs_tile"),
+            "mgrs_tiles": raster_meta["sentinel2_mgrs_tiles"],
+            "sentinel2_tile_count": len(selected_items),
             "platform": properties.get("platform"),
-            "cloud_cover_percent": float(properties.get("eo:cloud_cover")),
+            "cloud_cover_percent": float(
+                sum(float((row.get("properties") or {}).get("eo:cloud_cover")) for row in selected_items)
+                / len(selected_items)
+            ),
+            "maximum_tile_cloud_cover_percent": max(
+                float((row.get("properties") or {}).get("eo:cloud_cover"))
+                for row in selected_items
+            ),
             "aoi_footprint_overlap_fraction": coverage_fraction,
         },
         "method": {
@@ -727,8 +749,10 @@ def run_crosscheck(
             "water_classification_2": f"MNDWI = (B03 - B11) / (B03 + B11) > {mndwi_threshold}",
             "mndwi_threshold": float(mndwi_threshold),
             "scl_clear_classes_used": list(SCL_VALID_CLASSES),
-            "common_grid": "Sentinel-2 B11 20 m grid",
+            "common_grid": "Sentinel-2 B11 20 m grid expanded to the full NISAR extent; adjacent MGRS tiles from one datatake are mosaicked",
+            "tile_mosaic_method": "same platform, s2:datatake_id and acquisition date; clearest tile fills overlapping valid pixels first",
             "b03_resampling": "bilinear",
+            "b11_resampling": "bilinear",
             "scl_and_nisar_mask_resampling": "nearest",
             "minimum_common_support_fraction": minimum_common_support,
         },
@@ -736,6 +760,9 @@ def run_crosscheck(
             "nisar_valid_pixels_on_sentinel2_grid": nisar_count,
             "common_valid_pixels": common_count,
             "common_support_fraction": support_fraction,
+            "sentinel2_tile_count": len(selected_items),
+            "sentinel2_mgrs_tiles": raster_meta["sentinel2_mgrs_tiles"],
+            "tile_common_clear_pixel_counts": raster_meta["tile_common_clear_pixel_counts"],
             "sentinel2_grid": {
                 "crs": raster_meta["sentinel2_crs"],
                 "width": raster_meta["sentinel2_width"],
@@ -749,9 +776,22 @@ def run_crosscheck(
             "catalogue": "Microsoft Planetary Computer STAC",
             "stac_api": "https://planetarycomputer.microsoft.com/api/stac/v1/",
             "collection": COLLECTION,
-            "item_id": selected.get("id"),
+            "item_id": primary.get("id"),
+            "item_ids": [row.get("id") for row in selected_items],
+            "tile_items": [
+                {
+                    "item_id": row.get("id"),
+                    "mgrs_tile": (row.get("properties") or {}).get("s2:mgrs_tile"),
+                    "cloud_cover_percent": float((row.get("properties") or {}).get("eo:cloud_cover")),
+                    "unsigned_assets": {
+                        key: _asset_href(row, key)
+                        for key in ("B03", "B11", "SCL")
+                    },
+                }
+                for row in selected_items
+            ],
             "unsigned_assets": {
-                key: _asset_href(selected, key)
+                key: _asset_href(primary, key)
                 for key in ("B03", "B11", "SCL")
             },
         },
