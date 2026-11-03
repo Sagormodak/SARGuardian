@@ -577,6 +577,126 @@ def _to_metric_transformer(aoi, raster_crs: CRS):
     return Transformer.from_crs(source, raster_crs, always_xy=True).transform
 
 
+def write_web_preview(
+    source_path: Path,
+    destination: Path,
+    project,
+    unproject,
+    pixel_size_m: float,
+    *,
+    max_bytes: int = MAX_WEB_PREVIEW_BYTES,
+) -> dict[str, Any]:
+    """Legacy GeoJSON preview helper retained for import/API compatibility; not used by live jobs."""
+    try:
+        payload = json.loads(source_path.read_text(encoding="utf-8"))
+        raw_features = payload.get("features")
+        if payload.get("type") != "FeatureCollection" or not isinstance(raw_features, list):
+            raise ValueError("not a GeoJSON FeatureCollection")
+        metric_features = []
+        for feature in raw_features:
+            geometry = shape(feature.get("geometry"))
+            metric = transform(project, geometry)
+            metric_features.append((feature, metric))
+    except Exception:
+        raise WorkerFailure("PREVIEW_GENERATION_FAILED", f"Could not prepare a map preview for {source_path.name}.") from None
+    # Display-only previews may be simplified and omit small patches. Keep the
+    # largest AOI features first so a dense candidate layer cannot fail an
+    # otherwise valid scientific analysis merely because of a web payload cap.
+    metric_features.sort(key=lambda item: item[1].area, reverse=True)
+
+    pixel_area = max(float(pixel_size_m) ** 2, 1.0)
+    minimum_area = 4.0 * pixel_area
+    tolerance = max(float(pixel_size_m) * 0.5, 0.5)
+    while tolerance <= max(float(pixel_size_m) * 64, 64):
+        features = []
+        for feature, metric in metric_features:
+            if metric.area < minimum_area:
+                continue
+            simplified = metric.simplify(tolerance, preserve_topology=True)
+            if simplified.is_empty:
+                continue
+            features.append({
+                "type": "Feature",
+                "properties": dict(feature.get("properties") or {}),
+                "geometry": mapping(transform(unproject, simplified)),
+            })
+        preview = {
+            "type": "FeatureCollection",
+            "name": destination.stem,
+            "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}},
+            "river_shift_preview": {
+                "status": "DISPLAY_ONLY",
+                "simplification_tolerance_m": round(tolerance, 3),
+                "minimum_polygon_area_m2": round(minimum_area, 3),
+                "warning": "Small patches may be omitted and boundaries simplified; use the full private GeoJSON for detailed GIS review. Areas are calculated from the full-resolution analysis, not this preview.",
+            },
+            "features": features,
+        }
+        encoded = json.dumps(preview, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        if len(encoded) <= max_bytes:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(encoded)
+            return preview
+        tolerance *= 2.0
+
+    # Last-resort display budget: retain the largest simplified candidate
+    # polygons and explicitly report how many small patches were omitted.
+    # Full-resolution GeoJSON and metrics remain untouched and authoritative.
+    tolerance = max(float(pixel_size_m) * 128.0, 128.0)
+    features = []
+    for feature, metric in metric_features:
+        if metric.area < minimum_area:
+            continue
+        simplified = metric.simplify(tolerance, preserve_topology=True)
+        if simplified.is_empty:
+            continue
+        features.append({
+            "type": "Feature",
+            "properties": dict(feature.get("properties") or {}),
+            "geometry": mapping(transform(unproject, simplified)),
+        })
+    original_count = len(features)
+    while features:
+        omitted = original_count - len(features)
+        preview["features"] = features
+        preview["river_shift_preview"]["simplification_tolerance_m"] = round(tolerance, 3)
+        preview["river_shift_preview"]["features_omitted_for_size"] = omitted
+        preview["river_shift_preview"]["warning"] = (
+            "DISPLAY ONLY: boundaries were simplified and the smallest patches were omitted to fit the map payload. "
+            "Use the full private GeoJSON for detailed GIS review. Scientific metrics use the full-resolution analysis."
+        )
+        encoded = json.dumps(preview, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        if len(encoded) <= max_bytes:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(encoded)
+            return preview
+        # Remove a deterministic tail of the smallest remaining features.
+        keep = max(1, int(len(features) * 0.75))
+        if keep == len(features):
+            keep -= 1
+        features = features[:keep]
+
+    # An oversized web-only payload must never invalidate the underlying
+    # scientific outputs. An empty display layer is preferable to losing a
+    # valid analysis; the full-resolution GeoJSON remains in the private bundle.
+    preview["features"] = []
+    preview["river_shift_preview"]["features_omitted_for_size"] = original_count
+    preview["river_shift_preview"]["warning"] = (
+        "DISPLAY ONLY: every map patch was omitted because the preview exceeded its safe size budget. "
+        "The full-resolution private GeoJSON and all scientific metrics remain available and unchanged."
+    )
+    encoded = json.dumps(preview, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    if len(encoded) <= max_bytes:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(encoded)
+        return preview
+    raise WorkerFailure(
+        "PREVIEW_GENERATION_FAILED",
+        "The empty display-only preview exceeded its serialization limit; the underlying scientific output is preserved.",
+    )
+
+
+
 def write_mask_web_preview(
     mask_path: Path,
     destination: Path,
