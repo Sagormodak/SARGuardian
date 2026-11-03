@@ -183,3 +183,27 @@ def test_failed_and_missing_products_are_queued_once_but_verified_passes_are_not
         good,
         first_dir,
     ) is None
+
+def test_workflow_hdf5_checks_are_safe_with_pipefail():
+    repository_root = Path(__file__).resolve().parents[3]
+    workflow = (repository_root / ".github" / "workflows" / "river-shift-gcov-process.yml").read_text(encoding="utf-8")
+
+    # All runner checks must capture gdalinfo output before grep. A grep -q
+    # pipeline can terminate gdalinfo early and produce SIGPIPE (141) under
+    # set -o pipefail even when GDAL has the HDF5 driver installed.
+    assert "gdalinfo --formats | grep" not in workflow
+    assert workflow.count('gdal_formats="$(gdalinfo --formats)"') == 6
+    assert workflow.count("grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-' <<< \"$gdal_formats\"") == 5
+
+
+def test_retry_job_is_not_gated_by_the_retry_count_output():
+    repository_root = Path(__file__).resolve().parents[3]
+    workflow = (repository_root / ".github" / "workflows" / "river-shift-gcov-process.yml").read_text(encoding="utf-8")
+    retry_job = workflow.split("\n  retry:\n", 1)[1].split("\n  retry_status:\n", 1)[0]
+
+    # The matrix itself is the authoritative queue. Do not suppress the retry
+    # job based on a second scalar output that can diverge from that matrix.
+    assert "if: needs.retry_prepare.result == 'success'" in retry_job
+    assert "retry_count !=" not in retry_job
+    assert "matrix: ${{ fromJSON(needs.retry_prepare.outputs.retry_matrix) }}" in retry_job
+

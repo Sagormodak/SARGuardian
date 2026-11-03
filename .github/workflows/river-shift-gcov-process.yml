@@ -227,7 +227,11 @@ jobs:
         run: |
           set -euo pipefail
           gdalinfo --version
-          gdalinfo --formats | grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-'
+          gdal_formats="$(gdalinfo --formats)"
+          if ! grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-' <<< "$gdal_formats"; then
+            echo "::error::Required GDAL HDF5 driver is unavailable."
+            exit 1
+          fi
           python -c "import rasterio, earthaccess; print('RIVERSHIFT_PRODUCT_RUNTIME=PASS')"
       - name: Download, inspect, and AOI-process this exact GCOV product
         shell: micromamba-shell {0}
@@ -331,7 +335,11 @@ jobs:
         run: |
           set -euo pipefail
           gdalinfo --version
-          gdalinfo --formats | grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-'
+          gdal_formats="$(gdalinfo --formats)"
+          if ! grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-' <<< "$gdal_formats"; then
+            echo "::error::Required GDAL HDF5 driver is unavailable."
+            exit 1
+          fi
           python -c "import rasterio, earthaccess; print('RIVERSHIFT_PRODUCT_RUNTIME=PASS')"
       - name: Download, inspect, and AOI-process this exact GCOV product
         shell: micromamba-shell {0}
@@ -435,7 +443,11 @@ jobs:
         run: |
           set -euo pipefail
           gdalinfo --version
-          gdalinfo --formats | grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-'
+          gdal_formats="$(gdalinfo --formats)"
+          if ! grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-' <<< "$gdal_formats"; then
+            echo "::error::Required GDAL HDF5 driver is unavailable."
+            exit 1
+          fi
           python -c "import rasterio, earthaccess; print('RIVERSHIFT_PRODUCT_RUNTIME=PASS')"
       - name: Download, inspect, and AOI-process this exact GCOV product
         shell: micromamba-shell {0}
@@ -539,7 +551,11 @@ jobs:
         run: |
           set -euo pipefail
           gdalinfo --version
-          gdalinfo --formats | grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-'
+          gdal_formats="$(gdalinfo --formats)"
+          if ! grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-' <<< "$gdal_formats"; then
+            echo "::error::Required GDAL HDF5 driver is unavailable."
+            exit 1
+          fi
           python -c "import rasterio, earthaccess; print('RIVERSHIFT_PRODUCT_RUNTIME=PASS')"
       - name: Download, inspect, and AOI-process this exact GCOV product
         shell: micromamba-shell {0}
@@ -643,7 +659,7 @@ jobs:
   retry:
     name: Delayed retry · product ${{ matrix.product_index }}/${{ matrix.total_products }}
     needs: retry_prepare
-    if: needs.retry_prepare.result == 'success' && needs.retry_prepare.outputs.retry_count != '0'
+    if: needs.retry_prepare.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     continue-on-error: true
@@ -686,7 +702,11 @@ jobs:
         run: |
           set -euo pipefail
           gdalinfo --version
-          gdalinfo --formats | grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-'
+          gdal_formats="$(gdalinfo --formats)"
+          if ! grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-' <<< "$gdal_formats"; then
+            echo "::error::Required GDAL HDF5 driver is unavailable."
+            exit 1
+          fi
           python -c "import rasterio, earthaccess; print('RIVERSHIFT_RETRY_RUNTIME=PASS')"
       - name: Re-download, re-inspect, and re-process this failed product once
         shell: micromamba-shell {0}
