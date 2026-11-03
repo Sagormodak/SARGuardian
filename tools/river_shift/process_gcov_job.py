@@ -311,6 +311,140 @@ def select_date_window(
     }
 
 
+def select_general_date_window(
+    date_rows: list[dict[str, Any]], maximum_dates: int = MAX_SELECTED_DATES,
+) -> tuple[list[str], dict[str, str]]:
+    """Select a baseline and three later real acquisitions without an event date."""
+    if maximum_dates < 4:
+        raise WorkerFailure("INVALID_REQUEST", "The selected time-series maximum cannot be lower than four dates.")
+    by_date = {
+        str(row.get("acquisition_date")): row
+        for row in date_rows
+        if row.get("passes_coverage_gate") is True
+        and isinstance(row.get("acquisition_date"), str)
+        and row.get("granule_names")
+    }
+    dates = sorted(by_date)
+    if len(dates) < 4:
+        raise WorkerFailure(
+            "INSUFFICIENT_COMPARABLE_ACQUISITIONS",
+            "General River Change Scan needs at least four comparable, footprint-qualified NISAR acquisition dates.",
+        )
+    try:
+        parsed = [date.fromisoformat(value) for value in dates]
+    except ValueError:
+        raise WorkerFailure("INVALID_CATALOGUE_DATE", "A footprint-qualified acquisition date is not valid ISO YYYY-MM-DD.") from None
+    if len(set(parsed)) != len(parsed):
+        raise WorkerFailure("DUPLICATE_CATALOGUE_DATE", "The footprint audit contains duplicate acquisition dates.")
+    anchors = [dates[0], dates[1], dates[-2], dates[-1]]
+    selected = set(anchors)
+    while len(selected) < min(maximum_dates, len(dates)):
+        remaining = [value for value in dates if value not in selected]
+        if not remaining:
+            break
+        selected.add(max(
+            remaining,
+            key=lambda value: (
+                min(abs((date.fromisoformat(value) - date.fromisoformat(chosen)).days) for chosen in selected),
+                value,
+            ),
+        ))
+    return sorted(selected), {
+        "before": anchors[0],
+        "event_proximal_observation": anchors[1],
+        "post_one": anchors[2],
+        "post_two": anchors[3],
+    }
+
+
+def select_general_compatible_group(
+    qualifying_groups: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[str], dict[str, str]]:
+    """Pick the highest-ranked compatible orbit/frame group with four qualified dates."""
+    for group in qualifying_groups:
+        try:
+            selected_dates, comparison_window = select_general_date_window(group.get("dates", []))
+        except WorkerFailure as exc:
+            if exc.code == "INSUFFICIENT_COMPARABLE_ACQUISITIONS":
+                continue
+            raise
+        return group, selected_dates, comparison_window
+    raise WorkerFailure(
+        "INSUFFICIENT_COMPARABLE_ACQUISITIONS",
+        "No single compatible NISAR orbit/frame group has four footprint-qualified dates in this window.",
+    )
+
+
+def generalize_morphology_result(result_path: Path, selection: dict[str, Any]) -> dict[str, Any]:
+    """Remove event-specific labels from a general date-window morphology result."""
+    result = json.loads(Path(result_path).read_text(encoding="utf-8"))
+    if not isinstance(result, dict) or result.get("analysis_type") != "river_morphology_screening":
+        raise WorkerFailure("RESULT_CONTRACT_INVALID", "The general-scan morphology output did not produce its expected report.")
+    inputs, method, quality = result.get("inputs"), result.get("method"), result.get("quality")
+    if not isinstance(inputs, dict) or not isinstance(method, dict) or not isinstance(quality, dict):
+        raise WorkerFailure("RESULT_CONTRACT_INVALID", "The general-scan morphology report is incomplete.")
+    result["analysis_mode"] = "general_scan"
+    result["selection"] = selection
+    inputs["comparison_window"] = selection.get("comparison_window", {})
+    inputs["comparison_basis"] = "date-window comparison; no event date supplied or inferred"
+    if isinstance(inputs.get("dates"), dict):
+        inputs["dates"] = {
+            "baseline": inputs["dates"].get("before"),
+            "comparison_one": inputs["dates"].get("post_one"),
+            "comparison_two": inputs["dates"].get("post_two"),
+        }
+    method["classification"] = "persistent_two_later_observation_water_land_transition"
+    method["later_observations_required"] = method.pop("post_observations_required", 2)
+    quality["warnings"] = [
+        "Land-to-water and water-to-land transitions are provisional candidate zones, not confirmed geomorphic causation.",
+        "Persistence is evaluated against the two later actual acquisition dates in the selected date window; no event date was supplied or inferred.",
+        "All area and boundary comparisons use only the intersection of valid positive-power pixels across the three observations.",
+        "Boundary distance is a symmetric displacement proxy, not a signed transect-derived bank migration rate.",
+        "For braided rivers, interpret outer active-channel belt and individual threads separately.",
+        "Check bank protection, dredging, sand mining, embankments and seasonal channel stage before attributing change to a specific cause.",
+        "Threshold sensitivity is a deterministic method-robustness check, not a statistical confidence interval or total error budget.",
+    ]
+    Path(result_path).write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return result
+
+
+def generalize_flood_result(result_path: Path, selection: dict[str, Any]) -> dict[str, Any]:
+    """Relabel the three-date water comparison without implying a flood event."""
+    result = json.loads(Path(result_path).read_text(encoding="utf-8"))
+    if not isinstance(result, dict) or result.get("analysis_type") != "flood_inundation_screening":
+        raise WorkerFailure("RESULT_CONTRACT_INVALID", "The general-scan water comparison did not produce its expected report.")
+    metrics, inputs, quality = result.get("metrics"), result.get("inputs"), result.get("quality")
+    if not isinstance(metrics, dict) or not isinstance(inputs, dict) or not isinstance(quality, dict):
+        raise WorkerFailure("RESULT_CONTRACT_INVALID", "The general-scan water comparison report is incomplete.")
+    metrics["comparison_one_water_area_km2"] = metrics.pop("event_proximal_water_area_km2", None)
+    metrics["comparison_two_water_area_km2"] = metrics.pop("post_event_water_area_km2", None)
+    result["analysis_type"] = "river_change_scan"
+    result["analysis_mode"] = "general_scan"
+    result["selection"] = selection
+    inputs["comparison_window"] = selection.get("comparison_window", {})
+    inputs["comparison_basis"] = "date-window comparison; no event date supplied or inferred"
+    inputs.pop("event_proximal_observation", None)
+    if isinstance(inputs.get("dates"), dict):
+        inputs["dates"] = {
+            "baseline": inputs["dates"].get("before"),
+            "comparison_one": inputs["dates"].get("during"),
+            "comparison_two": inputs["dates"].get("after"),
+        }
+    if isinstance(result.get("method"), dict):
+        result["method"]["comparison_semantics"] = "observed-date water coverage comparison; not an event attribution"
+    quality["warnings"] = [
+        "This is a general date-window comparison. No event date was supplied, estimated or inferred.",
+        "Newly water-covered area is a relative radar-screening candidate, not proof of flood inundation or flood causality.",
+        "Only the intersection of valid positive-power pixels across the selected comparison observations is included.",
+        "Use comparable orbit geometry, acquisition mode, frequency, polarization, maturity and hydrological conditions.",
+        "Low-backscatter screening may miss inundated vegetation because double-bounce scattering can be bright.",
+        "Validate the water mask against an independent reference before reporting accuracy or impact claims.",
+        "Threshold sensitivity is a deterministic method-robustness check, not a statistical confidence interval or total error budget.",
+    ]
+    Path(result_path).write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return result
+
+
 def select_event_compatible_group(
     qualifying_groups: list[dict[str, Any]], event_date: date,
 ) -> tuple[dict[str, Any], list[str], dict[str, str]]:
@@ -1097,9 +1231,18 @@ def _read_input() -> dict[str, Any]:
         raise WorkerFailure("INVALID_REQUEST", "The requested AOI must be one valid WGS84 polygon.")
     start_date = _date(_required_env("RIVERSHIFT_START_DATE"), "start_date")
     end_date = _date(_required_env("RIVERSHIFT_END_DATE"), "end_date")
-    event_date = _date(_required_env("RIVERSHIFT_EVENT_DATE"), "event_date")
-    if end_date < start_date or (end_date - start_date).days > 366 or not start_date <= event_date <= end_date:
-        raise WorkerFailure("INVALID_REQUEST", "The event date and observation window are not a valid selected range.")
+    analysis_mode = os.environ.get("RIVERSHIFT_ANALYSIS_MODE", "event_based").strip().lower()
+    if analysis_mode not in {"general_scan", "event_based"}:
+        raise WorkerFailure("INVALID_REQUEST", "RiverShift analysis mode must be general_scan or event_based.")
+    raw_event_date = os.environ.get("RIVERSHIFT_EVENT_DATE", "").strip()
+    event_date = _date(raw_event_date, "event_date") if raw_event_date else None
+    if end_date < start_date or (end_date - start_date).days > 366:
+        raise WorkerFailure("INVALID_REQUEST", "The selected NISAR observation window is not valid.")
+    if analysis_mode == "event_based":
+        if event_date is None or not start_date <= event_date <= end_date:
+            raise WorkerFailure("INVALID_REQUEST", "Event-Based Analysis requires a user-supplied event date inside the observation window.")
+    elif event_date is not None:
+        raise WorkerFailure("INVALID_REQUEST", "General River Change Scan must not receive an event date.")
     maturity = _required_env("RIVERSHIFT_MATURITY").upper()
     main_band_polarization = os.environ.get("RIVERSHIFT_MAIN_BAND_POLARIZATION", "").strip() or None
     flight_direction = os.environ.get("RIVERSHIFT_FLIGHT_DIRECTION", "").strip().upper() or None
@@ -1137,7 +1280,7 @@ def _read_input() -> dict[str, Any]:
         raise WorkerFailure("INVALID_REQUEST", "The exact NISAR granule list is invalid or exceeds the request limit.")
     return {
         "job_id": job_id, "fingerprint": fingerprint, "aoi_wkt": aoi_wkt, "aoi": aoi,
-        "start_date": start_date, "end_date": end_date, "event_date": event_date,
+        "start_date": start_date, "end_date": end_date, "analysis_mode": analysis_mode, "event_date": event_date,
         "maturity": maturity, "main_band_polarization": main_band_polarization,
         "flight_direction": flight_direction, "frame_coverage": frame_coverage,
         "frequency": frequency, "term": term,
@@ -1289,7 +1432,8 @@ def _build_manifest(work_dir: Path, outputs: list[dict[str, str]], selection: di
         "job_id": os.environ["RIVERSHIFT_JOB_ID"],
         "release_status": "PROVISIONAL",
         "independent_validation_status": "PENDING",
-        "event_date_status": "USER_SUPPLIED_NOT_INDEPENDENTLY_CONFIRMED",
+        "analysis_mode": selection.get("analysis_mode", "event_based"),
+        "event_date_status": "NOT_APPLICABLE" if selection.get("analysis_mode") == "general_scan" else "USER_SUPPLIED_NOT_INDEPENDENTLY_CONFIRMED",
         "selection": selection,
         "validated_outputs": outputs,
     }
@@ -1326,7 +1470,8 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
         job_id=request["job_id"],
         start_date=request["start_date"].isoformat(),
         end_date=request["end_date"].isoformat(),
-        event_date=request["event_date"].isoformat(),
+        analysis_mode=request["analysis_mode"],
+        event_date=request["event_date"].isoformat() if request["event_date"] else None,
         maturity=request["maturity"],
         frequency=request["frequency"],
         covariance_term=request["term"],
@@ -1380,7 +1525,10 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
             "NO_COMPARABLE_ACQUISITION_GROUP",
             "This AOI/date selection has no four-date NISAR group with matching maturity, orbit, mode, term and footprint coverage.",
         )
-    group, dates, event_window = select_event_compatible_group(qualifying, request["event_date"])
+    if request["analysis_mode"] == "event_based":
+        group, dates, event_window = select_event_compatible_group(qualifying, request["event_date"])
+    else:
+        group, dates, event_window = select_general_compatible_group(qualifying)
     rows_by_date = {row["acquisition_date"]: row for row in group["dates"]}
     metric_crs = _metric_crs(request["aoi"])
     products_by_date: dict[str, list[dict[str, Any]]] = {}
@@ -1401,15 +1549,25 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
         "aoi_wkt": request["aoi_wkt"],
         "start_date": request["start_date"].isoformat(),
         "end_date": request["end_date"].isoformat(),
-        "event_date": request["event_date"].isoformat(),
+        "analysis_mode": request["analysis_mode"],
         "maturity": request["maturity"],
         "frequency": request["frequency"],
         "covariance_term": request["term"],
-        "event_date_basis": "user supplied; no independent gauge feed is attached",
         "time_series_semantics": "actual NISAR acquisition dates; no daily interpolation",
         "dates_selected": dates,
-        "event_window": event_window,
-        "event_proximal_observation_offset_days": (date.fromisoformat(event_window["event_proximal_observation"]) - request["event_date"]).days,
+        "comparison_window": {
+            "baseline": event_window["before"],
+            "comparison_one": event_window["event_proximal_observation"],
+            "comparison_two": event_window["post_one"],
+            "comparison_three": event_window["post_two"],
+        } if request["analysis_mode"] == "general_scan" else None,
+        "event_date": request["event_date"].isoformat() if request["event_date"] else None,
+        "event_date_basis": "user supplied; no independent gauge feed is attached" if request["analysis_mode"] == "event_based" else None,
+        "event_window": event_window if request["analysis_mode"] == "event_based" else None,
+        "event_proximal_observation_offset_days": (
+            (date.fromisoformat(event_window["event_proximal_observation"]) - request["event_date"]).days
+            if request["analysis_mode"] == "event_based" else None
+        ),
         "granule_names": sorted(set(selected_product_names)),
         "aoi_coverage_gate_percent": 90,
         "catalogue_audit_status": audit.get("status"),
@@ -1512,7 +1670,7 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
 
     window_paths = {key: aligned_observations[value] for key, value in event_window.items()}
     flood_dir = work_dir / "analysis" / "flood"
-    run_step("flood change screening", [
+    run_step("date-window water change screening", [
         sys.executable, "run_flood_analysis.py", "--before", str(window_paths["before"]),
         "--during", str(window_paths["event_proximal_observation"]), "--after", str(window_paths["post_one"]),
         "--before-date", event_window["before"], "--during-date", event_window["event_proximal_observation"],
@@ -1520,6 +1678,8 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
         "--input-units", "linear", "--maturity", request["maturity"],
         "--frequency", request["frequency"], "--term", request["term"], "--out-dir", str(flood_dir),
     ])
+    if request["analysis_mode"] == "general_scan":
+        generalize_flood_result(flood_dir / "river_shift_result.json", selection)
     morphology_dir = work_dir / "analysis" / "morphology"
     run_step("persistent morphology screening", [
         sys.executable, "run_morphology_analysis.py", "--before", str(window_paths["before"]),
@@ -1529,6 +1689,8 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
         "--input-units", "linear", "--maturity", request["maturity"],
         "--frequency", request["frequency"], "--term", request["term"], "--out-dir", str(morphology_dir),
     ])
+    if request["analysis_mode"] == "general_scan":
+        generalize_morphology_result(morphology_dir / "river_shift_result.json", selection)
 
     callbacks.send("running", "private_result_publication")
     _log_worker_stage("result_package_assembly", "START")
@@ -1572,12 +1734,14 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
         "processing_status": "PASS",
         "release_status": "PROVISIONAL",
         "independent_validation_status": "PENDING",
-        "event_date_status": "USER_SUPPLIED_NOT_INDEPENDENTLY_CONFIRMED",
+        "analysis_mode": request["analysis_mode"],
+        "event_date_status": "NOT_APPLICABLE" if request["analysis_mode"] == "general_scan" else "USER_SUPPLIED_NOT_INDEPENDENTLY_CONFIRMED",
         "morphology_status": json.loads((morphology_dir / "river_shift_result.json").read_text(encoding="utf-8"))["quality"]["status"],
         "flood_status": json.loads((flood_dir / "river_shift_result.json").read_text(encoding="utf-8"))["quality"]["status"],
         "observation_count": len(dates),
         "selected_dates": dates,
-        "event_window": event_window,
+        "comparison_window": selection.get("comparison_window"),
+        "event_window": event_window if request["analysis_mode"] == "event_based" else None,
         "threshold_method": request["threshold_method"],
         "threshold_db": report_payload["method"].get("threshold_db"),
         "time_series_report_sha256": report_digest,
@@ -1585,8 +1749,15 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
         "warnings": [
             "NISAR observations occur on actual acquisition dates; no daily raster observations or interpolation were created.",
             "Riverbank erosion and deposition are provisional radar-derived candidates, not field-confirmed changes.",
-            "The flood comparison uses the first qualifying NISAR acquisition strictly after the user-supplied event date; it is not a measured peak-stage observation.",
-            "The event date was supplied by the user and was not verified against an authoritative gauge feed.",
+            *(
+                [
+                    "This is a relative date-window comparison; no event date was supplied or inferred.",
+                    "New water and persistent land/water transitions are provisional candidates, not confirmed flood or geomorphic causes.",
+                ] if request["analysis_mode"] == "general_scan" else [
+                    "The flood comparison uses the first qualifying NISAR acquisition strictly after the user-supplied event date; it is not a measured peak-stage observation.",
+                    "The event date was supplied by the user and was not verified against an authoritative gauge feed.",
+                ]
+            ),
         ],
     }
     manifest_path = _build_manifest(work_dir, inventory, selection)
