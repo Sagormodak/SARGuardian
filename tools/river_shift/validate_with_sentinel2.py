@@ -19,12 +19,13 @@ from typing import Any
 import numpy as np
 import rasterio
 import requests
-from pyproj import CRS, Geod, Transformer
+from pyproj import CRS, Transformer
 from rasterio.enums import Resampling
 from rasterio.transform import Affine
 from rasterio.vrt import WarpedVRT
 from rasterio.warp import reproject, transform_bounds
 from rasterio.windows import Window, from_bounds, transform as window_transform
+from shapely import segmentize
 from shapely.geometry import box, shape
 from shapely.ops import transform as transform_geometry, unary_union
 
@@ -113,28 +114,29 @@ def _items_coverage_fraction(
     aoi_geometry_wgs84: Any,
     analysis_crs: CRS,
 ) -> float:
-    """Measure same-datatake tile union coverage without projection-edge gaps."""
+    """Measure same-datatake tile union coverage in a densified metric projection."""
     try:
+        # Densify geographic edges before projection. Without this, a rectangle
+        # projected as one long edge is not identical to two adjacent half-edge
+        # polygons, creating a small artificial gap at MGRS tile boundaries.
+        project = Transformer.from_crs("EPSG:4326", analysis_crs, always_xy=True).transform
+        dense_aoi = segmentize(aoi_geometry_wgs84, max_segment_length=0.001)
+        aoi_projected = transform_geometry(project, dense_aoi)
+        if aoi_projected.is_empty or aoi_projected.area <= 0:
+            return 0.0
         footprints = []
         for item in items:
             geometry = item.get("geometry")
             if not isinstance(geometry, dict):
                 continue
-            footprint = shape(geometry)
-            if not footprint.is_empty:
-                footprints.append(footprint)
-        if not footprints or aoi_geometry_wgs84.is_empty:
+            dense_footprint = segmentize(shape(geometry), max_segment_length=0.001)
+            projected = transform_geometry(project, dense_footprint)
+            if not projected.is_empty:
+                footprints.append(projected)
+        if not footprints:
             return 0.0
-        # GeoJSON/STAC footprints share longitude/latitude edges. A union in
-        # geographic coordinates preserves shared tile boundaries exactly;
-        # use ellipsoidal WGS84 area rather than degree-squared planar area.
-        covered = unary_union(footprints).intersection(aoi_geometry_wgs84)
-        geod = Geod(ellps="WGS84")
-        aoi_area = abs(float(geod.geometry_area_perimeter(aoi_geometry_wgs84)[0]))
-        covered_area = abs(float(geod.geometry_area_perimeter(covered)[0]))
-        if not math.isfinite(aoi_area) or aoi_area <= 0 or not math.isfinite(covered_area):
-            return 0.0
-        return float(min(1.0, max(0.0, covered_area / aoi_area)))
+        covered = unary_union(footprints).intersection(aoi_projected)
+        return float(min(1.0, max(0.0, covered.area / aoi_projected.area)))
     except Exception:
         return 0.0
 
