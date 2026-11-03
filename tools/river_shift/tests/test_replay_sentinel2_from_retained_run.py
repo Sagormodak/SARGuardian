@@ -260,3 +260,43 @@ def test_run_replay_uses_exact_observation_mask_and_records_source_provenance(tm
     assert manifest["source_workflow_run_id"] == "41642281327"
     assert manifest["quality"]["raw_nisar_hdf5_redownloaded"] is False
     assert manifest["quality"]["not_ground_truth"] is True
+
+ 
+
+def test_emit_replay_summary_reports_mosaic_coverage_and_tile_provenance(capsys):
+    replay.emit_replay_summary({
+        "status": "INSUFFICIENT_OPTICAL_SPATIAL_SUPPORT",
+        "observation_date": "2026-09-10",
+        "selected_dates": ["2026-06-30", "2026-09-10"],
+        "sentinel2_observation": {
+            "sentinel2_item_id": "S2C-primary",
+            "sentinel2_item_ids": ["S2C-primary", "S2C-adjacent"],
+            "sentinel2_date": "2026-09-15",
+            "sentinel2_datatake_id": "S2C_DATATAKE_001",
+            "sentinel2_processing_baseline": "05.11",
+            "mgrs_tiles": ["45RYJ", "45RZJ"],
+            "sentinel2_tile_count": 2,
+            "cloud_cover_percent": 49.3,
+            "maximum_tile_cloud_cover_percent": 55.0,
+            "aoi_footprint_overlap_fraction": 0.97,
+        },
+        "spatial_support": {
+            "common_support_fraction": 0.4534,
+            "tile_common_clear_pixel_counts": {"S2C-primary": 1200, "S2C-adjacent": 800},
+        },
+        "metrics": None,
+        "replay_manifest": "replay/cross_sensor_replay_manifest.json",
+        "warnings": [],
+    })
+
+    output = capsys.readouterr().out
+    assert "RIVERSHIFT_SENTINEL2_ITEM_IDS=S2C-primary,S2C-adjacent" in output
+    assert "RIVERSHIFT_SENTINEL2_DATATAKE_ID=S2C_DATATAKE_001" in output
+    assert "RIVERSHIFT_SENTINEL2_PROCESSING_BASELINE=05.11" in output
+    assert "RIVERSHIFT_SENTINEL2_MGRS_TILES=45RYJ,45RZJ" in output
+    assert "RIVERSHIFT_SENTINEL2_TILE_COUNT=2" in output
+    assert "RIVERSHIFT_SENTINEL2_AOI_FOOTPRINT_OVERLAP=0.97" in output
+    assert "RIVERSHIFT_SENTINEL2_TILE_CLEAR_PIXEL_COUNTS={\"S2C-adjacent\":800,\"S2C-primary\":1200}" in output
+    assert "RIVERSHIFT_CROSS_SENSOR_COMMON_SUPPORT=0.4534" in output
+    assert "RIVERSHIFT_SENTINEL2_METRICS=NOT_AVAILABLE" in output
+    assert "SAS" not in output
