@@ -55,7 +55,7 @@ jobs:
           grep -Fq 'run-name: RiverShift ${{ inputs.job_id }}' .github/workflows/river-shift-gcov-process.yml
           grep -q 'RIVERSHIFT_CALLBACK_SECRET:' .github/workflows/river-shift-gcov-process.yml
           grep -q 'RIVERSHIFT_REQUEST_FINGERPRINT:' .github/workflows/river-shift-gcov-process.yml
-          grep -q 'python tools/river_shift/process_gcov_job.py' .github/workflows/river-shift-gcov-process.yml
+          grep -Eq 'python (-u )?tools/river_shift/process_gcov_job.py' .github/workflows/river-shift-gcov-process.yml
 
       - name: Validate standalone processing tests
         shell: micromamba-shell {0}
