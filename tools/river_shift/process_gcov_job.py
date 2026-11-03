@@ -857,7 +857,8 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
         "warnings": [
             "NISAR observations occur on actual acquisition dates; no daily raster observations or interpolation were created.",
             "Riverbank erosion and deposition are provisional radar-derived candidates, not field-confirmed changes.",
-            "The flood comparison uses the first qualifying NISAR acquisition on or after the user-supplied event date; it is not a measured peak-stage observation.",\n            "The event date was supplied by the user and was not verified against an authoritative gauge feed.",
+            "The flood comparison uses the first qualifying NISAR acquisition on or after the user-supplied event date; it is not a measured peak-stage observation.",
+            "The event date was supplied by the user and was not verified against an authoritative gauge feed.",
         ],
     }
     manifest_path = _build_manifest(work_dir, inventory, selection)
