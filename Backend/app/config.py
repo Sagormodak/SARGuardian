@@ -47,6 +47,13 @@ class RuntimeSettings:
     public_api_url: str
     github_api_url: str
     displacement_dispatch_timeout_seconds: int
+    river_shift_actions_enabled: bool
+    river_shift_github_actions_token: str
+    river_shift_github_actions_repository: str
+    river_shift_github_actions_workflow: str
+    river_shift_github_actions_ref: str
+    river_shift_callback_secret: str
+    river_shift_public_api_url: str
     port: int
 
 
@@ -94,6 +101,13 @@ def get_settings(environ: Mapping[str, str] | None = None) -> RuntimeSettings:
         public_api_url=values.get("PUBLIC_API_URL", "").rstrip("/"),
         github_api_url=values.get("GITHUB_API_URL", DEFAULT_GITHUB_API_URL).rstrip("/"),
         displacement_dispatch_timeout_seconds=_bounded_int(values, "DISPLACEMENT_DISPATCH_TIMEOUT_SECONDS", DEFAULT_DISPLACEMENT_DISPATCH_TIMEOUT_SECONDS, 300, 86_400),
+        river_shift_actions_enabled=_flag(values, "RIVERSHIFT_ACTIONS_ENABLED", False),
+        river_shift_github_actions_token=values.get("RIVERSHIFT_GITHUB_ACTIONS_TOKEN", values.get("GITHUB_ACTIONS_TOKEN", "")).strip(),
+        river_shift_github_actions_repository=values.get("RIVERSHIFT_GITHUB_ACTIONS_REPOSITORY", "moshiour0/SARGuardian-backend").strip(),
+        river_shift_github_actions_workflow=values.get("RIVERSHIFT_GITHUB_ACTIONS_WORKFLOW", "river-shift-gcov-process.yml").strip(),
+        river_shift_github_actions_ref=values.get("RIVERSHIFT_GITHUB_ACTIONS_REF", "main").strip(),
+        river_shift_callback_secret=values.get("RIVERSHIFT_CALLBACK_SECRET", "").strip(),
+        river_shift_public_api_url=values.get("RIVERSHIFT_PUBLIC_API_URL", values.get("PUBLIC_API_URL", "")).rstrip("/"),
         port=_bounded_int(values, "PORT", DEFAULT_PORT, 1, 65_535),
     )
 
@@ -125,6 +139,20 @@ def validate_production_settings(settings: RuntimeSettings | None = None) -> Run
         callback_url = urlsplit(current.public_api_url)
         if callback_url.scheme != "https" or not callback_url.netloc:
             raise SettingsError("PUBLIC_API_URL must be an HTTPS URL when Displacement Actions is enabled.")
+    if current.river_shift_actions_enabled:
+        missing = [name for name, value in {
+            "RIVERSHIFT_GITHUB_ACTIONS_TOKEN": current.river_shift_github_actions_token,
+            "RIVERSHIFT_GITHUB_ACTIONS_REPOSITORY": current.river_shift_github_actions_repository,
+            "RIVERSHIFT_GITHUB_ACTIONS_WORKFLOW": current.river_shift_github_actions_workflow,
+            "RIVERSHIFT_GITHUB_ACTIONS_REF": current.river_shift_github_actions_ref,
+            "RIVERSHIFT_CALLBACK_SECRET": current.river_shift_callback_secret,
+            "RIVERSHIFT_PUBLIC_API_URL": current.river_shift_public_api_url,
+        }.items() if not value]
+        if missing:
+            raise SettingsError(f"RiverShift Actions is enabled but missing: {', '.join(missing)}.")
+        callback_url = urlsplit(current.river_shift_public_api_url)
+        if callback_url.scheme != "https" or not callback_url.netloc or callback_url.username or callback_url.password:
+            raise SettingsError("RIVERSHIFT_PUBLIC_API_URL must be a public HTTPS URL when RiverShift Actions is enabled.")
     return current
 
 
