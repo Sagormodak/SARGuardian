@@ -403,6 +403,7 @@ describe('NISAR catalogue preflight API contract', () => {
       aoiWkt: 'POLYGON ((89 25, 89.1 25, 89.1 25.1, 89 25))',
       startDate: '2026-06-20',
       endDate: '2026-09-18',
+      analysisMode: 'event_based',
       eventDate: '2026-07-23',
       maturity: 'PROVISIONAL',
       mainBandPolarization: 'HH+HV',
@@ -420,6 +421,7 @@ describe('NISAR catalogue preflight API contract', () => {
       aoi_wkt: 'POLYGON ((89 25, 89.1 25, 89.1 25.1, 89 25))',
       start_date: '2026-06-20',
       end_date: '2026-09-18',
+      analysis_mode: 'event_based',
       event_date: '2026-07-23',
       maturity: 'PROVISIONAL',
       main_band_polarization: 'HH+HV',
@@ -435,6 +437,33 @@ describe('NISAR catalogue preflight API contract', () => {
       'Content-Type': 'application/json',
       Authorization: 'Bearer firebase-id-token',
     });
+  });
+
+  it('submits a General River Change Scan without an Event Date', async () => {
+    const job = { id: 'river-general-1', state: 'dispatching' };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => job });
+    vi.stubGlobal('fetch', fetchMock);
+    const jobUser = { getIdToken: vi.fn().mockResolvedValue('firebase-id-token') };
+
+    await expect(createRiverShiftJob({
+      aoiWkt: 'POLYGON ((89 25, 89.1 25, 89.1 25.1, 89 25.1, 89 25))',
+      startDate: '2026-06-20',
+      endDate: '2026-09-18',
+      analysisMode: 'general_scan',
+      eventDate: null,
+      maturity: 'PROVISIONAL',
+      mainBandPolarization: null,
+      flightDirection: null,
+      frameCoverage: 'ALL',
+      frequency: 'frequencyA',
+      covarianceTerm: 'HHHH',
+      thresholdMethod: 'otsu',
+      idempotencyKey: 'river-general-request-0001',
+    }, jobUser)).resolves.toEqual(job);
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.analysis_mode).toBe('general_scan');
+    expect(body.event_date).toBeNull();
   });
 
   it('restores the most recent River Shift jobs through an owner-authenticated no-store request', async () => {
