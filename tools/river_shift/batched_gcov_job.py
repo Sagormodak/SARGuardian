@@ -796,11 +796,13 @@ def _report_batch() -> None:
     results = _load_product_results(results_dir)
     passed = 0
     failed = 0
+    failure_details: list[tuple[str, str]] = []
     for row in rows:
         name = row["granule_name"]
         result = results.get(name)
         if not result:
             failed += 1
+            failure_details.append((name, "WORKER_RESULT_MISSING"))
             _log_worker_stage(
                 "batch_product_reconciliation", "FAIL",
                 batch_number=batch_number,
@@ -828,6 +830,7 @@ def _report_batch() -> None:
             )
         else:
             failed += 1
+            failure_details.append((name, str(result.get("error_code") or "PRODUCT_RESULT_INVALID")))
             _log_worker_stage(
                 "batch_product_reconciliation", "FAIL",
                 batch_number=batch_number,
@@ -856,6 +859,21 @@ def _report_batch() -> None:
     _write_output("callback_sequence", str(callbacks.sequence))
     _write_output("batch_success_count", str(passed))
     _write_output("batch_failure_count", str(failed))
+    if failed:
+        print(
+            f"::warning::Batch {batch_number} reconciliation found {failed}/{len(rows)} failed or unverifiable products; the failures remain eligible for the delayed retry wave.",
+            flush=True,
+        )
+    detail_rows = "\\n".join(
+        f"| {name} | {reason} |" for name, reason in failure_details[:30]
+    ) or "| — | No failed products |"
+    _write_step_summary(
+        f"## Batch {batch_number} reconciliation\\n\\n"
+        f"- Expected: **{len(rows)}**\\n"
+        f"- Verified: **{passed}**\\n"
+        f"- Failed/unverifiable: **{failed}**\\n\\n"
+        "| Product | Outcome |\\n|---|---|\\n" + detail_rows
+    )
 
 
 def _prepare_retry_wave() -> None:
@@ -886,8 +904,28 @@ def _prepare_retry_wave() -> None:
         retry_max_parallel=15,
         retry_policy="one retry wave after every first-attempt batch has completed",
     )
-    _write_output("retry_matrix", json.dumps(matrix, separators=(",", ":")))
+    retry_matrix_json = json.dumps(matrix, separators=(",", ":"))
+    if len(matrix.get("include", [])) != len(retry_rows):
+        raise WorkerFailure("RETRY_MATRIX_INVALID", "Retry matrix row count does not match the exact retry queue.")
+    retry_names = [row.get("granule_name") for row in matrix["include"]]
+    if len(retry_names) != len(set(retry_names)):
+        raise WorkerFailure("RETRY_MATRIX_INVALID", "Retry matrix contains duplicate granule identities.")
+    _log_worker_stage(
+        "delayed_retry_matrix_output", "PASS",
+        retry_queue_count=len(retry_rows),
+        matrix_include_count=len(matrix["include"]),
+        matrix_json_bytes=len(retry_matrix_json.encode("utf-8")),
+        matrix_sha256=hashlib.sha256(retry_matrix_json.encode("utf-8")).hexdigest(),
+    )
+    _write_output("retry_matrix", retry_matrix_json)
     _write_output("retry_count", str(len(retry_rows)))
+    _write_step_summary(
+        "## Delayed retry queue\\n\\n"
+        f"- First-attempt products: **{len(prepared['selected_product_names'])}**\\n"
+        f"- Retry products queued: **{len(retry_rows)}**\\n"
+        "- Automatic retry attempts per product: **1**\\n"
+        "- Parallel retry runners: **15 maximum**"
+    )
 
 
 def _report_retry_wave() -> None:
