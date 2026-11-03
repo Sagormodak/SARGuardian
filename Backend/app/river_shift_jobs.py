@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import mimetypes
 import re
 import tempfile
@@ -34,6 +35,7 @@ from science_adapter.geometry import validate_wkt
 from science_adapter.upload_to_drive import DriveUploadError, download_private_result_to_path
 
 router = APIRouter(prefix="/api/river-shift", tags=["RiverShift"])
+logger = logging.getLogger(__name__)
 MAX_GITHUB_INPUT_BYTES = 60_000
 MAX_CALLBACK_BYTES = 2_000_000
 MAX_ARTIFACT_BYTES = 250 * 1024 * 1024
@@ -289,6 +291,34 @@ def _dispatch(settings: Any, job_id: UUID, request_snapshot: dict[str, Any], gra
         raise RuntimeError("Could not reach GitHub Actions to dispatch RiverShift processing.") from None
 
 
+def _mark_dispatch_failure(store: Any, job_id: UUID, message: str) -> bool:
+    """Mark a failed submission terminal without overwriting a worker callback."""
+    for expected_state in (JobState.DISPATCHING.value, JobState.QUEUED.value):
+        try:
+            store.update_river_shift_job(
+                job_id,
+                {
+                    "state": JobState.FAILED.value,
+                    "stage": "dispatch_failed",
+                    "error_code": "RIVERSHIFT_DISPATCH_FAILED",
+                    "error_message": message[:500],
+                },
+                expected_state=expected_state,
+                expected_sequence=0,
+            )
+            return True
+        except PersistenceConflictError:
+            # The transition may have committed despite a transport error, or
+            # a worker callback may already have advanced the state. Try the
+            # other pre-worker state, then leave any later state untouched.
+            continue
+        except PersistenceError:
+            logger.exception("RiverShift dispatch failure could not be persisted for job %s", job_id)
+            return False
+    logger.warning("RiverShift job %s changed state while dispatch failure was being recorded", job_id)
+    return False
+
+
 def callback_signature_is_valid(secret: str, body: bytes, signature: str | None) -> bool:
     if not secret or not signature or not signature.startswith("sha256="):
         return False
@@ -354,6 +384,7 @@ def create_river_shift_job(payload: CreateRiverShiftJobRequest, user: dict = Dep
     except HTTPException:
         raise
     except Exception:
+        logger.exception("RiverShift NASA CMR preflight failed")
         raise HTTPException(status_code=502, detail="NASA CMR discovery failed. No RiverShift processing job was dispatched.") from None
 
     unique_dates = manifest.get("unique_dates") if isinstance(manifest, dict) else None
@@ -417,17 +448,8 @@ def create_river_shift_job(payload: CreateRiverShiftJobRequest, user: dict = Dep
         )
         _dispatch(settings, job_id, request_snapshot, granule_names, fingerprint)
     except Exception as exc:
-        try:
-            store.update_river_shift_job(
-                job_id,
-                {"state": JobState.FAILED.value, "stage": "dispatch_failed",
-                 "error_code": "RIVERSHIFT_DISPATCH_FAILED",
-                 "error_message": str(exc)[:500]},
-                expected_state=JobState.DISPATCHING.value,
-                expected_sequence=0,
-            )
-        except PersistenceError:
-            pass
+        logger.exception("RiverShift Actions dispatch failed for job %s", job_id)
+        _mark_dispatch_failure(store, job_id, str(exc))
         raise HTTPException(status_code=503, detail=f"RiverShift Actions dispatch failed: {str(exc)[:300]}") from None
     return _response(created)
 
