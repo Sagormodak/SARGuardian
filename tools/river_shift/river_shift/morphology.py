@@ -21,7 +21,7 @@ from .raster_io import (
     validate_gcov_series,
     gcov_source_provenance,
 )
-from .water_detection import classify_open_water, otsu_threshold_db
+from .water_detection import classify_open_water, otsu_threshold_db, valid_backscatter_mask
 
 
 def _boundary(mask: np.ndarray, valid: np.ndarray | None = None) -> np.ndarray:
@@ -136,6 +136,7 @@ def run_morphology_analysis(
     profiles: dict[str, dict[str, Any]] = {}
     for key, path in paths.items():
         arrays[key], valids[key], profiles[key] = read_band(path)
+        valids[key] = valid_backscatter_mask(arrays[key], valids[key], units=units)
     assert_same_grid(profiles)
     series_metadata, provenance_complete = validate_gcov_series(
         paths, maturity=maturity, frequency=frequency, term=polarization_term,
@@ -149,11 +150,15 @@ def run_morphology_analysis(
         ordered_dates = [date.fromisoformat(dates[key]) for key in ("before", "post_one", "post_two")]
         if not ordered_dates[0] < ordered_dates[1] < ordered_dates[2]:
             raise ValueError("Morphology observations must be ordered before < post_one < post_two.")
+    if threshold_db is not None and not np.isfinite(threshold_db):
+        raise ValueError("threshold_db must be finite.")
     if not np.isfinite(sensitivity_delta_db) or sensitivity_delta_db <= 0:
         raise ValueError("sensitivity_delta_db must be finite and greater than zero.")
 
     pixel_area_m2 = require_projected_metre_grid(profiles["before"])
     valid = valids["before"] & valids["post_one"] & valids["post_two"]
+    comparison_pixel_count = int(valid.sum())
+    comparison_pixel_fraction = float(comparison_pixel_count / arrays["before"].size) if arrays["before"].size else 0.0
     db_arrays = {key: power_to_db(arrays[key], units) for key in paths}
     combined = np.concatenate([db_arrays[key][valid] for key in paths])
     combined_valid = np.isfinite(combined)
@@ -265,14 +270,18 @@ def run_morphology_analysis(
             "symmetric_boundary_distance_p95_m": safe_float(p95_shift),
             "erosion_polygon_count": int(erosion_polygons),
             "deposition_polygon_count": int(deposition_polygons),
+            "comparison_valid_pixel_count": comparison_pixel_count,
+            "comparison_valid_pixel_fraction": comparison_pixel_fraction,
         },
         "quality": {
             "status": "PERSISTENCE_SCREENED_NOT_INDEPENDENTLY_VALIDATED",
             "release_status": "PROVISIONAL",
             "provenance_complete": provenance_complete,
-            "valid_comparison_pixel_count": int(valid.sum()),
+            "valid_comparison_pixel_count": comparison_pixel_count,
+            "valid_comparison_pixel_fraction": comparison_pixel_fraction,
             "warnings": [
                 "Land-to-water and water-to-land transitions are candidate erosion/deposition zones, not confirmed geomorphic causation.",
+                "All area and boundary comparisons use only the intersection of valid positive-power pixels across the three observations.",
                 "Two post-event observations reduce transient-water confusion but do not replace same-stage hydrological comparison or field validation.",
                 "Boundary distance is a symmetric displacement proxy, not a signed transect-derived bank migration rate.",
                 "For braided rivers, interpret outer active-channel belt and individual threads separately.",
