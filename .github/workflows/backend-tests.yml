@@ -6,6 +6,12 @@ on:
     branches: [main]
     paths:
       - "Backend/**"
+      - "Frontend/src/pages/RiverShiftPage.tsx"
+      - "Frontend/src/pages/river-shift.css"
+      - "Frontend/src/riverShift/**"
+      - "Frontend/src/routing.ts"
+      - "Frontend/src/App.tsx"
+      - "Frontend/src/api/catalog.ts"
       - "docs/DISPLACEMENT_ACTIONS.md"
       - ".github/workflows/backend-tests.yml"
       - ".github/workflows/sarguardian-aoi-wkt-dashboard.yml"
@@ -55,6 +61,7 @@ jobs:
           test -f Backend/supabase/migrations/20261023141449_displacement_active_request_guard.sql
           test -f Backend/supabase/migrations/20261024111404_scientific_request_contract.sql
           test -f Backend/supabase/migrations/20261027003643_place_target_contract.sql
+          test -f Backend/supabase/migrations/20261103100000_river_shift_jobs.sql
           test ! -e Backend/migrations/001_processing_jobs.sql
           test ! -e Backend/migrations/002_displacement_jobs.sql
           test ! -e Backend/migrations/003_displacement_active_request_guard.sql
