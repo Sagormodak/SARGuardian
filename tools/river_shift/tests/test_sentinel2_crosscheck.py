@@ -11,14 +11,20 @@ from pyproj import CRS
 import validate_with_sentinel2 as crosscheck
 
 
-def _item(item_id, footprint, acquisition_date, cloud_cover):
+def _item(item_id, footprint, acquisition_date, cloud_cover, *, datatake_id=None, platform="sentinel-2b", mgrs_tile=None):
+    properties = {
+        "datetime": f"{acquisition_date}T05:00:00Z",
+        "eo:cloud_cover": cloud_cover,
+        "platform": platform,
+    }
+    if datatake_id is not None:
+        properties["s2:datatake_id"] = datatake_id
+    if mgrs_tile is not None:
+        properties["s2:mgrs_tile"] = mgrs_tile
     return {
         "id": item_id,
         "geometry": mapping(footprint),
-        "properties": {
-            "datetime": f"{acquisition_date}T05:00:00Z",
-            "eo:cloud_cover": cloud_cover,
-        },
+        "properties": properties,
         "assets": {
             "B03": {"href": f"https://example.test/{item_id}/B03.tif"},
             "B11": {"href": f"https://example.test/{item_id}/B11.tif"},
@@ -299,3 +305,209 @@ def test_projected_crs_must_use_true_metre_axes():
     assert crosscheck._is_projected_metre_crs(CRS.from_epsg(32645))
     assert not crosscheck._is_projected_metre_crs(CRS.from_epsg(4326))
     assert not crosscheck._is_projected_metre_crs(CRS.from_epsg(2263))
+
+
+def test_select_best_items_combines_adjacent_tiles_from_one_datatake_only():
+    aoi = box(88.0, 24.0, 88.02, 24.01)
+    left = _item(
+        "tile-left",
+        box(88.0, 24.0, 88.011, 24.01),
+        "2026-09-15",
+        35.0,
+        datatake_id="S2B_DATATAKE_001",
+        mgrs_tile="45RYJ",
+    )
+    right = _item(
+        "tile-right",
+        box(88.009, 24.0, 88.02, 24.01),
+        "2026-09-15",
+        42.0,
+        datatake_id="S2B_DATATAKE_001",
+        mgrs_tile="45RZJ",
+    )
+    other_datatake = _item(
+        "unrelated-partial",
+        box(88.0, 24.0, 88.011, 24.01),
+        "2026-09-15",
+        5.0,
+        datatake_id="S2B_DATATAKE_002",
+        mgrs_tile="45RYJ",
+    )
+    selected = crosscheck.select_best_items(
+        [other_datatake, right, left],
+        observation_date=date(2026, 9, 10),
+        aoi_geometry_wgs84=aoi,
+        analysis_crs=CRS.from_epsg(32645),
+        max_day_offset=5,
+        max_cloud_cover=60,
+    )
+
+    assert selected is not None
+    assert [item["id"] for item in selected] == ["tile-left", "tile-right"]
+    assert crosscheck._items_coverage_fraction(selected, aoi, CRS.from_epsg(32645)) > 0.99
+
+
+def test_datatake_group_key_does_not_mix_platforms_or_dates():
+    footprint = box(88.0, 24.0, 88.01, 24.01)
+    first = _item(
+        "first",
+        footprint,
+        "2026-09-15",
+        20.0,
+        datatake_id="DATATAKE-1",
+        platform="sentinel-2a",
+    )
+    same_id_other_platform = _item(
+        "other-platform",
+        footprint,
+        "2026-09-15",
+        20.0,
+        datatake_id="DATATAKE-1",
+        platform="sentinel-2b",
+    )
+    same_id_other_date = _item(
+        "other-date",
+        footprint,
+        "2026-09-16",
+        20.0,
+        datatake_id="DATATAKE-1",
+        platform="sentinel-2a",
+    )
+
+    keys = {
+        crosscheck._datatake_group_key(first),
+        crosscheck._datatake_group_key(same_id_other_platform),
+        crosscheck._datatake_group_key(same_id_other_date),
+    }
+    assert len(keys) == 3
+
+
+def _write_masked_tile(
+    directory: Path,
+    prefix: str,
+    *,
+    data: np.ndarray,
+    valid: np.ndarray,
+    dtype,
+    nodata: int,
+    pixel_size: float,
+):
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{prefix}.tif"
+    data = np.asarray(data, dtype=dtype)
+    mask = np.asarray(valid, dtype=bool)
+    output = data.copy()
+    output[~mask] = nodata
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=data.shape[1],
+        height=data.shape[0],
+        count=1,
+        dtype=data.dtype,
+        crs="EPSG:32645",
+        transform=from_origin(500000, 2700040, pixel_size, pixel_size),
+        nodata=nodata,
+    ) as dst:
+        dst.write(output, 1)
+        dst.write_mask(mask.astype(np.uint8) * 255)
+    return path
+
+
+def test_same_datatake_tile_mosaic_fills_full_aoi_support_from_adjacent_tiles(tmp_path, monkeypatch):
+    nisar = _write_masked_tile(
+        tmp_path,
+        "nisar",
+        data=np.array([[1, 0, 1, 0], [0, 1, 0, 1]], dtype=np.uint8),
+        valid=np.ones((2, 4), dtype=bool),
+        dtype=np.uint8,
+        nodata=255,
+        pixel_size=10,
+    )
+    left_dir = tmp_path / "left"
+    right_dir = tmp_path / "right"
+    b03_left = _write_masked_tile(
+        left_dir, "B03",
+        data=np.array([[30, 30]], dtype=np.uint16),
+        valid=np.array([[True, False]]),
+        dtype=np.uint16, nodata=0, pixel_size=20,
+    )
+    b11_left = _write_masked_tile(
+        left_dir, "B11",
+        data=np.array([[10, 10]], dtype=np.uint16),
+        valid=np.array([[True, False]]),
+        dtype=np.uint16, nodata=0, pixel_size=20,
+    )
+    scl_left = _write_masked_tile(
+        left_dir, "SCL",
+        data=np.array([[6, 0]], dtype=np.uint8),
+        valid=np.array([[True, False]]),
+        dtype=np.uint8, nodata=0, pixel_size=20,
+    )
+    b03_right = _write_masked_tile(
+        right_dir, "B03",
+        data=np.array([[30, 30]], dtype=np.uint16),
+        valid=np.array([[False, True]]),
+        dtype=np.uint16, nodata=0, pixel_size=20,
+    )
+    b11_right = _write_masked_tile(
+        right_dir, "B11",
+        data=np.array([[10, 10]], dtype=np.uint16),
+        valid=np.array([[False, True]]),
+        dtype=np.uint16, nodata=0, pixel_size=20,
+    )
+    scl_right = _write_masked_tile(
+        right_dir, "SCL",
+        data=np.array([[0, 4]], dtype=np.uint8),
+        valid=np.array([[False, True]]),
+        dtype=np.uint8, nodata=0, pixel_size=20,
+    )
+    href_to_path = {
+        "https://example.test/left/B03.tif": str(b03_left),
+        "https://example.test/left/B11.tif": str(b11_left),
+        "https://example.test/left/SCL.tif": str(scl_left),
+        "https://example.test/right/B03.tif": str(b03_right),
+        "https://example.test/right/B11.tif": str(b11_right),
+        "https://example.test/right/SCL.tif": str(scl_right),
+    }
+    monkeypatch.setattr(
+        crosscheck,
+        "_signed_asset_url",
+        lambda href: href_to_path[href],
+    )
+    left = _item(
+        "same-datatake-left",
+        box(88.0, 24.0, 88.5, 25.0),
+        "2026-07-12",
+        12.0,
+        datatake_id="S2B_SAME_PASS_001",
+        mgrs_tile="45RYJ",
+    )
+    right = _item(
+        "same-datatake-right",
+        box(88.5, 24.0, 89.0, 25.0),
+        "2026-07-12",
+        18.0,
+        datatake_id="S2B_SAME_PASS_001",
+        mgrs_tile="45RZJ",
+    )
+
+    nisar_water, scl_water, mndwi, common_valid, nisar_support, metadata = (
+        crosscheck._read_cross_sensor_arrays(
+            nisar_path=nisar,
+            item=[left, right],
+        )
+    )
+
+    assert metadata["sentinel2_tile_count"] == 2
+    assert metadata["sentinel2_mgrs_tiles"] == ["45RYJ", "45RZJ"]
+    assert metadata["tile_common_clear_pixel_counts"] == {
+        "same-datatake-left": 1,
+        "same-datatake-right": 1,
+    }
+    assert nisar_support.all()
+    assert common_valid.all()
+    assert scl_water.tolist() == [[True, False]]
+    assert np.isfinite(mndwi).all()
+    assert nisar_water.shape == (1, 2)
