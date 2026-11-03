@@ -141,16 +141,18 @@ def _items_coverage_fraction(
         return 0.0
 
 
-def _datatake_group_key(item: dict[str, Any]) -> tuple[str, str, str]:
+def _datatake_group_key(item: dict[str, Any]) -> tuple[str, str, str, str]:
     properties = item.get("properties") or {}
     platform = str(properties.get("platform") or properties.get("constellation") or "unknown-platform")
     datatake = properties.get("s2:datatake_id") or properties.get("instrument:datatake_id")
     observed_date = _item_date(item).isoformat()
+    processing_baseline = str(properties.get("s2:processing_baseline") or "unknown-baseline")
     # Never mosaic unrelated scenes just because they happen to share a UTC date.
     # If a provider omits datatake metadata, the item remains its own singleton.
     if isinstance(datatake, str) and datatake.strip():
-        return platform, datatake.strip(), observed_date
-    return platform, f"item:{item.get('id') or hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest()}", observed_date
+        return platform, datatake.strip(), observed_date, processing_baseline
+    item_id = item.get("id") or hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest()
+    return platform, f"item:{item_id}", observed_date, processing_baseline
 
 
 def select_best_items(
@@ -162,8 +164,8 @@ def select_best_items(
     max_day_offset: int = 3,
     max_cloud_cover: float = 40.0,
 ) -> list[dict[str, Any]] | None:
-    """Select one Sentinel-2 datatake, mosaicking all eligible intersecting MGRS tiles."""
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    """Select one datatake and processing baseline; mosaic adjacent MGRS tiles."""
+    groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -183,9 +185,38 @@ def select_best_items(
             continue
 
     ranked: list[
-        tuple[tuple[float, int, float, str, str], list[dict[str, Any]]]
+        tuple[tuple[float, int, float, str, str, str], list[dict[str, Any]]]
     ] = []
-    for (platform, datatake, observed_date), group in groups.items():
+    for (platform, datatake, observed_date, processing_baseline), candidates in groups.items():
+        # Reprocessed STAC records can duplicate one MGRS tile within the same
+        # datatake and baseline. Keep only the latest generation for each tile.
+        latest_by_tile: dict[str, dict[str, Any]] = {}
+        for row in candidates:
+            properties = row.get("properties") or {}
+            tile_key = str(properties.get("s2:mgrs_tile") or row.get("id") or "")
+            current = latest_by_tile.get(tile_key)
+            if current is None:
+                latest_by_tile[tile_key] = row
+                continue
+            current_properties = current.get("properties") or {}
+            candidate_revision = (
+                str(properties.get("s2:generation_time") or ""),
+                str(row.get("id") or ""),
+            )
+            current_revision = (
+                str(current_properties.get("s2:generation_time") or ""),
+                str(current.get("id") or ""),
+            )
+            if candidate_revision > current_revision:
+                latest_by_tile[tile_key] = row
+
+        group = sorted(
+            latest_by_tile.values(),
+            key=lambda row: (
+                float((row.get("properties") or {}).get("eo:cloud_cover", 100.0)),
+                str((row.get("properties") or {}).get("s2:mgrs_tile") or row.get("id") or ""),
+            ),
+        )
         coverage = _items_coverage_fraction(group, aoi_geometry_wgs84, analysis_crs)
         if coverage <= 0:
             continue
@@ -194,14 +225,8 @@ def select_best_items(
         clouds = [float((row.get("properties") or {}).get("eo:cloud_cover")) for row in group]
         mean_cloud = float(sum(clouds) / len(clouds))
         ranked.append((
-            (-coverage, offset, mean_cloud, platform, datatake),
-            sorted(
-                group,
-                key=lambda row: (
-                    float((row.get("properties") or {}).get("eo:cloud_cover", 100.0)),
-                    str(row.get("id") or ""),
-                ),
-            ),
+            (-coverage, offset, mean_cloud, platform, datatake, processing_baseline),
+            group,
         ))
     if not ranked:
         return None
@@ -398,7 +423,7 @@ def _read_cross_sensor_arrays(
     datatake_groups = {_datatake_group_key(row) for row in items}
     if len(datatake_groups) != 1:
         raise CrosscheckError(
-            "A Sentinel-2 mosaic may contain only one platform, datatake and acquisition date."
+            "A Sentinel-2 mosaic may contain only one platform, datatake, acquisition date and processing baseline."
         )
     with rasterio.open(nisar_path) as nisar:
         if nisar.count < 1 or nisar.crs is None:
