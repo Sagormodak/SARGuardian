@@ -176,7 +176,7 @@ def test_download_requires_one_known_collection_maturity(maturity, monkeypatch, 
     assert fake.search_calls == []
     assert fake.download_calls == []
 
-def test_token_auth_rejection_without_password_fallback_fails_safely(monkeypatch, tmp_path, capsys):
+def test_first_wave_token_rejection_is_queued_without_immediate_password_retry(monkeypatch, tmp_path, capsys):
     class TokenRejectingOnDownload(FakeEarthaccess):
         def __init__(self):
             super().__init__(results=[_cmr_result()])
@@ -185,23 +185,26 @@ def test_token_auth_rejection_without_password_fallback_fails_safely(monkeypatch
 
         def login(self, **kwargs):
             self.login_calls.append(kwargs)
-            return True  # earthaccess accepts the token locally before first protected GET
+            return True
 
         def download(self, granules, *, local_path, threads, show_progress):
+            self.download_calls.append({"attempt": "first-wave"})
             raise RuntimeError("Download failed for product. Status code: 401")
 
     fake = TokenRejectingOnDownload()
     monkeypatch.setenv("EARTHDATA_TOKEN", "stale-token-test-value")
-    monkeypatch.delenv("EARTHDATA_USERNAME", raising=False)
-    monkeypatch.delenv("EARTHDATA_PASSWORD", raising=False)
+    monkeypatch.setenv("EARTHDATA_USERNAME", "researcher@example.test")
+    monkeypatch.setenv("EARTHDATA_PASSWORD", "password-test-value")
     monkeypatch.setattr("download_gcov_product._load_earthaccess", lambda: fake)
 
-    with pytest.raises(RuntimeError, match="username/password fallback could not download"):
+    with pytest.raises(RuntimeError, match="queued for the single delayed retry wave"):
         download_product(_catalogue_row(), tmp_path)
 
     assert fake.login_calls == [{"strategy": "environment"}]
+    assert len(fake.download_calls) == 1
     output = capsys.readouterr().out
     assert "stale-token-test-value" not in output
+    assert '"immediate_retry_performed": false' in output
     assert not (tmp_path / f"{GRANULE}.h5").exists()
     assert not list(tmp_path.glob(".*.earthaccess-download"))
 
@@ -248,11 +251,11 @@ def test_username_password_fallback_resets_cached_earthaccess_token_auth(monkeyp
     assert os.environ["EARTHDATA_TOKEN"] == "rejected-token"
 
 
-def test_download_retries_only_confirmed_401_with_fresh_username_password_auth(monkeypatch, tmp_path):
+def test_delayed_retry_uses_password_auth_before_one_fresh_download(monkeypatch, tmp_path):
     class FakeAuth:
         pass
 
-    class TokenRejectedOnFirstDownload(FakeEarthaccess):
+    class RetryRunnerEarthaccess(FakeEarthaccess):
         Auth = FakeAuth
 
         def __init__(self):
@@ -263,30 +266,21 @@ def test_download_retries_only_confirmed_401_with_fresh_username_password_auth(m
 
         def login(self, **kwargs):
             self.login_token_modes.append(bool(os.environ.get("EARTHDATA_TOKEN")))
+            self.login_calls.append(kwargs)
             return True
 
-        def download(self, granules, *, local_path, threads, show_progress):
-            if len(self.download_calls) == 0:
-                self.download_calls.append({"first_attempt": True})
-                raise RuntimeError("Download failed for NISAR product. Status code: 401")
-            return super().download(
-                granules,
-                local_path=local_path,
-                threads=threads,
-                show_progress=show_progress,
-            )
-
-    fake = TokenRejectedOnFirstDownload()
+    fake = RetryRunnerEarthaccess()
     monkeypatch.setenv("EARTHDATA_TOKEN", "rejected-token")
     monkeypatch.setenv("EARTHDATA_USERNAME", "researcher@example.test")
     monkeypatch.setenv("EARTHDATA_PASSWORD", "password-test-value")
+    monkeypatch.setenv("RIVERSHIFT_RETRY_ATTEMPT", "1")
     monkeypatch.setattr("download_gcov_product._load_earthaccess", lambda: fake)
 
     result = download_product(_catalogue_row(), tmp_path)
 
     assert result["downloaded"] is True
-    assert fake.login_token_modes == [True, False]
-    assert len(fake.download_calls) == 2
+    assert fake.login_token_modes == [False]
+    assert len(fake.download_calls) == 1
     assert os.environ["EARTHDATA_TOKEN"] == "rejected-token"
 
 
