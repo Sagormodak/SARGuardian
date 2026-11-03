@@ -121,6 +121,8 @@ python tools/river_shift/validate_with_sentinel2.py \
 
 The tool uses the public Planetary Computer STAC API and temporary signed COG access. It never retains the signed token. It selects one tile; if its AOI footprint or clear optical common support is inadequate, it reports an explicit no-result status. It is not part of the default worker and adds no cost to the main NISAR pipeline unless run manually.
 
+A second manual workflow, [RiverShift retained-run Sentinel-2 cross-sensor replay](../../.github/workflows/river-shift-sentinel2-retained-replay.yml), can reconstruct the NISAR time-series mask from previously retained per-product COG artifacts and compare an exact actual acquisition date with Sentinel-2 without downloading raw NISAR HDF5 again. It verifies the COG receipts/checksums and uses the original run's recorded threshold. The workflow is optional; do not claim it has corroborated a result until a completed run produces a suitable scene and a report with non-null metrics. The replay is still cross-sensor agreement, not ground truth or field validation.
+
 ## Known limitations
 
 - NISAR acquisition dates are discrete and the available time series depends on product maturity, coverage and comparable acquisition geometry.
