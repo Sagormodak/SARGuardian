@@ -1410,13 +1410,7 @@ def _assemble_job(
         "--out-dir", str(morphology_dir),
     ], context={"event_window": event_window})
 
-    callbacks.send("running", "private_result_publication")
-    _log_worker_stage(
-        "private_result_publication", "START",
-        output_count=len(inventory),
-        storage_provider="Google Drive",
-        folder="RiverShift",
-    )
+    callbacks.send("running", "result_package_assembly")
     _log_worker_stage("result_package_assembly", "START")
     output_root = work_dir / "outputs"
     inventory = []
@@ -1497,7 +1491,13 @@ def _assemble_job(
         manifest_sha256=sha256_file(manifest_path),
     )
 
-    _log_worker_stage("private_result_publication", "START", output_count=len(inventory))
+    callbacks.send("running", "private_result_publication")
+    _log_worker_stage(
+        "private_result_publication", "START",
+        output_count=len(inventory),
+        storage_provider="Google Drive",
+        folder="RiverShift",
+    )
     try:
         storage = upload_validated_results(work_dir)
     except DriveUploadError as exc:
