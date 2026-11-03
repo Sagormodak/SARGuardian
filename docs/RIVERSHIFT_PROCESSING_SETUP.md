@@ -22,7 +22,7 @@ Configure these GitHub Actions secrets in moshiour0/SARGuardian-backend:
 | GOOGLE_DRIVE_REFRESH_TOKEN | Refresh token for the configured private Drive identity |
 | GOOGLE_DRIVE_PARENT_FOLDER_ID | Existing parent folder for private RiverShift storage; the worker creates its fixed child folder automatically |
 
-Only GOOGLE_DRIVE_PARENT_FOLDER_ID is used for Drive folder configuration. Under that parent, the worker creates or reuses one fixed `RiverShift` folder, then creates/reuses a UUID-named folder for each job and keeps that job's outputs beneath it. Keep all secrets in GitHub Actions secret storage; never commit them, add them to result manifests, or send them to the browser.
+Only GOOGLE_DRIVE_PARENT_FOLDER_ID is used for Drive folder configuration. The worker validates this parent through the same child-list/find-or-create operation used by the successful Known Place storage path; it does not rely on a standalone parent `files.get` metadata lookup. Under that parent, the worker creates or reuses one fixed `RiverShift` folder, then creates/reuses a UUID-named folder for each job and keeps that job's outputs beneath it. Keep all secrets in GitHub Actions secret storage; never commit them, add them to result manifests, or send them to the browser.
 
 ## Dynamic API environment
 
