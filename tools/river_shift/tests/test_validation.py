@@ -68,7 +68,7 @@ def test_validation_records_parent_gcov_report_provenance(raster_writer, analysi
         "analysis_type": analysis_type,
         "source": {
             "mission": "NISAR", "product": "GCOV", "maturity": "PROVISIONAL",
-            "frequency": "A", "covariance_term": "HHHH",
+            "frequency": frequency, "covariance_term": "HHHH",
             "granule_names": ["NISAR_L2_PR_GCOV_001"],
             "source_granule_sha256": ["a" * 64],
         },
