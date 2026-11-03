@@ -134,7 +134,7 @@ def test_compact_iso_and_filename_acquisition_times_normalize_to_utc_dates() -> 
     assert river_module._acquisition_date("2026-06-27T12:42:43.000Z") == "2026-06-27"
     assert river_module._acquisition_date("2026-06-27") == "2026-06-27"
     assert river_module._acquisition_date(None, "NISAR_L2_PR_GCOV_024_019_D_076_4005_DHDH_A_20260627T124243_20260627T124249_P05023_N_P_J_001") == "2026-06-27"
-    assert river_module._acquisition_date("not-a-date") is None
+    assert river_module._acquisition_date("2026-06-27T23:30:00-02:00") == "2026-06-28"\n    assert river_module._acquisition_date("not-a-date") is None
 
 
 def test_discovery_manifest_counts_compact_timestamps_and_preserves_selected_filters(monkeypatch) -> None:
@@ -190,6 +190,50 @@ def test_discovery_manifest_counts_compact_timestamps_and_preserves_selected_fil
         "flight_direction": "DESCENDING",
         "frame_coverage": "FULL",
     }
+
+
+def test_dispatch_payload_includes_exact_discovery_filters(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    captured = {}
+    class Response:
+        status = 204
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(river_module, "urlopen", fake_urlopen)
+    settings = SimpleNamespace(
+        river_shift_actions_enabled=True,
+        river_shift_github_actions_repository="moshiour0/SARGuardian-backend",
+        river_shift_github_actions_workflow="river-shift-gcov-process.yml",
+        river_shift_github_actions_ref="main",
+        river_shift_github_actions_token="server-token",
+        github_api_url="https://api.github.com",
+        river_shift_public_api_url="https://api.example.test",
+    )
+    request_snapshot = payload() | {
+        "main_band_polarization": "HH+HV",
+        "flight_direction": "DESCENDING",
+        "frame_coverage": "FULL",
+    }
+
+    river_module._dispatch(settings, uuid4(), request_snapshot, ["granule-1"], "f" * 64)
+
+    inputs = captured["body"]["inputs"]
+    assert captured["body"]["ref"] == "main"
+    assert inputs["main_band_polarization"] == "HH+HV"
+    assert inputs["flight_direction"] == "DESCENDING"
+    assert inputs["frame_coverage"] == "FULL"
+    assert inputs["granule_names_json"] == '["granule-1"]'
+
 
 def test_river_shift_requires_four_observation_dates_before_job_creation(monkeypatch) -> None:
     store = RiverShiftStore()
