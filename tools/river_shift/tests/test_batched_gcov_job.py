@@ -21,8 +21,10 @@ from batched_gcov_job import (
     _run_product_worker,
     _select_retry_rows,
     _write_batch_outputs,
+    _verify_and_stage_product_results,
 )
 from process_gcov_job import write_web_preview
+from river_shift.raster_io import validate_gcov_series
 
 
 def _read_github_output(path: Path) -> dict[str, str]:
@@ -458,3 +460,194 @@ def test_workflow_does_not_mask_product_worker_failures_and_validates_retry_hand
     expected_status_env = "RIVERSHIFT_RETRY_DISPATCH_STATUS: $" + "{{ needs.retry_dispatch.result }}"
     assert expected_status_env in workflow
 
+
+
+def test_assembly_rebases_exporter_sidecar_after_product_artifact_import(tmp_path, monkeypatch):
+    granule = "NISAR_L2_PR_GCOV_024_069_A_015_4005_DHDH_A_20260630T232208_20260630T232243_P05023_N_F_J_001"
+    source_sha = "a" * 64
+    raster_bytes = b"verified AOI COG payload"
+    raster_sha = hashlib.sha256(raster_bytes).hexdigest()
+    exporter_path = f"/home/runner/work/_temp/product-runner/rasters/{granule}.tif"
+
+    artifact_root = tmp_path / "product-artifacts"
+    product_dir = artifact_root / granule
+    product_dir.mkdir(parents=True)
+    (product_dir / f"{granule}.tif").write_bytes(raster_bytes)
+    metadata = {
+        "schema_version": 1,
+        "source_granule_name": granule,
+        "source_granule_names": [granule],
+        "source_granule_sha256": [source_sha],
+        "source_product_sha256": source_sha,
+        "output_cog": exporter_path,
+        "output_cog_sha256": raster_sha,
+        "maturity": "PROVISIONAL",
+        "frequency": "frequencyA",
+        "covariance_term": "HHHH",
+        "bandwidth_mode": "4005",
+        "polarization_code": "DHDH",
+        "processing_type": "PR",
+        "flight_direction": "ASCENDING",
+        "relative_orbit": "069",
+        "frame": "015",
+        "crid": "P05023",
+        "orbit_accuracy": "N",
+        "frame_coverage": "FULL",
+        "observation_source": "A",
+    }
+    (product_dir / f"{granule}.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    receipt = {
+        "granule_name": granule,
+        "product": "GCOV",
+        "maturity": "PROVISIONAL",
+        "source_host": "nisar.asf.earthdatacloud.nasa.gov",
+        "size_bytes": 123456,
+        "sha256": source_sha,
+        "downloaded": True,
+    }
+    (product_dir / f"{granule}.download.json").write_text(json.dumps(receipt), encoding="utf-8")
+    inventory = {
+        "product_file": f"{granule}.h5",
+        "available_diagonal_terms": [{"frequency": "frequencyA", "term": "HHHH"}],
+        "gdal_version": "test",
+        "available_valid_sample_masks": [],
+    }
+    (product_dir / f"{granule}.gcov_inventory.json").write_text(json.dumps(inventory), encoding="utf-8")
+
+    required_files = [
+        f"{granule}.tif",
+        f"{granule}.metadata.json",
+        f"{granule}.download.json",
+        f"{granule}.gcov_inventory.json",
+    ]
+    files = [
+        {
+            "name": filename,
+            "sha256": hashlib.sha256((product_dir / filename).read_bytes()).hexdigest(),
+        }
+        for filename in required_files
+    ]
+    (product_dir / "worker-result.json").write_text(json.dumps({
+        "schema_version": 1,
+        "status": "PASS",
+        "job_id": "job-provenance-rebase",
+        "request_fingerprint": "f" * 64,
+        "granule_name": granule,
+        "acquisition_date": "2026-06-30",
+        "source_sha256": source_sha,
+        "files": files,
+    }), encoding="utf-8")
+
+    retry_root = tmp_path / "retry-product-artifacts"
+    retry_root.mkdir()
+    monkeypatch.setenv("RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR", str(retry_root))
+    monkeypatch.setattr(batch_module, "_log_worker_stage", lambda *_args, **_kwargs: None)
+    prepared = {
+        "job_id": "job-provenance-rebase",
+        "request_fingerprint": "f" * 64,
+        "selected_product_names": [granule],
+        "date_by_name": {granule: "2026-06-30"},
+        "products_by_date": {"2026-06-30": [granule]},
+        "request": {
+            "maturity": "PROVISIONAL",
+            "frequency": "frequencyA",
+            "term": "HHHH",
+        },
+    }
+    work_dir = tmp_path / "assembly"
+    date_rasters, _ = _verify_and_stage_product_results(prepared, artifact_root, work_dir)
+    staged_raster = date_rasters["2026-06-30"][0]
+    staged_metadata = json.loads(staged_raster.with_suffix(".metadata.json").read_text(encoding="utf-8"))
+
+    assert staged_metadata["exporter_output_cog"] == exporter_path
+    assert staged_metadata["output_cog"] == str(staged_raster.resolve())
+    assert staged_metadata["output_cog_sha256"] == raster_sha
+    records, complete = validate_gcov_series(
+        {"2026-06-30": str(staged_raster)},
+        maturity="PROVISIONAL",
+        frequency="frequencyA",
+        term="HHHH",
+    )
+    assert complete is True
+    assert len(records) == 1
+
+
+def test_assembly_rejects_artifact_when_exporter_cog_checksum_does_not_match(tmp_path, monkeypatch):
+    granule = "NISAR_L2_PR_GCOV_024_069_A_015_4005_DHDH_A_20260630T232208_20260630T232243_P05023_N_F_J_001"
+    source_sha = "b" * 64
+    artifact_root = tmp_path / "product-artifacts"
+    product_dir = artifact_root / granule
+    product_dir.mkdir(parents=True)
+    raster_bytes = b"tampered COG payload"
+    (product_dir / f"{granule}.tif").write_bytes(raster_bytes)
+    raster_sha = hashlib.sha256(raster_bytes).hexdigest()
+    metadata = {
+        "source_granule_name": granule,
+        "source_product_sha256": source_sha,
+        "output_cog": "/ephemeral/product-runner/scene.tif",
+        "output_cog_sha256": "c" * 64,
+        "maturity": "PROVISIONAL",
+        "frequency": "frequencyA",
+        "covariance_term": "HHHH",
+        "bandwidth_mode": "4005",
+        "polarization_code": "DHDH",
+        "processing_type": "PR",
+        "flight_direction": "ASCENDING",
+        "relative_orbit": "069",
+        "frame": "015",
+        "crid": "P05023",
+        "orbit_accuracy": "N",
+        "frame_coverage": "FULL",
+        "observation_source": "A",
+    }
+    (product_dir / f"{granule}.metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    receipt = {
+        "granule_name": granule,
+        "product": "GCOV",
+        "maturity": "PROVISIONAL",
+        "source_host": "nisar.asf.earthdatacloud.nasa.gov",
+        "size_bytes": 123456,
+        "sha256": source_sha,
+        "downloaded": True,
+    }
+    (product_dir / f"{granule}.download.json").write_text(json.dumps(receipt), encoding="utf-8")
+    inventory = {
+        "product_file": f"{granule}.h5",
+        "available_diagonal_terms": [{"frequency": "frequencyA", "term": "HHHH"}],
+        "gdal_version": "test",
+        "available_valid_sample_masks": [],
+    }
+    (product_dir / f"{granule}.gcov_inventory.json").write_text(json.dumps(inventory), encoding="utf-8")
+    required_files = [
+        f"{granule}.tif",
+        f"{granule}.metadata.json",
+        f"{granule}.download.json",
+        f"{granule}.gcov_inventory.json",
+    ]
+    files = [
+        {"name": filename, "sha256": hashlib.sha256((product_dir / filename).read_bytes()).hexdigest()}
+        for filename in required_files
+    ]
+    (product_dir / "worker-result.json").write_text(json.dumps({
+        "status": "PASS",
+        "job_id": "job-bad-provenance",
+        "request_fingerprint": "e" * 64,
+        "granule_name": granule,
+        "acquisition_date": "2026-06-30",
+        "source_sha256": source_sha,
+        "files": files,
+    }), encoding="utf-8")
+    retry_root = tmp_path / "retry-product-artifacts"
+    retry_root.mkdir()
+    monkeypatch.setenv("RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR", str(retry_root))
+    monkeypatch.setattr(batch_module, "_log_worker_stage", lambda *_args, **_kwargs: None)
+    prepared = {
+        "job_id": "job-bad-provenance",
+        "request_fingerprint": "e" * 64,
+        "selected_product_names": [granule],
+        "date_by_name": {granule: "2026-06-30"},
+        "products_by_date": {"2026-06-30": [granule]},
+        "request": {"maturity": "PROVISIONAL", "frequency": "frequencyA", "term": "HHHH"},
+    }
+    with pytest.raises(WorkerFailure, match="checksum or exporter path is invalid"):
+        _verify_and_stage_product_results(prepared, artifact_root, tmp_path / "assembly")
