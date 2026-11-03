@@ -127,6 +127,70 @@ def test_create_river_shift_job_is_owner_scoped_and_idempotent(monkeypatch) -> N
     assert hidden.status_code == 404
 
 
+
+
+def test_compact_iso_and_filename_acquisition_times_normalize_to_utc_dates() -> None:
+    assert river_module._acquisition_date("20260627T124243") == "2026-06-27"
+    assert river_module._acquisition_date("2026-06-27T12:42:43.000Z") == "2026-06-27"
+    assert river_module._acquisition_date("2026-06-27") == "2026-06-27"
+    assert river_module._acquisition_date(None, "NISAR_L2_PR_GCOV_024_019_D_076_4005_DHDH_A_20260627T124243_20260627T124249_P05023_N_P_J_001") == "2026-06-27"
+    assert river_module._acquisition_date("not-a-date") is None
+
+
+def test_discovery_manifest_counts_compact_timestamps_and_preserves_selected_filters(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    records = [
+        {"granule_name": f"scene-{index}", "start_time_utc": stamp}
+        for index, stamp in enumerate((
+            "20260627T124243", "20260627T124243",
+            "20260630T232134", "20260709T124242", "20260712T232134",
+        ))
+    ]
+    class Product:
+        def __init__(self, value):
+            self.value = value
+        def model_dump(self, mode="json"):
+            return self.value
+
+    seen = {}
+    def fake_search(request):
+        seen.update({
+            "polarization": request.main_band_polarization,
+            "direction": request.flight_direction,
+            "coverage": request.frame_coverage,
+            "maturity": request.maturity,
+            "max_results": request.max_results,
+        })
+        return SimpleNamespace(
+            products=[Product(row) for row in records],
+            query={"collection_short_names": ["NISAR_L2_GCOV_PROVISIONAL_V1"]},
+        )
+
+    monkeypatch.setattr(river_module, "search_gcov_catalogue", fake_search)
+    request = river_module.CreateRiverShiftJobRequest.model_validate(payload() | {
+        "main_band_polarization": "HH+HV",
+        "flight_direction": "DESCENDING",
+        "frame_coverage": "FULL",
+    })
+
+    manifest, names = river_module._discover_manifest(request)
+
+    assert manifest["unique_dates"] == ["2026-06-27", "2026-06-30", "2026-07-09", "2026-07-12"]
+    assert len(names) == 5
+    assert seen == {
+        "polarization": "HH+HV",
+        "direction": "DESCENDING",
+        "coverage": "FULL",
+        "maturity": "PROVISIONAL",
+        "max_results": 100,
+    }
+    assert manifest["discovery_filters"] == {
+        "main_band_polarization": "HH+HV",
+        "flight_direction": "DESCENDING",
+        "frame_coverage": "FULL",
+    }
+
 def test_river_shift_requires_four_observation_dates_before_job_creation(monkeypatch) -> None:
     store = RiverShiftStore()
     api = configure(monkeypatch, store)
