@@ -898,6 +898,9 @@ export async function createRiverShiftJob(input: {
   endDate: string;
   eventDate: string;
   maturity: 'BETA' | 'PROVISIONAL';
+  mainBandPolarization: 'HH' | 'HH+HV' | 'HH+HV+VH+VV' | 'VV' | 'VV+VH' | 'LH+LV' | 'RH+RV' | null;
+  flightDirection: 'ASCENDING' | 'DESCENDING' | null;
+  frameCoverage: 'ALL' | 'FULL' | 'PARTIAL';
   frequency: 'frequencyA' | 'frequencyB';
   covarianceTerm: string;
   thresholdMethod: 'otsu' | 'manual';
@@ -916,6 +919,9 @@ export async function createRiverShiftJob(input: {
         end_date: input.endDate,
         event_date: input.eventDate,
         maturity: input.maturity,
+        main_band_polarization: input.mainBandPolarization,
+        flight_direction: input.flightDirection,
+        frame_coverage: input.frameCoverage,
         frequency: input.frequency,
         covariance_term: input.covarianceTerm,
         threshold_method: input.thresholdMethod,
