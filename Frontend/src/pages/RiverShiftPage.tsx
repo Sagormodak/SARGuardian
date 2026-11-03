@@ -702,7 +702,9 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
   }, [
     jobTimeSeriesPlaying,
     jobTimeSeriesFrames.length,
-    currentJobFrameMetadata?.date,
+    riverJobId,
+    currentJobFrameMetadata,
+    currentJobFrame,
     jobFrameJobId,
     jobFrameDate,
   ]);
