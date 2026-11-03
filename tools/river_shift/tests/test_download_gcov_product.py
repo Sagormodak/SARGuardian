@@ -1,6 +1,10 @@
 import pytest
 
-from download_gcov_product import build_product_url, trusted_asf_url
+from types import SimpleNamespace
+
+import json
+
+from download_gcov_product import build_product_url, download_product, trusted_asf_url, trusted_redirect_chain
 
 
 def test_build_official_provisional_asset_url_from_exact_gcove_granule():
@@ -18,3 +22,120 @@ def test_url_builder_rejects_unknown_maturity_and_invalid_name():
         build_product_url("NISAR_L2_PR_GCOV_invalid", "UNKNOWN")
     with pytest.raises(ValueError, match="official NISAR"):
         build_product_url("NISAR_L2_GUNW_invalid", "PROVISIONAL")
+
+
+def test_asf_url_allowlist_rejects_lookalike_hosts_credentials_and_non_https():
+    assert not trusted_asf_url("https://nisar.asf.earthdatacloud.nasa.gov.attacker.example/product.h5")
+    assert not trusted_asf_url("https://attacker.asf.earthdatacloud.nasa.gov/product.h5")
+    assert not trusted_asf_url("https://user@nisar.asf.earthdatacloud.nasa.gov/product.h5")
+    assert not trusted_asf_url("http://nisar.asf.earthdatacloud.nasa.gov/product.h5")
+
+
+def test_redirect_chain_allows_official_earthdata_login_but_rejects_foreign_host():
+    allowed = SimpleNamespace(
+        history=[SimpleNamespace(url="https://nisar.asf.earthdatacloud.nasa.gov/login"),
+                 SimpleNamespace(url="https://urs.earthdata.nasa.gov/oauth/authorize")],
+        url="https://nisar.asf.earthdatacloud.nasa.gov/NISAR/product.h5",
+    )
+    blocked = SimpleNamespace(
+        history=[SimpleNamespace(url="https://nisar.asf.earthdatacloud.nasa.gov/login"),
+                 SimpleNamespace(url="https://attacker.example/collect")],
+        url="https://nisar.asf.earthdatacloud.nasa.gov/NISAR/product.h5",
+    )
+
+    assert trusted_redirect_chain(allowed)
+    assert not trusted_redirect_chain(blocked)
+
+
+class FakeDownloadResponse:
+    def __init__(self, payload, *, url, history=None):
+        self.payload = payload
+        self.url = url
+        self.history = history or []
+        self.headers = {"Content-Length": str(len(payload))}
+        self.status_code = 200
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.closed = True
+
+    def raise_for_status(self):
+        return None
+
+    def iter_content(self, chunk_size):
+        for offset in range(0, len(self.payload), chunk_size):
+            yield self.payload[offset:offset + chunk_size]
+
+
+class FakeDownloadSession:
+    def __init__(self, response):
+        self.response = response
+        self.headers = {}
+        self.trust_env = False
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        return self.response
+
+
+def _download_product_row():
+    name = "NISAR_L2_PR_GCOV_025_151_A_011_4005_DHDH_A_20260718T155041_20260718T155059_P05023_N_F_J_001"
+    return {"granule_name": name, "maturity": "PROVISIONAL"}
+
+
+def test_download_rejects_foreign_redirect_before_writing_product(monkeypatch, tmp_path):
+    name = _download_product_row()["granule_name"]
+    response = FakeDownloadResponse(
+        b"not an HDF5 product",
+        url="https://nisar.asf.earthdatacloud.nasa.gov/product.h5",
+        history=[SimpleNamespace(url="https://attacker.example/redirect")],
+    )
+    session = FakeDownloadSession(response)
+    monkeypatch.setattr("download_gcov_product.requests.Session", lambda: session)
+
+    with pytest.raises(RuntimeError, match="redirected outside"):
+        download_product(_download_product_row(), tmp_path, 30)
+
+    assert not (tmp_path / f"{name}.h5.part").exists()
+    assert not (tmp_path / f"{name}.h5").exists()
+
+
+def test_download_rejects_http_200_html_login_page(monkeypatch, tmp_path):
+    name = _download_product_row()["granule_name"]
+    response = FakeDownloadResponse(
+        b"<html>Earthdata Login Required</html>",
+        url="https://nisar.asf.earthdatacloud.nasa.gov/product.h5",
+    )
+    session = FakeDownloadSession(response)
+    monkeypatch.setattr("download_gcov_product.requests.Session", lambda: session)
+
+    with pytest.raises(RuntimeError, match="not a valid HDF5 product"):
+        download_product(_download_product_row(), tmp_path, 30)
+
+    assert not (tmp_path / f"{name}.h5").exists()
+    assert not (tmp_path / f"{name}.h5.part").exists()
+
+
+def test_download_accepts_hdf5_signature_and_writes_hash_receipt(monkeypatch, tmp_path):
+    name = _download_product_row()["granule_name"]
+    payload = b"\\x89HDF\\r\\n\\x1a\\n" + (b"sample-payload" * 100)
+    response = FakeDownloadResponse(
+        payload,
+        url="https://nisar.asf.earthdatacloud.nasa.gov/NISAR/product.h5",
+    )
+    session = FakeDownloadSession(response)
+    monkeypatch.setattr("download_gcov_product.requests.Session", lambda: session)
+
+    result = download_product(_download_product_row(), tmp_path, 30)
+
+    assert result["downloaded"] is True
+    assert result["size_bytes"] == len(payload)
+    assert (tmp_path / f"{name}.h5").read_bytes() == payload
+    receipt = json.loads((tmp_path / f"{name}.download.json").read_text())
+    assert receipt["sha256"] == result["sha256"]
+
+
