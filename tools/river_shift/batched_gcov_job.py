@@ -864,15 +864,15 @@ def _report_batch() -> None:
             f"::warning::Batch {batch_number} reconciliation found {failed}/{len(rows)} failed or unverifiable products; the failures remain eligible for the delayed retry wave.",
             flush=True,
         )
-    detail_rows = "\\n".join(
+    detail_rows = "\n".join(
         f"| {name} | {reason} |" for name, reason in failure_details[:30]
     ) or "| — | No failed products |"
     _write_step_summary(
-        f"## Batch {batch_number} reconciliation\\n\\n"
+        f"## Batch {batch_number} reconciliation\n\n"
         f"- Expected: **{len(rows)}**\\n"
         f"- Verified: **{passed}**\\n"
         f"- Failed/unverifiable: **{failed}**\\n\\n"
-        "| Product | Outcome |\\n|---|---|\\n" + detail_rows
+        "| Product | Outcome |\n|---|---|\n" + detail_rows
     )
 
 
@@ -920,7 +920,7 @@ def _prepare_retry_wave() -> None:
     _write_output("retry_matrix", retry_matrix_json)
     _write_output("retry_count", str(len(retry_rows)))
     _write_step_summary(
-        "## Delayed retry queue\\n\\n"
+        "## Delayed retry queue\n\n"
         f"- First-attempt products: **{len(prepared['selected_product_names'])}**\\n"
         f"- Retry products queued: **{len(retry_rows)}**\\n"
         "- Automatic retry attempts per product: **1**\\n"
