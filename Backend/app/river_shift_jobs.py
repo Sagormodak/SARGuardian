@@ -349,6 +349,11 @@ def create_river_shift_job(payload: CreateRiverShiftJobRequest, user: dict = Dep
     }
     try:
         created = store.create_river_shift_job(record)
+    except PersistenceConflictError:
+        raise HTTPException(
+            status_code=409,
+            detail="This account already has an active RiverShift job. Wait for it to finish before starting another.",
+        ) from None
     except PersistenceError:
         raise HTTPException(status_code=503, detail="Could not persist the RiverShift processing request.") from None
     if created.get("id") != str(job_id):
