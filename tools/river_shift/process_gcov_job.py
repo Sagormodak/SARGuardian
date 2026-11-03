@@ -25,13 +25,15 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 import numpy as np
+from affine import Affine
 import rasterio
 import requests
 from pyproj import CRS, Transformer
+from rasterio.features import shapes
 from rasterio.warp import Resampling, reproject
 from shapely import wkt as shapely_wkt
 from shapely.geometry import mapping, shape
-from shapely.ops import transform
+from shapely.ops import transform, unary_union
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -575,123 +577,197 @@ def _to_metric_transformer(aoi, raster_crs: CRS):
     return Transformer.from_crs(source, raster_crs, always_xy=True).transform
 
 
-def write_web_preview(
-    source_path: Path,
+def write_mask_web_preview(
+    mask_path: Path,
     destination: Path,
-    project,
-    unproject,
-    pixel_size_m: float,
     *,
+    class_name: str,
     max_bytes: int = MAX_WEB_PREVIEW_BYTES,
+    max_dimension: int = 1600,
 ) -> dict[str, Any]:
-    """Create a topology-preserving, explicitly non-measurement map preview."""
+    """Build a compact display-only GeoJSON layer from a binary science mask.
+
+    The full-resolution mask remains the scientific source of record. The map
+    preview uses max aggregation so isolated positive mask cells survive
+    downsampling, then polygonizes the reduced grid and dissolves it to one
+    feature per class. No source GeoJSON polygon is reprojected or simplified.
+    """
+    if not isinstance(class_name, str) or not class_name.strip():
+        raise WorkerFailure("PREVIEW_GENERATION_FAILED", "A display layer must have a non-empty class name.")
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 1024:
+        raise WorkerFailure("PREVIEW_GENERATION_FAILED", "The display preview byte limit is invalid.")
+    if isinstance(max_dimension, bool) or not isinstance(max_dimension, int) or max_dimension < 64:
+        raise WorkerFailure("PREVIEW_GENERATION_FAILED", "The display preview dimension is invalid.")
+
     try:
-        payload = json.loads(source_path.read_text(encoding="utf-8"))
-        raw_features = payload.get("features")
-        if payload.get("type") != "FeatureCollection" or not isinstance(raw_features, list):
-            raise ValueError("not a GeoJSON FeatureCollection")
-        metric_features = []
-        for feature in raw_features:
-            geometry = shape(feature.get("geometry"))
-            metric = transform(project, geometry)
-            metric_features.append((feature, metric))
-    except Exception:
-        raise WorkerFailure("PREVIEW_GENERATION_FAILED", f"Could not prepare a map preview for {source_path.name}.") from None
-    # Display-only previews may be simplified and omit small patches. Keep the
-    # largest AOI features first so a dense candidate layer cannot fail an
-    # otherwise valid scientific analysis merely because of a web payload cap.
-    metric_features.sort(key=lambda item: item[1].area, reverse=True)
+        with rasterio.open(mask_path) as source:
+            if source.count != 1 or source.width < 1 or source.height < 1:
+                raise ValueError("mask must be a non-empty single-band raster")
+            if source.crs is None:
+                raise ValueError("mask raster has no CRS")
+            source_crs = CRS.from_user_input(source.crs)
+            if not source_crs.is_projected:
+                raise ValueError("mask raster must use a projected CRS")
+            source_width = int(source.width)
+            source_height = int(source.height)
+            source_transform = source.transform
+            source_crs_value = source.crs
+            source_nodata = source.nodata
+            source_mask_sha256 = sha256_file(mask_path)
 
-    pixel_area = max(float(pixel_size_m) ** 2, 1.0)
-    minimum_area = 4.0 * pixel_area
-    tolerance = max(float(pixel_size_m) * 0.5, 0.5)
-    while tolerance <= max(float(pixel_size_m) * 64, 64):
-        features = []
-        for feature, metric in metric_features:
-            if metric.area < minimum_area:
-                continue
-            simplified = metric.simplify(tolerance, preserve_topology=True)
-            if simplified.is_empty:
-                continue
-            features.append({
-                "type": "Feature",
-                "properties": dict(feature.get("properties") or {}),
-                "geometry": mapping(transform(unproject, simplified)),
-            })
-        preview = {
-            "type": "FeatureCollection",
-            "name": destination.stem,
-            "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}},
-            "river_shift_preview": {
-                "status": "DISPLAY_ONLY",
-                "simplification_tolerance_m": round(tolerance, 3),
-                "minimum_polygon_area_m2": round(minimum_area, 3),
-                "warning": "Small patches may be omitted and boundaries simplified; use the full private GeoJSON for detailed GIS review. Areas are calculated from the full-resolution analysis, not this preview.",
-            },
-            "features": features,
-        }
-        encoded = json.dumps(preview, separators=(",", ":"), allow_nan=False).encode("utf-8")
-        if len(encoded) <= max_bytes:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(encoded)
-            return preview
-        tolerance *= 2.0
+            dimensions = sorted({
+                min(max_dimension, value)
+                for value in (1600, 1200, 900, 700, 512, 384, 256)
+            }, reverse=True)
+            selected_payload: dict[str, Any] | None = None
+            last_output_bytes = 0
 
-    # Last-resort display budget: retain the largest simplified candidate
-    # polygons and explicitly report how many small patches were omitted.
-    # Full-resolution GeoJSON and metrics remain untouched and authoritative.
-    tolerance = max(float(pixel_size_m) * 128.0, 128.0)
-    features = []
-    for feature, metric in metric_features:
-        if metric.area < minimum_area:
-            continue
-        simplified = metric.simplify(tolerance, preserve_topology=True)
-        if simplified.is_empty:
-            continue
-        features.append({
-            "type": "Feature",
-            "properties": dict(feature.get("properties") or {}),
-            "geometry": mapping(transform(unproject, simplified)),
-        })
-    original_count = len(features)
-    while features:
-        omitted = original_count - len(features)
-        preview["features"] = features
-        preview["river_shift_preview"]["simplification_tolerance_m"] = round(tolerance, 3)
-        preview["river_shift_preview"]["features_omitted_for_size"] = omitted
-        preview["river_shift_preview"]["warning"] = (
-            "DISPLAY ONLY: boundaries were simplified and the smallest patches were omitted to fit the map payload. "
-            "Use the full private GeoJSON for detailed GIS review. Scientific metrics use the full-resolution analysis."
-        )
-        encoded = json.dumps(preview, separators=(",", ":"), allow_nan=False).encode("utf-8")
-        if len(encoded) <= max_bytes:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(encoded)
-            return preview
-        # Remove a deterministic tail of the smallest remaining features.
-        keep = max(1, int(len(features) * 0.75))
-        if keep == len(features):
-            keep -= 1
-        features = features[:keep]
+            for target_dimension in dimensions:
+                scale = max(
+                    source_width / float(target_dimension),
+                    source_height / float(target_dimension),
+                    1.0,
+                )
+                preview_width = max(1, int(math.ceil(source_width / scale)))
+                preview_height = max(1, int(math.ceil(source_height / scale)))
+                sampled = source.read(
+                    1,
+                    out_shape=(preview_height, preview_width),
+                    masked=True,
+                    resampling=Resampling.max,
+                )
+                sampled_mask = np.ma.getmaskarray(sampled)
+                sampled_values = np.asarray(sampled.filled(0), dtype=np.uint8)
+                candidate = (sampled_values == 1) & ~sampled_mask
+                candidate_cells = int(np.count_nonzero(candidate))
+                preview_transform = source_transform * Affine.scale(
+                    source_width / float(preview_width),
+                    source_height / float(preview_height),
+                )
+                pixel_x_m = math.hypot(preview_transform.a, preview_transform.d)
+                pixel_y_m = math.hypot(preview_transform.b, preview_transform.e)
+                display_pixel_size_m = max(pixel_x_m, pixel_y_m)
 
-    # An oversized web-only payload must never invalidate the underlying
-    # scientific outputs. An empty display layer is preferable to losing a
-    # valid analysis; the full-resolution GeoJSON remains in the private bundle.
-    preview["features"] = []
-    preview["river_shift_preview"]["features_omitted_for_size"] = original_count
-    preview["river_shift_preview"]["warning"] = (
-        "DISPLAY ONLY: every map patch was omitted because the preview exceeded its safe size budget. "
-        "The full-resolution private GeoJSON and all scientific metrics remain available and unchanged."
-    )
-    encoded = json.dumps(preview, separators=(",", ":"), allow_nan=False).encode("utf-8")
-    if len(encoded) <= max_bytes:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(encoded)
-        return preview
-    raise WorkerFailure(
-        "PREVIEW_GENERATION_FAILED",
-        "The empty display-only preview exceeded its serialization limit; the underlying scientific output is preserved.",
-    )
+                if candidate_cells:
+                    geometries = []
+                    for geometry, value in shapes(
+                        candidate.astype(np.uint8),
+                        mask=candidate,
+                        transform=preview_transform,
+                        connectivity=8,
+                    ):
+                        if int(value) == 1:
+                            geometries.append(shape(geometry))
+                    if not geometries:
+                        raise WorkerFailure(
+                            "PREVIEW_GENERATION_FAILED",
+                            f"The source mask {mask_path.name} contains display candidates but polygonization returned none.",
+                        )
+                    merged = unary_union(geometries)
+                    if merged.is_empty or not merged.is_valid:
+                        merged = merged.buffer(0)
+                    if merged.is_empty:
+                        raise WorkerFailure(
+                            "PREVIEW_GENERATION_FAILED",
+                            f"The downsampled mask geometry for {mask_path.name} is empty or invalid.",
+                        )
+                    tolerance = max(display_pixel_size_m * 0.25, 0.01)
+                    simplified = merged.simplify(tolerance, preserve_topology=True)
+                    if simplified.is_empty:
+                        simplified = merged
+                    to_wgs84 = Transformer.from_crs(
+                        source_crs_value, "EPSG:4326", always_xy=True
+                    ).transform
+                    geographic = transform(to_wgs84, simplified)
+                    features = [{
+                        "type": "Feature",
+                        "properties": {
+                            "class": class_name,
+                            "river_shift_layer": class_name,
+                            "preview_geometry": "max_aggregated_mask_footprint",
+                        },
+                        "geometry": mapping(geographic),
+                    }]
+                else:
+                    features = []
+
+                payload = {
+                    "type": "FeatureCollection",
+                    "name": destination.stem,
+                    "crs": {
+                        "type": "name",
+                        "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"},
+                    },
+                    "river_shift_preview": {
+                        "status": "DISPLAY_ONLY",
+                        "method": "max_aggregated_binary_mask_then_polygonize",
+                        "source_mask": mask_path.name,
+                        "source_mask_sha256": source_mask_sha256,
+                        "source_width": source_width,
+                        "source_height": source_height,
+                        "source_nodata": source_nodata,
+                        "preview_width": preview_width,
+                        "preview_height": preview_height,
+                        "preview_candidate_cells": candidate_cells,
+                        "display_pixel_size_m": round(display_pixel_size_m, 3),
+                        "feature_count": len(features),
+                        "features_omitted_for_size": 0,
+                        "warning": (
+                            "DISPLAY ONLY: geometry is generated from a max-aggregated lower-resolution copy of the "
+                            "binary NISAR-derived mask. It preserves detected candidate cells for visual context, "
+                            "but is not a survey-grade boundary or displacement measurement. Full-resolution "
+                            "private masks, GeoJSON and scientific metrics are unchanged."
+                        ),
+                    },
+                    "features": features,
+                }
+                encoded = json.dumps(
+                    payload, separators=(",", ":"), allow_nan=False
+                ).encode("utf-8")
+                last_output_bytes = len(encoded)
+                if len(encoded) <= max_bytes:
+                    selected_payload = payload
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(encoded)
+                    break
+
+            if selected_payload is None:
+                raise WorkerFailure(
+                    "PREVIEW_GENERATION_FAILED",
+                    f"Could not preserve the {class_name} display layer within the {max_bytes}-byte preview budget; "
+                    f"the last compact candidate was {last_output_bytes} bytes. Full-resolution science outputs remain intact.",
+                )
+
+            if selected_payload["river_shift_preview"]["preview_candidate_cells"] == 0:
+                # Max aggregation should preserve every positive binary mask
+                # cell. Verify the source in blocks before accepting an empty
+                # layer, so a real class can never silently disappear.
+                source_has_candidates = False
+                for _, window in source.block_windows(1):
+                    if np.any(source.read(1, window=window) == 1):
+                        source_has_candidates = True
+                        break
+                if source_has_candidates:
+                    raise WorkerFailure(
+                        "PREVIEW_GENERATION_FAILED",
+                        f"The source mask {mask_path.name} contains positive candidate pixels, but its display preview is empty.",
+                    )
+                selected_payload["river_shift_preview"]["empty_reason"] = (
+                    "The full-resolution source mask contains no candidate pixels for this class."
+                )
+                destination.write_text(
+                    json.dumps(selected_payload, separators=(",", ":"), allow_nan=False),
+                    encoding="utf-8",
+                )
+            return selected_payload
+    except WorkerFailure:
+        raise
+    except Exception as exc:
+        detail = str(exc).strip() or type(exc).__name__
+        raise WorkerFailure(
+            "PREVIEW_GENERATION_FAILED",
+            f"Could not build the raster-first display preview for {mask_path.name}: {detail[:240]}",
+        ) from None
 
 
 def create_web_previews(
@@ -702,31 +778,55 @@ def create_web_previews(
     reference_raster: Path,
     time_report_path: Path,
 ) -> list[dict[str, Any]]:
+    """Create checksum-bound map previews without reprocessing full GeoJSON polygons."""
     map_dir = work_dir / "outputs" / "map"
-    with rasterio.open(reference_raster) as source:
-        if source.crs is None or not source.crs.is_projected:
+    with rasterio.open(reference_raster) as reference:
+        if reference.crs is None or not CRS.from_user_input(reference.crs).is_projected:
             raise WorkerFailure("RASTER_GRID_INVALID", "Map previews need a projected NISAR raster grid.")
-        raster_crs = CRS.from_user_input(source.crs)
-        pixel_size = max(abs(source.transform.a), abs(source.transform.e))
-    project = Transformer.from_crs("EPSG:4326", raster_crs, always_xy=True).transform
-    unproject = Transformer.from_crs(raster_crs, "EPSG:4326", always_xy=True).transform
     layers: list[dict[str, Any]] = []
     sources = [
-        (morphology_dir / "erosion_candidates.geojson", map_dir / "erosion_candidates_preview.geojson", "erosion"),
-        (morphology_dir / "deposition_candidates.geojson", map_dir / "deposition_candidates_preview.geojson", "deposition"),
-        (flood_dir / "newly_water_covered.geojson", map_dir / "newly_water_covered_preview.geojson", "new_water"),
+        (
+            morphology_dir / "erosion_candidate_mask.tif",
+            map_dir / "erosion_candidates_preview.geojson",
+            "erosion",
+        ),
+        (
+            morphology_dir / "deposition_candidate_mask.tif",
+            map_dir / "deposition_candidates_preview.geojson",
+            "deposition",
+        ),
+        (
+            flood_dir / "newly_water_covered_mask.tif",
+            map_dir / "newly_water_covered_preview.geojson",
+            "new_water",
+        ),
     ]
-    change_features = []
+    change_features: list[dict[str, Any]] = []
+    per_class_budget = max(1024, (MAX_WEB_PREVIEW_BYTES - 16_384) // len(sources))
     for source_path, destination, layer_type in sources:
+        if not source_path.is_file():
+            raise WorkerFailure(
+                "PREVIEW_GENERATION_FAILED",
+                f"The full-resolution {layer_type} science mask is missing: {source_path.name}.",
+            )
         _log_worker_stage(
             "web_map_preview", "START",
             layer_type=layer_type,
             source_file=source_path.name,
             output_file=destination.name,
+            preview_method="max_aggregated_binary_mask_then_polygonize",
         )
-        preview = write_web_preview(source_path, destination, project, unproject, pixel_size, max_bytes=MAX_WEB_PREVIEW_BYTES)
+        preview = write_mask_web_preview(
+            source_path,
+            destination,
+            class_name=layer_type,
+            max_bytes=per_class_budget,
+        )
         digest = sha256_file(destination)
-        layers.append({"path": destination.relative_to(work_dir).as_posix(), "sha256": digest})
+        layers.append({
+            "path": destination.relative_to(work_dir).as_posix(),
+            "sha256": digest,
+        })
         for feature in preview["features"]:
             properties = dict(feature.get("properties") or {})
             properties["river_shift_layer"] = layer_type
@@ -735,87 +835,119 @@ def create_web_previews(
             "web_map_preview", "PASS",
             layer_type=layer_type,
             feature_count=len(preview.get("features", [])),
-            features_omitted_for_size=preview.get("river_shift_preview", {}).get("features_omitted_for_size", 0),
+            preview_candidate_cells=preview["river_shift_preview"]["preview_candidate_cells"],
+            preview_width=preview["river_shift_preview"]["preview_width"],
+            preview_height=preview["river_shift_preview"]["preview_height"],
+            features_omitted_for_size=0,
             output_bytes=destination.stat().st_size,
             output_sha256=digest,
         )
+
     combined_path = map_dir / "river_change_candidates_preview.geojson"
     combined = {
         "type": "FeatureCollection",
         "name": combined_path.stem,
-        "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}},
+        "crs": {
+            "type": "name",
+            "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"},
+        },
         "river_shift_preview": {
             "status": "DISPLAY_ONLY",
-            "warning": "Red: persistent erosion candidate; green: persistent deposition candidate; blue: newly water-covered candidate. Boundaries are simplified and small patches may be omitted.",
+            "method": "separate_max_aggregated_mask_footprints_per_class",
+            "class_count": len({feature["properties"]["river_shift_layer"] for feature in change_features}),
+            "feature_count": len(change_features),
+            "features_omitted_for_size": 0,
+            "warning": (
+                "Red: persistent erosion candidate; green: persistent deposition candidate; blue: newly water-covered "
+                "candidate. Each class is represented independently from its own max-aggregated binary mask. "
+                "These are provisional display footprints, not signed bank-migration measurements."
+            ),
         },
         "features": change_features,
     }
-    _log_worker_stage(
-        "combined_change_preview", "START",
-        candidate_feature_count=len(change_features),
-        byte_limit=MAX_WEB_PREVIEW_BYTES,
-    )
-    ranked_features = sorted(
-        change_features,
-        key=lambda feature: shape(feature.get("geometry")).area if feature.get("geometry") else 0.0,
-        reverse=True,
-    )
-    original_feature_count = len(ranked_features)
-    while True:
-        omitted = original_feature_count - len(ranked_features)
-        combined["features"] = ranked_features
-        if omitted:
-            combined["river_shift_preview"]["features_omitted_for_size"] = omitted
-            combined["river_shift_preview"]["warning"] = (
-                "DISPLAY ONLY: the largest simplified candidate patches are shown; smaller patches were omitted "
-                "to fit the map payload. Full-resolution private GeoJSON and scientific metrics are unchanged."
-            )
-        encoded_combined = json.dumps(combined, separators=(",", ":"), allow_nan=False).encode("utf-8")
-        if len(encoded_combined) <= MAX_WEB_PREVIEW_BYTES:
-            break
-        if not ranked_features:
-            raise WorkerFailure("PREVIEW_GENERATION_FAILED", "Could not serialize the bounded combined map preview.")
-        keep = max(0, int(len(ranked_features) * 0.75))
-        ranked_features = ranked_features[:keep]
+    encoded_combined = json.dumps(
+        combined, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    if len(encoded_combined) > MAX_WEB_PREVIEW_BYTES:
+        raise WorkerFailure(
+            "PREVIEW_GENERATION_FAILED",
+            "The class-preserving combined map preview exceeds its safe byte limit; no change class was silently dropped.",
+        )
     combined_path.parent.mkdir(parents=True, exist_ok=True)
     combined_path.write_bytes(encoded_combined)
     combined_digest = sha256_file(combined_path)
-    layers.append({"path": combined_path.relative_to(work_dir).as_posix(), "sha256": combined_digest})
+    layers.append({
+        "path": combined_path.relative_to(work_dir).as_posix(),
+        "sha256": combined_digest,
+    })
     _log_worker_stage(
         "combined_change_preview", "PASS",
-        feature_count=len(ranked_features),
-        features_omitted_for_size=original_feature_count - len(ranked_features),
+        feature_count=len(change_features),
+        class_count=combined["river_shift_preview"]["class_count"],
+        features_omitted_for_size=0,
         output_bytes=len(encoded_combined),
         output_sha256=combined_digest,
     )
 
     report = json.loads(time_report_path.read_text(encoding="utf-8"))
-    for frame in report.get("time_series", []):
-        observed_date = frame.get("date")
+    frames = report.get("time_series")
+    if not isinstance(frames, list):
+        raise WorkerFailure("PREVIEW_GENERATION_FAILED", "The observed-date time-series report has no frame list.")
+    for frame in frames:
+        observed_date = frame.get("date") if isinstance(frame, dict) else None
         if not isinstance(observed_date, str):
             raise WorkerFailure("PREVIEW_GENERATION_FAILED", "An observed-date time-series frame has an invalid date.")
-        source_path = time_dir / str(frame.get("water_geojson", ""))
+        mask_name = Path(str(frame.get("water_mask", ""))).name
+        if not mask_name or mask_name in {".", ".."}:
+            raise WorkerFailure(
+                "PREVIEW_GENERATION_FAILED",
+                f"The {observed_date} observed-date frame is missing its source water mask reference.",
+            )
+        source_mask = time_dir / mask_name
+        if not source_mask.is_file():
+            raise WorkerFailure(
+                "PREVIEW_GENERATION_FAILED",
+                f"The {observed_date} observed-date source mask is missing: {mask_name}.",
+            )
         preview_path = map_dir / f"water_{observed_date}_preview.geojson"
-        _log_worker_stage("time_series_frame_preview", "START", acquisition_date=observed_date, source_file=source_path.name)
-        frame_preview = write_web_preview(source_path, preview_path, project, unproject, pixel_size)
+        _log_worker_stage(
+            "time_series_frame_preview", "START",
+            acquisition_date=observed_date,
+            source_file=source_mask.name,
+            preview_method="max_aggregated_binary_mask_then_polygonize",
+        )
+        frame_preview = write_mask_web_preview(
+            source_mask,
+            preview_path,
+            class_name="open_water",
+            max_bytes=MAX_WEB_PREVIEW_BYTES,
+        )
         frame_digest = sha256_file(preview_path)
-        layers.append({"path": preview_path.relative_to(work_dir).as_posix(), "sha256": frame_digest})
+        layers.append({
+            "path": preview_path.relative_to(work_dir).as_posix(),
+            "sha256": frame_digest,
+        })
         frame["water_geojson"] = preview_path.name
         frame["water_geojson_sha256"] = frame_digest
+        frame["water_preview_feature_count"] = len(frame_preview["features"])
+        frame["water_preview_candidate_cells"] = frame_preview["river_shift_preview"]["preview_candidate_cells"]
         _log_worker_stage(
             "time_series_frame_preview", "PASS",
             acquisition_date=observed_date,
-            feature_count=len(frame_preview.get("features", [])),
-            features_omitted_for_size=frame_preview.get("river_shift_preview", {}).get("features_omitted_for_size", 0),
+            feature_count=len(frame_preview["features"]),
+            preview_candidate_cells=frame_preview["river_shift_preview"]["preview_candidate_cells"],
+            preview_width=frame_preview["river_shift_preview"]["preview_width"],
+            preview_height=frame_preview["river_shift_preview"]["preview_height"],
             output_bytes=preview_path.stat().st_size,
             output_sha256=frame_digest,
+            empty_reason=frame_preview["river_shift_preview"].get("empty_reason"),
         )
     report.setdefault("quality", {}).setdefault("warnings", []).append(
-        "The web playback uses display-only simplified GeoJSON. Small patches may be omitted; no daily interpolation is performed."
+        "The web playback displays one max-aggregated lower-resolution mask per actual NISAR acquisition date. "
+        "It is display-only; full-resolution masks and metrics remain authoritative. No daily interpolation is performed."
     )
     time_report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return layers
-
 
 def _read_input() -> dict[str, Any]:
     job_id = _required_env("RIVERSHIFT_JOB_ID")
