@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { User } from 'firebase/auth';
 import { importLibrary, setOptions } from '@googlemaps/js-api-loader';
-import { createRiverShiftJob, downloadRiverShiftArtifact, getRiverShiftJob, type RiverShiftJob } from '../api/catalog';
+import { createRiverShiftJob, downloadRiverShiftArtifact, getRiverShiftJob, listRiverShiftJobs, type RiverShiftJob } from '../api/catalog';
 import type { RiverShiftGeoJSON, RiverShiftReport, RiverShiftTimeSeriesFrame } from '../riverShift/manifest';
 import { isRiverShiftGeoJSONApproved, isRiverShiftReportVerified, isRiverShiftTimeSeriesGeoJSONApproved, parseRiverShiftGeoJSON, parseRiverShiftReport } from '../riverShift/manifest';
 import { formatWktPolygon, parseWktPolygon, type Wgs84Point } from '../riverShift/aoi';
@@ -261,6 +261,24 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     return geoJSONFiles.filter((file) => isRiverShiftGeoJSONApproved(report, file.sha256));
   }, [report, geoJSONFiles]);
   const hasVerifiedOverlay = Boolean(!hasJobPreviewOverlay && (currentTimeSeriesFrame || verifiedGeoJSONFiles.length));
+
+  useEffect(() => {
+    if (!user) {
+      setRiverJob(null);
+      return undefined;
+    }
+    let cancelled = false;
+    void listRiverShiftJobs(user, 10).then((jobs) => {
+      if (!cancelled && jobs.length) {
+        setRiverJob((current) => current ?? jobs[0]);
+      }
+    }).catch((error: unknown) => {
+      if (!cancelled) {
+        setRiverJobError(error instanceof Error ? error.message : 'Could not restore the last River Shift job.');
+      }
+    });
+    return () => { cancelled = true; };
+  }, [user]);
 
   useEffect(() => {
     if (!user || !riverJob || !['queued', 'dispatching', 'running'].includes(riverJob.state)) return undefined;
