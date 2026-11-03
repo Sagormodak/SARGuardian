@@ -199,8 +199,8 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [maturity, setMaturity] = useState<'BETA' | 'PROVISIONAL' | 'ALL'>('PROVISIONAL');
-  const [polarization, setPolarization] = useState('');
-  const [direction, setDirection] = useState('');
+  const [polarization, setPolarization] = useState<'' | 'HH' | 'HH+HV' | 'HH+HV+VH+VV' | 'VV' | 'VV+VH' | 'LH+LV' | 'RH+RV'>('');
+  const [direction, setDirection] = useState<'' | 'ASCENDING' | 'DESCENDING'>('');
   const [frameCoverage, setFrameCoverage] = useState<'ALL' | 'FULL' | 'PARTIAL'>('ALL');
   const [catalogue, setCatalogue] = useState<CatalogueResponse | null>(null);
   const [catalogueQueryKey, setCatalogueQueryKey] = useState('');
