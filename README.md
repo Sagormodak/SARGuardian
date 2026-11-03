@@ -107,6 +107,7 @@ The repository includes the RiverShift NISAR GCOV river-change screening worker 
 
 - [RiverShift judge guide](tools/river_shift/NASA_SPACE_APPS_2026_JUDGE_GUIDE.md)
 - [NASA project-page draft and submission checklist](tools/river_shift/NASA_SPACE_APPS_2026_PROJECT_PAGE_DRAFT.md)
+- [Optional Sentinel-2 L2A cross-sensor agreement tool](tools/river_shift/README_11_validate_with_sentinel2.md)
 - [Interactive frontend repository](https://github.com/moshiour0/SARGuardian_Dynamic)
 
 RiverShift map classes are provisional candidates until independent validation. The Google Satellite basemap is visual context only; it is not a scientific input to the NISAR analysis. Actual acquisition dates are displayed without synthetic daily interpolation.
