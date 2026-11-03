@@ -15,7 +15,6 @@ import json
 import math
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
 
 import numpy as np
 import rasterio
@@ -24,7 +23,7 @@ from pyproj import CRS, Transformer
 from rasterio.enums import Resampling
 from rasterio.vrt import WarpedVRT
 from rasterio.warp import reproject, transform_bounds
-from rasterio.windows import Window, from_bounds, transform as window_transform
+from rasterio.windows import from_bounds, transform as window_transform
 from shapely.geometry import box, shape
 from shapely.ops import transform as transform_geometry
 
@@ -163,6 +162,18 @@ def _confusion_metrics(
     )
     iou = ratio(tp, tp + fp + fn)
     agreement = ratio(tp + tn, count)
+    specificity = ratio(tn, tn + fp)
+    balanced_accuracy = (
+        float((recall + specificity) / 2)
+        if recall is not None and specificity is not None else None
+    )
+    expected_agreement = (
+        ((tp + fp) * (tp + fn) + (fn + tn) * (fp + tn)) / float(count * count)
+    )
+    cohen_kappa = (
+        float((agreement - expected_agreement) / (1.0 - expected_agreement))
+        if agreement is not None and expected_agreement < 1.0 else None
+    )
     predicted_water_pixels = tp + fp
     reference_water_pixels = tp + fn
 
@@ -172,12 +183,21 @@ def _confusion_metrics(
         "agreement": agreement,
         "precision": precision,
         "recall": recall,
+        "specificity": specificity,
+        "balanced_accuracy": balanced_accuracy,
         "f1_score": f1,
         "intersection_over_union": iou,
+        "cohen_kappa": cohen_kappa,
         "predicted_water_area_km2": float(predicted_water_pixels * pixel_area_m2 / 1_000_000),
         "reference_water_area_km2": float(reference_water_pixels * pixel_area_m2 / 1_000_000),
         "area_bias_km2": float((predicted_water_pixels - reference_water_pixels) * pixel_area_m2 / 1_000_000),
     }
+
+
+def _scl_water_reference(scl_values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    values = np.asarray(scl_values, dtype=np.uint8)
+    valid = np.isin(values, SCL_VALID_CLASSES)
+    return values == 6, valid
 
 
 def _mndwi(green: np.ndarray, swir1: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -282,10 +302,12 @@ def _read_cross_sensor_arrays(
         nisar_bounds_wgs84 = transform_bounds(nisar.crs, "EPSG:4326", *nisar.bounds, densify_pts=21)
         nisar_aoi_wgs84 = box(*nisar_bounds_wgs84)
         nisar_src = nisar.read(1, masked=True)
-        nisar_data = np.asarray(np.ma.filled(nisar_src, 255), dtype=np.uint8)
         nisar_valid = ~np.ma.getmaskarray(nisar_src)
-        if np.any(nisar_valid & ~np.isin(nisar_data, (0, 1))):
+        nisar_raw = np.asarray(np.ma.getdata(nisar_src))
+        if np.any(nisar_valid & ~np.isin(nisar_raw, (0, 1))):
             raise CrosscheckError("NISAR source mask must contain only 0=non-water, 1=water and NoData.")
+        nisar_data = np.full(nisar_raw.shape, 255, dtype=np.uint8)
+        nisar_data[nisar_valid] = nisar_raw[nisar_valid].astype(np.uint8)
 
     signed = {
         key: _signed_asset_url(_asset_href(item, key))
@@ -312,7 +334,7 @@ def _read_cross_sensor_arrays(
                 )
             target_transform = window_transform(window, b11.transform)
             b11_array = b11.read(1, window=window, masked=True)
-            b11_values = np.asarray(np.ma.filled(b11_array, np.nan), dtype=np.float32)
+            b11_values = np.asarray(b11_array.astype(np.float32).filled(np.nan), dtype=np.float32)
             b11_valid = (~np.ma.getmaskarray(b11_array)) & np.isfinite(b11_values) & (b11_values > 0)
 
             b03 = stack.enter_context(rasterio.open(signed["B03"]))
@@ -328,7 +350,7 @@ def _read_cross_sensor_arrays(
                 nodata=0,
             ))
             b03_array = b03_vrt.read(1, masked=True)
-            b03_values = np.asarray(np.ma.filled(b03_array, np.nan), dtype=np.float32)
+            b03_values = np.asarray(b03_array.astype(np.float32).filled(np.nan), dtype=np.float32)
             b03_valid = (~np.ma.getmaskarray(b03_array)) & np.isfinite(b03_values) & (b03_values > 0)
 
             scl = stack.enter_context(rasterio.open(signed["SCL"]))
@@ -344,6 +366,7 @@ def _read_cross_sensor_arrays(
                 nodata=0,
             ))
             scl_values = scl_vrt.read(1).astype(np.uint8)
+            scl_water, scl_valid = _scl_water_reference(scl_values)
 
             nisar_on_b11 = np.full((height, width), 255, dtype=np.uint8)
             reproject(
@@ -375,7 +398,6 @@ def _read_cross_sensor_arrays(
             )
             nisar_valid_on_b11 = (nisar_valid_on_b11 == 1) & (nisar_on_b11 != 255)
             index, index_valid = _mndwi(b03_values, b11_values)
-            scl_valid = np.isin(scl_values, SCL_VALID_CLASSES)
             common_valid = nisar_valid_on_b11 & scl_valid & b11_valid & b03_valid & index_valid
             pixel_area = abs(target_transform.a * target_transform.e - target_transform.b * target_transform.d)
             metadata = {
@@ -391,7 +413,7 @@ def _read_cross_sensor_arrays(
                     if np.count_nonzero(nisar_valid_on_b11) else 0.0
                 ),
             }
-            return nisar_on_b11 == 1, scl_values == 6, index, common_valid, nisar_valid_on_b11, {
+            return nisar_on_b11 == 1, scl_water, index, common_valid, nisar_valid_on_b11, {
                 **metadata,
                 "mndwi_valid": index_valid,
                 "pixel_area_m2": float(pixel_area),
