@@ -32,7 +32,7 @@ RiverShift focuses on making those observations easier to explore: users select 
 | **Alaska Satellite Facility (ASF) DAAC / NASA Earthdata** | Search, exact-granule access and distribution of the NISAR products used by the processing pipeline. Granule identifiers and checksums are retained. | Catalogue footprint coverage is not the same as valid raster coverage. |
 | **Google Maps Satellite (Google Maps Platform)** | Third-party visual basemap for geographic orientation and communication of the AOI and result footprints. | Basemap imagery is not an input to the NISAR classification or a validation dataset. Google/imagery-provider attribution remains visible on the map. |
 
-Do not list Copernicus DEM, Sentinel-2, GPM IMERG, field survey, or any other dataset as an input to the current RiverShift automatic analysis unless a versioned pipeline run actually downloaded, processed, and recorded it. These are possible future independent/context sources, not current evidence.
+An optional standalone cross-sensor tool, `validate_with_sentinel2.py`, is now available to compare a supplied NISAR water mask with a nearby Copernicus Sentinel-2 L2A scene. It uses SCL clear-class support and a separate B03/B11 MNDWI screen. This optional tool is **not automatically run** by the primary RiverShift job and has not been run for the example metrics below. Only describe Sentinel-2 as an actually used evidence source after a dated report with its STAC item ID, source metadata and checksums has been produced. Do not list Copernicus DEM, GPM IMERG, field survey or other datasets as integrated unless the run actually processed and recorded them.
 
 ## Reproducible workflow
 
@@ -79,18 +79,32 @@ These figures describe that particular AOI, selected products, threshold and com
 
 ## Independent validation pathway
 
-RiverShift includes a water-classification validation tool that compares a predicted mask to a separately prepared reference raster and reports classification metrics. For a defensible validation claim, the reference must be independent of the NISAR-derived prediction and its source, date, resolution, co-registration, nodata policy and label-generation method must be recorded.
+RiverShift includes two distinct comparison pathways. The rigorous reference-raster validator compares a NISAR-derived predicted mask to a separately prepared, independently reviewed reference mask on the exact same grid. The optional `validate_with_sentinel2.py` tool searches Copernicus Sentinel-2 L2A and compares the NISAR mask with two optical water classifications: SCL class 6 (using only SCL classes 4/5/6 as clear support) and MNDWI from B03/B11. It records scene date offset, cloud cover, STAC item identity, NISAR mask checksum, common spatial support, confusion metrics and area bias. The Sentinel-2 output is **cross-sensor agreement screening only**, not ground truth, field validation or an independent supervised accuracy assessment. Optical water indices and Sentinel SCL can themselves contain errors.
 
 The standalone signed-bankline tool requires independently prepared dated banklines and oriented transects. A user must specify the positive transect direction. RiverShift must not infer a signed direction from the symmetric morphology metric.
 
-A future stronger validation pack should include, for the same AOI and relevant dates:
+A stronger validation pack should include, for the same AOI and relevant dates:
 - independently interpreted optical water/land reference (e.g. a clear-sky Sentinel-2 L2A scene, when available);
 - reference masks and a documented sampling/label protocol;
 - confusion matrix, precision, recall, F1, IoU and uncertainty/sensitivity;
 - a dated bankline pair and independently oriented transects where signed migration is claimed;
 - rainfall, water-level or field observations only where a suitable independent source and temporal coverage exist.
 
-Those future sources must not be claimed as current integration until the automated run stores their product identifiers and checksums.
+Example optional Sentinel-2 command (run after obtaining the retained full-resolution NISAR water mask):
+
+```bash
+python tools/river_shift/validate_with_sentinel2.py \
+  --nisar-water-mask results/time_series/water_2026-07-12_mask.tif \
+  --observation-date 2026-07-12 \
+  --output-dir results/validation/sentinel2-2026-07-12 \
+  --max-day-offset 3 \
+  --max-cloud-cover 40 \
+  --mndwi-threshold 0.0
+```
+
+The script uses public Microsoft Planetary Computer STAC search and temporary SAS-signed Sentinel-2 COG access; it stores unsigned source asset identifiers, never temporary SAS tokens. If no eligible scene is found, the report records an explicit no-match status and `metrics: null`. Low cloud-free common support is also reported as insufficient rather than converted to a zero score. The tool is optional and is not part of the primary live worker's normal execution path.
+
+Do not claim Sentinel-2 as an input to a particular result until the report and exact source metadata/checksum are retained alongside that result.
 
 ## Known limitations
 
