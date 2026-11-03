@@ -294,12 +294,10 @@ def create_river_shift_job(payload: CreateRiverShiftJobRequest, user: dict = Dep
         active = active_jobs[0]
         raise HTTPException(
             status_code=409,
-            detail={
-                "code": "RIVERSHIFT_JOB_ALREADY_ACTIVE",
-                "message": "This account already has an active RiverShift job. Wait for it to finish before starting another.",
-                "job_id": str(active.get("id", "")),
-                "state": str(active.get("state", "running")),
-            },
+            detail=(
+                "This account already has an active RiverShift job "
+                f"({str(active.get('id', 'unknown'))}). Wait for it to finish before starting another."
+            ),
         )
 
     try:
