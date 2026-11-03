@@ -9,6 +9,7 @@ from process_gcov_job import (
     WorkerFailure,
     _configure_earthdata_credentials,
     _product_date,
+    _read_input,
     select_covering_granules,
     select_date_window,
 )
@@ -38,6 +39,41 @@ def test_event_window_does_not_use_pre_event_scene_as_event_observation():
     ]
     with pytest.raises(WorkerFailure, match="one qualifying acquisition before"):
         select_date_window(rows, date(2026, 5, 2))
+
+
+
+def test_worker_input_preserves_the_catalogue_discovery_filters(monkeypatch):
+    import json
+    from uuid import uuid4
+
+    granule = "NISAR_L2_PR_GCOV_024_019_D_076_4005_DHDH_A_20260802T124243_20260802T124249_P05023_N_F_J_001"
+    values = {
+        "RIVERSHIFT_JOB_ID": str(uuid4()),
+        "RIVERSHIFT_REQUEST_FINGERPRINT": "a" * 64,
+        "RIVERSHIFT_CALLBACK_URL": "https://api.example.test",
+        "RIVERSHIFT_AOI_WKT": "POLYGON ((89 25, 89.1 25, 89.1 25.1, 89 25.1, 89 25))",
+        "RIVERSHIFT_START_DATE": "2026-06-20",
+        "RIVERSHIFT_END_DATE": "2026-09-18",
+        "RIVERSHIFT_EVENT_DATE": "2026-07-23",
+        "RIVERSHIFT_MATURITY": "PROVISIONAL",
+        "RIVERSHIFT_MAIN_BAND_POLARIZATION": "HH+HV",
+        "RIVERSHIFT_FLIGHT_DIRECTION": "DESCENDING",
+        "RIVERSHIFT_FRAME_COVERAGE": "FULL",
+        "RIVERSHIFT_FREQUENCY": "frequencyA",
+        "RIVERSHIFT_COVARIANCE_TERM": "HHHH",
+        "RIVERSHIFT_THRESHOLD_METHOD": "otsu",
+        "RIVERSHIFT_THRESHOLD_DB": "",
+        "RIVERSHIFT_GRANULE_NAMES_JSON": json.dumps([granule]),
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+
+    request = _read_input()
+
+    assert request["main_band_polarization"] == "HH+HV"
+    assert request["flight_direction"] == "DESCENDING"
+    assert request["frame_coverage"] == "FULL"
+    assert request["granule_names"] == [granule]
 
 
 def test_compact_and_iso_acquisition_timestamps_are_normalized():
