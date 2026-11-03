@@ -520,8 +520,40 @@ def _read_input() -> dict[str, Any]:
     }
 
 
+def _configure_earthdata_credentials() -> None:
+    """Use an Earthdata bearer token or create a private runner-local netrc."""
+    token = os.environ.get("EARTHDATA_TOKEN", "").strip()
+    if token:
+        return
+    username = os.environ.get("EARTHDATA_USERNAME", "").strip()
+    password = os.environ.get("EARTHDATA_PASSWORD", "")
+    if not username or not password:
+        raise WorkerFailure(
+            "EARTHDATA_CREDENTIALS_MISSING",
+            "Configure EARTHDATA_TOKEN or both EARTHDATA_USERNAME and EARTHDATA_PASSWORD.",
+        )
+    if any(character in username + password for character in ("\\n", "\\r", "\\0")):
+        raise WorkerFailure("EARTHDATA_CREDENTIALS_INVALID", "Earthdata credentials contain unsupported control characters.")
+
+    def netrc_value(value: str) -> str:
+        return '"' + value.replace("\\\\", "\\\\\\\\").replace('"', '\\\"') + '"'
+
+    home = Path(os.environ.get("HOME") or str(Path.home())).resolve()
+    home.mkdir(parents=True, exist_ok=True)
+    netrc_path = home / ".netrc"
+    netrc_path.write_text(
+        "machine urs.earthdata.nasa.gov login "
+        + netrc_value(username)
+        + " password "
+        + netrc_value(password)
+        + "\\n",
+        encoding="utf-8",
+    )
+    os.chmod(netrc_path, 0o600)
+
+
 def _ensure_credentials() -> None:
-    _required_env("EARTHDATA_TOKEN")
+    _configure_earthdata_credentials()
     try:
         drive = DriveClient(load_drive_config())
         drive.require_private_folder(drive.config.parent_folder_id)
