@@ -883,20 +883,7 @@ def write_mask_web_preview(
                     f"the last compact candidate was {last_output_bytes} bytes. Full-resolution science outputs remain intact.",
                 )
 
-            if selected_payload["river_shift_preview"]["preview_candidate_cells"] == 0:
-                # Max aggregation should preserve every positive binary mask
-                # cell. Verify the source in blocks before accepting an empty
-                # layer, so a real class can never silently disappear.
-                source_has_candidates = False
-                for _, window in source.block_windows(1):
-                    if np.any(source.read(1, window=window) == 1):
-                        source_has_candidates = True
-                        break
-                if source_has_candidates:
-                    raise WorkerFailure(
-                        "PREVIEW_GENERATION_FAILED",
-                        f"The source mask {mask_path.name} contains positive candidate pixels, but its display preview is empty.",
-                    )
+            if source_candidate_pixels == 0:
                 selected_payload["river_shift_preview"]["empty_reason"] = (
                     "The full-resolution source mask contains no candidate pixels for this class."
                 )
