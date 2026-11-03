@@ -1096,7 +1096,7 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
             name = product["granule_name"]
             run_step("exact-product download", [
                 sys.executable, "download_gcov_product.py", "--catalogue", str(catalogue_for_download),
-                "--granule-name", name, "--out-dir", str(raw_dir), "--read-timeout", "900",
+                "--granule-name", name, "--out-dir", str(raw_dir), 
             ], context={"granule_name": name, "acquisition_date": observed_date})
             product_path = raw_dir / f"{name}.h5"
             inventory_path = raw_dir / f"{name}.gcov_inventory.json"
