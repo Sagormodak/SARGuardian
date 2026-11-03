@@ -111,7 +111,7 @@ def test_download_rejects_http_200_html_login_page(monkeypatch, tmp_path):
         url="https://nisar.asf.earthdatacloud.nasa.gov/product.h5",
     )
     session = FakeDownloadSession(response)
-    monkeypatch.setattr("download_gcov_product.requests.Session", lambda: session)
+    monkeypatch.setattr("download_gcov_product._build_authenticated_asf_session", lambda: session)
 
     with pytest.raises(RuntimeError, match="not a valid HDF5 product"):
         download_product(_download_product_row(), tmp_path, 30)
@@ -122,13 +122,13 @@ def test_download_rejects_http_200_html_login_page(monkeypatch, tmp_path):
 
 def test_download_accepts_hdf5_signature_and_writes_hash_receipt(monkeypatch, tmp_path):
     name = _download_product_row()["granule_name"]
-    payload = b"\\x89HDF\\r\\n\\x1a\\n" + (b"sample-payload" * 100)
+    payload = bytes.fromhex("894844460d0a1a0a") + (b"sample-payload" * 100)
     response = FakeDownloadResponse(
         payload,
         url="https://nisar.asf.earthdatacloud.nasa.gov/NISAR/product.h5",
     )
     session = FakeDownloadSession(response)
-    monkeypatch.setattr("download_gcov_product.requests.Session", lambda: session)
+    monkeypatch.setattr("download_gcov_product._build_authenticated_asf_session", lambda: session)
 
     result = download_product(_download_product_row(), tmp_path, 30)
 
