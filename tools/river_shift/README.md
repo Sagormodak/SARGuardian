@@ -17,7 +17,7 @@ This folder provides a first local scientific workflow:
 
 The separate GitHub Actions worker in `process_gcov_job.py` runs the selected AOI/date request through catalogue review, exact-product downloads, HDF5 validation, raster extraction, flood and persistent-change screening, observed-date playback and private result storage. It uses the AOI and date window supplied by the signed job request; no Bangladesh study polygon is substituted. A result remains provisional until independent review evidence is recorded.
 
-Processing is limited by NISAR coverage, the AOI's available comparable acquisitions, the backend's 1,000 km² AOI ceiling and the worker resource limits. The worker requires four or more matching acquisition dates with at least 90% catalogue footprint coverage, then selects up to twelve actual dates and at most twenty-four granules. These are acquisition dates, not daily measurements. A location with insufficient NISAR observations returns a no-result explanation instead of a simulated layer.
+Processing is limited by NISAR coverage, the AOI's available comparable acquisitions, the backend's 1,000 km² AOI ceiling and the worker resource limits. The API and worker require at least four distinct matching acquisition dates; the compatibility audit also requires at least 90% catalogue footprint coverage per selected date. The worker then selects up to twelve actual dates and at most twenty-four granules. These are acquisition dates, not daily measurements. A location with insufficient NISAR observations returns a no-result explanation instead of a simulated layer.
 
 See `docs/RIVERSHIFT_PROCESSING_SETUP.md` for the GitHub and backend settings required before live job dispatch can run.
 
@@ -125,7 +125,7 @@ Every JSON result should retain:
 - Software versions.
 - Validation status and warnings.
 
-Do not display sample values as measurements. The dashboard requires an explicit VERIFIED release flag, complete provenance and a review evidence record before showing metrics. A GeoJSON is drawn only when its SHA-256 matches an output checksum in the report. This imported JSON gate records a human review assertion; reviewers must retain the evidence referenced by the report.
+Do not display sample values as measurements. The RiverShift dashboard may display checksum-verified private worker outputs as PROVISIONAL evidence, with warnings that the result is not independently validated. It must not label those outputs VERIFIED. User-imported reports/GeoJSON remain subject to the separate human-review gate: VERIFIED release status, complete provenance, reviewer identity/time, evidence reference and verification-record checksum. Live worker previews are drawn only after the private artifact receipt and report-linked SHA-256 checks pass.
 
 ## Test suite
 From this folder:
