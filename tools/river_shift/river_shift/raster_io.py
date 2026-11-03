@@ -180,6 +180,32 @@ def sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def gcov_source_provenance(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Flatten exact source-granule identities without mislabelling mosaic hashes."""
+    observations = []
+    granule_names: list[str] = []
+    granule_hashes: list[str] = []
+    for record in records:
+        names = list(record.get("source_granule_names") or [record["source_granule_name"]])
+        hashes = list(record.get("source_granule_sha256") or [record["source_product_sha256"]])
+        if len(names) != len(hashes):
+            raise RasterContractError("GCOV source granule names and checksums do not have matching lengths.")
+        granule_names.extend(names)
+        granule_hashes.extend(hashes)
+        observations.append({
+            "source_granule_names": names,
+            "source_granule_sha256": hashes,
+            "source_product_sha256": record["source_product_sha256"],
+            "source_product_sha256_scope": record.get("source_product_sha256_scope", "single_granule"),
+            "mosaic_method": record.get("mosaic_method"),
+        })
+    return {
+        "granule_names": granule_names,
+        "source_granule_sha256": granule_hashes,
+        "observation_sources": observations,
+    }
+
+
 def read_gcov_sidecar(path: str | Path) -> dict[str, Any] | None:
     """Read the exporter provenance sidecar adjacent to a GCOV-derived raster."""
     raster_path = Path(path)
