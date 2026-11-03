@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from datetime import date
 
 import numpy as np
 import rasterio
@@ -214,7 +215,7 @@ def test_run_replay_uses_exact_observation_mask_and_records_source_provenance(tm
         products_dir=products,
         prepared_dir=prepared,
         source_run_id="41642281327",
-        observation_date=__import__("datetime").date(2026, 7, 12),
+        observation_date=date(2026, 7, 12),
         output_dir=tmp_path / "output",
     )
 
@@ -225,5 +226,5 @@ def test_run_replay_uses_exact_observation_mask_and_records_source_provenance(tm
     assert summary["status"] == "NO_MATCHING_SENTINEL2_SCENE_WITHIN_FILTER"
     manifest = json.loads(Path(summary["replay_manifest"]).read_text(encoding="utf-8"))
     assert manifest["source_workflow_run_id"] == "41642281327"
-    assert manifest["raw_nisar_hdf5_redownloaded"] if "raw_nisar_hdf5_redownloaded" in manifest else manifest["quality"]["raw_nisar_hdf5_redownloaded"] is False
+    assert manifest["quality"]["raw_nisar_hdf5_redownloaded"] is False
     assert manifest["quality"]["not_ground_truth"] is True
