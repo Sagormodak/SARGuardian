@@ -21,6 +21,9 @@ Processing is limited by NISAR coverage, the AOI's available comparable acquisit
 
 See `docs/RIVERSHIFT_PROCESSING_SETUP.md` for the GitHub and backend settings required before live job dispatch can run.
 
+## Private Google Drive result storage
+Configure only the existing parent folder through the GitHub Actions secret `GOOGLE_DRIVE_PARENT_FOLDER_ID`. The worker automatically creates the fixed `RiverShift` folder directly beneath that parent when it is first needed, and reuses that same folder on subsequent runs. Each job is isolated in a UUID-named child folder beneath `RiverShift`; its manifest and output hierarchy remain inside that job folder. The configured parent must already exist and be accessible to the authenticated storage account; the worker cannot create a child folder if the parent itself returns `notFound`.
+
 ## Environment
 - Python 3.13, as pinned by environment.yml.
 - GDAL 3.13.0 or newer with HDF5 support.
