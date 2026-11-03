@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from affine import Affine
 
@@ -8,8 +9,10 @@ from river_shift.morphology import _orthogonal_pixel_sizes, run_morphology_analy
 def test_morphology_finds_persistent_erosion_and_deposition_candidates(tmp_path, raster_writer):
     before = np.full((20, 20), 0.3, dtype=np.float32)
     before[5:10, 5:15] = 0.01
+    before[0, 0] = 0.0
     post = np.full((20, 20), 0.3, dtype=np.float32)
     post[5:12, 5:11] = 0.01
+    post[0, 1] = -0.1
     paths = [
         raster_writer("before.tif", before),
         raster_writer("post1.tif", post),
@@ -25,6 +28,7 @@ def test_morphology_finds_persistent_erosion_and_deposition_candidates(tmp_path,
     assert metrics["persistent_deposition_candidate_area_ha"] > 0
     assert result["quality"]["status"] == "PERSISTENCE_SCREENED_NOT_INDEPENDENTLY_VALIDATED"
     assert result["quality"]["release_status"] == "PROVISIONAL"
+    assert result["quality"]["valid_comparison_pixel_fraction"] == pytest.approx(398 / 400)
     assert len(result["uncertainty"]["classification_threshold_sensitivity"]["scenarios"]) == 5
     assert (tmp_path / "out" / "erosion_candidates.geojson").exists()
     assert (tmp_path / "out" / "deposition_candidates.geojson").exists()
