@@ -21,9 +21,15 @@ on:
         description: Last allowed acquisition date (YYYY-MM-DD)
         required: true
         type: string
-      event_date:
-        description: User-supplied event date; independently unverified
+      analysis_mode:
+        description: General date-window scan or explicit event-based comparison
         required: true
+        type: choice
+        options: [general_scan, event_based]
+        default: event_based
+      event_date:
+        description: Required only for event_based; never inferred
+        required: false
         type: string
       maturity:
         description: One NISAR collection maturity; never mix BETA and PROVISIONAL
@@ -105,6 +111,7 @@ jobs:
       RIVERSHIFT_AOI_WKT: ${{ inputs.aoi_wkt }}
       RIVERSHIFT_START_DATE: ${{ inputs.start_date }}
       RIVERSHIFT_END_DATE: ${{ inputs.end_date }}
+      RIVERSHIFT_ANALYSIS_MODE: ${{ inputs.analysis_mode }}
       RIVERSHIFT_EVENT_DATE: ${{ inputs.event_date }}
       RIVERSHIFT_MATURITY: ${{ inputs.maturity }}
       RIVERSHIFT_MAIN_BAND_POLARIZATION: ${{ inputs.main_band_polarization }}
@@ -160,7 +167,7 @@ jobs:
           set -euo pipefail
           echo "::group::RiverShift request"
           printf 'job_id=%s\n' "$RIVERSHIFT_JOB_ID"
-          printf 'date_window=%s..%s event_date=%s\n' "$RIVERSHIFT_START_DATE" "$RIVERSHIFT_END_DATE" "$RIVERSHIFT_EVENT_DATE"
+          printf 'date_window=%s..%s analysis_mode=%s event_date=%s\n' "$RIVERSHIFT_START_DATE" "$RIVERSHIFT_END_DATE" "$RIVERSHIFT_ANALYSIS_MODE" "${RIVERSHIFT_EVENT_DATE:-not_applicable}"
           printf 'maturity=%s frequency=%s term=%s\n' "$RIVERSHIFT_MATURITY" "$RIVERSHIFT_FREQUENCY" "$RIVERSHIFT_COVARIANCE_TERM"
           printf 'Earthdata token configured=%s\n' "$([ -n "$EARTHDATA_TOKEN" ] && echo yes || echo no)"
           printf 'Drive OAuth configured=%s parent folder configured=%s\n' "$([ -n "$GOOGLE_DRIVE_OAUTH_CLIENT_JSON" ] && echo yes || echo no)" "$([ -n "$GOOGLE_DRIVE_PARENT_FOLDER_ID" ] && echo yes || echo no)"
@@ -840,6 +847,7 @@ jobs:
       RIVERSHIFT_AOI_WKT: ${{ inputs.aoi_wkt }}
       RIVERSHIFT_START_DATE: ${{ inputs.start_date }}
       RIVERSHIFT_END_DATE: ${{ inputs.end_date }}
+      RIVERSHIFT_ANALYSIS_MODE: ${{ inputs.analysis_mode }}
       RIVERSHIFT_EVENT_DATE: ${{ inputs.event_date }}
       RIVERSHIFT_MATURITY: ${{ inputs.maturity }}
       RIVERSHIFT_MAIN_BAND_POLARIZATION: ${{ inputs.main_band_polarization }}

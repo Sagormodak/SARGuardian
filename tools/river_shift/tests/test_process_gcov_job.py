@@ -15,6 +15,8 @@ from process_gcov_job import (
     select_covering_granules,
     select_date_window,
     select_event_compatible_group,
+    select_general_compatible_group,
+    select_general_date_window,
     require_worker_source_provenance,
     build_source_granule_manifest,
     sha256_file,
@@ -66,6 +68,36 @@ def test_event_window_does_not_use_pre_event_scene_as_event_observation():
 
 
 
+
+
+def test_general_scan_selects_four_actual_dates_without_event_bracketing():
+    rows = [
+        {"acquisition_date": value, "passes_coverage_gate": True, "granule_names": ["scene"]}
+        for value in ("2026-08-01", "2026-08-13", "2026-08-25", "2026-09-06")
+    ]
+    selected, window = select_general_date_window(rows)
+    assert selected == ["2026-08-01", "2026-08-13", "2026-08-25", "2026-09-06"]
+    assert window == {
+        "before": "2026-08-01",
+        "event_proximal_observation": "2026-08-13",
+        "post_one": "2026-08-25",
+        "post_two": "2026-09-06",
+    }
+
+
+def test_general_compatible_group_skips_groups_without_four_qualified_dates():
+    def group(values):
+        return {"relative_orbit": "101", "dates": [
+            {"acquisition_date": value, "passes_coverage_gate": True, "granule_names": ["scene"]}
+            for value in values
+        ]}
+    selected_group, dates, window = select_general_compatible_group([
+        group(("2026-08-01", "2026-08-13", "2026-08-25")),
+        group(("2026-08-01", "2026-08-13", "2026-08-25", "2026-09-06")),
+    ])
+    assert selected_group["relative_orbit"] == "101"
+    assert dates == ["2026-08-01", "2026-08-13", "2026-08-25", "2026-09-06"]
+    assert window["before"] == "2026-08-01"
 
 
 def test_source_granule_manifest_retains_download_and_hdf5_inventory_checksums(tmp_path):
@@ -173,6 +205,28 @@ def test_worker_input_preserves_the_catalogue_discovery_filters(monkeypatch):
     assert request["flight_direction"] == "DESCENDING"
     assert request["frame_coverage"] == "FULL"
     assert request["granule_names"] == [granule]
+
+
+def test_worker_input_accepts_general_scan_without_event_date(monkeypatch):
+    values = {
+        "RIVERSHIFT_JOB_ID": "a7d34520-18c9-4ef0-b135-c902044338a4",
+        "RIVERSHIFT_REQUEST_FINGERPRINT": "b" * 64,
+        "RIVERSHIFT_AOI_WKT": "POLYGON ((89 25, 89.1 25, 89.1 25.1, 89 25.1, 89 25))",
+        "RIVERSHIFT_START_DATE": "2026-06-20",
+        "RIVERSHIFT_END_DATE": "2026-09-18",
+        "RIVERSHIFT_ANALYSIS_MODE": "general_scan",
+        "RIVERSHIFT_EVENT_DATE": "",
+        "RIVERSHIFT_MATURITY": "PROVISIONAL",
+        "RIVERSHIFT_FREQUENCY": "frequencyA",
+        "RIVERSHIFT_COVARIANCE_TERM": "HHHH",
+        "RIVERSHIFT_THRESHOLD_METHOD": "otsu",
+        "RIVERSHIFT_GRANULE_NAMES_JSON": json.dumps(["NISAR_L2_PR_GCOV_001_001"]),
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    request = _read_input()
+    assert request["analysis_mode"] == "general_scan"
+    assert request["event_date"] is None
 
 
 def test_compact_and_iso_acquisition_timestamps_are_normalized():

@@ -42,6 +42,8 @@ from process_gcov_job import (
     run_step,
     select_covering_granules,
     select_event_compatible_group,
+    select_general_compatible_group,
+    generalize_flood_result,
     sha256_file,
 )
 from drive_upload_adapter import DriveUploadError, upload_validated_results
@@ -133,7 +135,8 @@ def _prepare_job(request: dict[str, Any], callbacks: JobCallbacks) -> None:
         job_id=request["job_id"],
         start_date=request["start_date"].isoformat(),
         end_date=request["end_date"].isoformat(),
-        event_date=request["event_date"].isoformat(),
+        analysis_mode=request["analysis_mode"],
+        event_date=request["event_date"].isoformat() if request["event_date"] else None,
         maturity=request["maturity"],
         frequency=request["frequency"],
         covariance_term=request["term"],
@@ -208,7 +211,10 @@ def _prepare_job(request: dict[str, Any], callbacks: JobCallbacks) -> None:
             "This AOI/date selection has no four-date NISAR group with matching maturity, orbit, mode, term and footprint coverage.",
         )
 
-    group, dates, event_window = select_event_compatible_group(qualifying, request["event_date"])
+    if request["analysis_mode"] == "event_based":
+        group, dates, event_window = select_event_compatible_group(qualifying, request["event_date"])
+    else:
+        group, dates, event_window = select_general_compatible_group(qualifying)
     rows_by_date = {row["acquisition_date"]: row for row in group["dates"]}
     metric_crs = _metric_crs(request["aoi"])
     products_by_date: dict[str, list[dict[str, Any]]] = {}
@@ -243,17 +249,24 @@ def _prepare_job(request: dict[str, Any], callbacks: JobCallbacks) -> None:
         "aoi_wkt": request["aoi_wkt"],
         "start_date": request["start_date"].isoformat(),
         "end_date": request["end_date"].isoformat(),
-        "event_date": request["event_date"].isoformat(),
+        "analysis_mode": request["analysis_mode"],
         "maturity": request["maturity"],
         "frequency": request["frequency"],
         "covariance_term": request["term"],
-        "event_date_basis": "user supplied; no independent gauge feed is attached",
         "time_series_semantics": "actual NISAR acquisition dates; no daily interpolation",
         "dates_selected": dates,
-        "event_window": event_window,
+        "comparison_window": {
+            "baseline": event_window["before"],
+            "comparison_one": event_window["event_proximal_observation"],
+            "comparison_two": event_window["post_one"],
+            "comparison_three": event_window["post_two"],
+        } if request["analysis_mode"] == "general_scan" else None,
+        "event_date": request["event_date"].isoformat() if request["event_date"] else None,
+        "event_date_basis": "user supplied; no independent gauge feed is attached" if request["analysis_mode"] == "event_based" else None,
+        "event_window": event_window if request["analysis_mode"] == "event_based" else None,
         "event_proximal_observation_offset_days": (
-            (event_window["event_proximal_observation"] and
-             (date.fromisoformat(event_window["event_proximal_observation"]) - request["event_date"]).days)
+            (date.fromisoformat(event_window["event_proximal_observation"]) - request["event_date"]).days
+            if request["analysis_mode"] == "event_based" else None
         ),
         "granule_names": selected_product_names,
         "aoi_coverage_gate_percent": 90,
@@ -285,7 +298,8 @@ def _prepare_job(request: dict[str, Any], callbacks: JobCallbacks) -> None:
             "aoi_wkt": request["aoi_wkt"],
             "start_date": request["start_date"].isoformat(),
             "end_date": request["end_date"].isoformat(),
-            "event_date": request["event_date"].isoformat(),
+            "analysis_mode": request["analysis_mode"],
+            "event_date": request["event_date"].isoformat() if request["event_date"] else None,
             "maturity": request["maturity"],
             "main_band_polarization": request["main_band_polarization"],
             "flight_direction": request["flight_direction"],
@@ -296,7 +310,7 @@ def _prepare_job(request: dict[str, Any], callbacks: JobCallbacks) -> None:
             "threshold_db": request["threshold_db"],
         },
         "dates": dates,
-        "event_window": event_window,
+        "analysis_window": event_window,
         "selection": selection,
         "products_by_date": {
             observed_date: [row["granule_name"] for row in rows]
@@ -1332,7 +1346,7 @@ def _assemble_job(
         source_provenance_sha256=sha256_file(provenance_path),
     )
     dates = prepared["dates"]
-    event_window = prepared["event_window"]
+    analysis_window = prepared["analysis_window"]
     selection = prepared["selection"]
     source_granule_manifest_path = provenance_path
     reference_date = dates[0]
@@ -1380,35 +1394,37 @@ def _assemble_job(
     ])
     run_step("observed-date time-series analysis", time_command, context={"observation_count": len(dates)})
 
-    window_paths = {key: aligned_observations[value] for key, value in event_window.items()}
+    window_paths = {key: aligned_observations[value] for key, value in analysis_window.items()}
     flood_dir = work_dir / "analysis" / "flood"
-    run_step("flood change screening", [
+    run_step("date-window water change screening", [
         sys.executable, "run_flood_analysis.py",
         "--before", str(window_paths["before"]),
         "--during", str(window_paths["event_proximal_observation"]),
         "--after", str(window_paths["post_one"]),
-        "--before-date", event_window["before"],
-        "--during-date", event_window["event_proximal_observation"],
-        "--after-date", event_window["post_one"],
+        "--before-date", analysis_window["before"],
+        "--during-date", analysis_window["event_proximal_observation"],
+        "--after-date", analysis_window["post_one"],
         *threshold_args,
         "--input-units", "linear", "--maturity", request["maturity"],
         "--frequency", request["frequency"], "--term", request["term"],
         "--out-dir", str(flood_dir),
-    ], context={"event_window": event_window})
+    ], context={"analysis_mode": request["analysis_mode"], "comparison_window": selection.get("comparison_window")})
+    if request["analysis_mode"] == "general_scan":
+        generalize_flood_result(flood_dir / "river_shift_result.json", selection)
     morphology_dir = work_dir / "analysis" / "morphology"
     run_step("persistent morphology screening", [
         sys.executable, "run_morphology_analysis.py",
         "--before", str(window_paths["before"]),
         "--post-one", str(window_paths["post_one"]),
         "--post-two", str(window_paths["post_two"]),
-        "--before-date", event_window["before"],
-        "--post-one-date", event_window["post_one"],
-        "--post-two-date", event_window["post_two"],
+        "--before-date", analysis_window["before"],
+        "--post-one-date", analysis_window["post_one"],
+        "--post-two-date", analysis_window["post_two"],
         *threshold_args,
         "--input-units", "linear", "--maturity", request["maturity"],
         "--frequency", request["frequency"], "--term", request["term"],
         "--out-dir", str(morphology_dir),
-    ], context={"event_window": event_window})
+    ], context={"analysis_mode": request["analysis_mode"], "comparison_window": selection.get("comparison_window")})
 
     callbacks.send("running", "result_package_assembly")
     _log_worker_stage("result_package_assembly", "START")
@@ -1464,12 +1480,14 @@ def _assemble_job(
         "processing_status": "PASS",
         "release_status": "PROVISIONAL",
         "independent_validation_status": "PENDING",
-        "event_date_status": "USER_SUPPLIED_NOT_INDEPENDENTLY_CONFIRMED",
+        "analysis_mode": request["analysis_mode"],
+        "event_date_status": "NOT_APPLICABLE" if request["analysis_mode"] == "general_scan" else "USER_SUPPLIED_NOT_INDEPENDENTLY_CONFIRMED",
         "morphology_status": morphology_result["quality"]["status"],
         "flood_status": flood_result["quality"]["status"],
         "observation_count": len(dates),
         "selected_dates": dates,
-        "event_window": event_window,
+        "comparison_window": selection.get("comparison_window"),
+        "event_window": analysis_window if request["analysis_mode"] == "event_based" else None,
         "selected_granule_count": len(prepared["selected_product_names"]),
         "batch_size": BATCH_SIZE,
         "batch_count": len(prepared["batches"]),
@@ -1480,8 +1498,15 @@ def _assemble_job(
         "warnings": [
             "NISAR observations occur on actual acquisition dates; no daily raster observations or interpolation were created.",
             "Riverbank erosion and deposition are provisional radar-derived candidates, not field-confirmed changes.",
-            "The flood comparison uses the first qualifying NISAR acquisition strictly after the user-supplied event date; it is not a measured peak-stage observation.",
-            "The event date was supplied by the user and was not verified against an authoritative gauge feed.",
+            *(
+                [
+                    "This is a relative date-window comparison; no event date was supplied or inferred.",
+                    "New water and persistent land/water transitions are provisional candidates, not confirmed flood or geomorphic causes.",
+                ] if request["analysis_mode"] == "general_scan" else [
+                    "The flood comparison uses the first qualifying NISAR acquisition strictly after the user-supplied event date; it is not a measured peak-stage observation.",
+                    "The event date was supplied by the user and was not verified against an authoritative gauge feed.",
+                ]
+            ),
         ],
     }
     manifest_path = _build_manifest(work_dir, inventory, selection)
