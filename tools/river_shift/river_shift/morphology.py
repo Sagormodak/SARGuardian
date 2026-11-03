@@ -88,6 +88,9 @@ def run_morphology_analysis(
         paths, maturity=maturity, frequency=frequency, term=polarization_term,
     )
     source_provenance = gcov_source_provenance(series_metadata or [])
+    for source_row, role in zip(source_provenance["observation_sources"], ("before", "post_one", "post_two")):
+        source_row["observation_role"] = role
+        source_row["acquisition_date"] = (dates or {}).get(role)
 
     if dates:
         ordered_dates = [date.fromisoformat(dates[key]) for key in ("before", "post_one", "post_two")]
