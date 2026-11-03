@@ -143,8 +143,8 @@ def test_discovery_manifest_counts_compact_timestamps_and_preserves_selected_fil
     records = [
         {"granule_name": f"scene-{index}", "start_time_utc": stamp}
         for index, stamp in enumerate((
-            "20260627T124243", "20260627T124243",
-            "20260630T232134", "20260709T124242", "20260712T232134",
+            "20260802T124243", "20260802T124243",
+            "20260814T232134", "20260826T124242", "20260907T232134",
         ))
     ]
     class Product:
@@ -176,7 +176,7 @@ def test_discovery_manifest_counts_compact_timestamps_and_preserves_selected_fil
 
     manifest, names = river_module._discover_manifest(request)
 
-    assert manifest["unique_dates"] == ["2026-06-27", "2026-06-30", "2026-07-09", "2026-07-12"]
+    assert manifest["unique_dates"] == ["2026-08-02", "2026-08-14", "2026-08-26", "2026-09-07"]
     assert len(names) == 5
     assert seen == {
         "polarization": "HH+HV",
