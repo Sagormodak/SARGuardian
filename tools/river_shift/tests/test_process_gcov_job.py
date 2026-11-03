@@ -56,7 +56,7 @@ def test_event_window_does_not_use_pre_event_scene_as_event_observation():
         {"acquisition_date": value, "passes_coverage_gate": True, "granule_names": ["scene"]}
         for value in ("2026-04-01", "2026-04-10", "2026-04-20", "2026-05-01")
     ]
-    with pytest.raises(WorkerFailure, match="one qualifying acquisition before"):
+    with pytest.raises(WorkerFailure, match="one qualifying acquisition strictly before"):
         select_date_window(rows, date(2026, 5, 2))
 
 
