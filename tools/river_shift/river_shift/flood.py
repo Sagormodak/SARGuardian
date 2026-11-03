@@ -19,7 +19,7 @@ from .raster_io import (
     validate_gcov_series,
     gcov_source_provenance,
 )
-from .water_detection import classify_open_water, otsu_threshold_db
+from .water_detection import classify_open_water, otsu_threshold_db, valid_backscatter_mask
 
 
 def run_flood_analysis(
@@ -52,6 +52,8 @@ def run_flood_analysis(
 
     if permanent_water_path:
         arrays["permanent"], valids["permanent"], profiles["permanent"] = read_band(permanent_water_path)
+    for key in ("before", "during", "after"):
+        valids[key] = valid_backscatter_mask(arrays[key], valids[key], units=units)
     assert_same_grid(profiles)
     series_metadata, provenance_complete = validate_gcov_series(
         {"before": before_path, "during": during_path, "after": after_path},
@@ -66,6 +68,10 @@ def run_flood_analysis(
         ordered_dates = [date.fromisoformat(dates[key]) for key in ("before", "during", "after")]
         if not ordered_dates[0] < ordered_dates[1] < ordered_dates[2]:
             raise ValueError("Flood observations must be ordered before < during < after.")
+    if threshold_db is not None and not np.isfinite(threshold_db):
+        raise ValueError("threshold_db must be finite.")
+    if not np.isfinite(minimum_patch_hectares) or minimum_patch_hectares < 0:
+        raise ValueError("minimum_patch_hectares must be finite and non-negative.")
     if not np.isfinite(sensitivity_delta_db) or sensitivity_delta_db <= 0:
         raise ValueError("sensitivity_delta_db must be finite and greater than zero.")
 
@@ -109,6 +115,8 @@ def run_flood_analysis(
         new_water &= ~permanent_mask
         permanent_excluded = True
 
+    comparison_pixel_count = int(comparison_valid.sum())
+    comparison_pixel_fraction = float(comparison_pixel_count / arrays["before"].size) if arrays["before"].size else 0.0
     baseline_area = float(water["before"][valid_common].sum() * pixel_area_m2 / 1_000_000)
     event_proximal_area = float(water["during"][valid_common].sum() * pixel_area_m2 / 1_000_000)
     post_area = float(water["after"][valid_common].sum() * pixel_area_m2 / 1_000_000)
@@ -198,16 +206,20 @@ def run_flood_analysis(
             "newly_water_covered_area_km2": new_area,
             "water_area_change_percent": safe_float(change_percent),
             "new_water_polygon_count": int(polygon_count),
+            "comparison_valid_pixel_count": comparison_pixel_count,
+            "comparison_valid_pixel_fraction": comparison_pixel_fraction,
         },
         "quality": {
             "status": "SCREENING_NOT_INDEPENDENTLY_VALIDATED",
             "release_status": "PROVISIONAL",
             "provenance_complete": provenance_complete,
-            "valid_comparison_pixel_count": int(comparison_valid.sum()),
+            "valid_comparison_pixel_count": comparison_pixel_count,
+            "valid_comparison_pixel_fraction": comparison_pixel_fraction,
             "permanent_water_filter_applied": permanent_excluded,
             "warnings": [
                 "The event-proximal observation is the first qualifying NISAR acquisition strictly after the user-supplied event date; it is not a measured peak-stage observation.",
                 "New water coverage relative to the pre-event observation is not automatically proof of floodplain inundation.",
+                "All area comparisons use only the intersection of valid positive-power pixels across the three observations.",
                 "Use comparable orbit geometry, acquisition mode, frequency, polarization, maturity and hydrological conditions.",
                 "Low-backscatter screening may miss inundated vegetation because double-bounce scattering can be bright.",
                 "Validate the water mask against independent reference data before reporting accuracy or impact claims.",
