@@ -498,7 +498,6 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       }
       setCatalogue(payload as CatalogueResponse);
       setCatalogueQueryKey(queryKey);
-      setCatalogueQueryKey(queryKey);
     } catch (error) {
       setCatalogueError(error instanceof Error ? error.message : 'Could not search the ASF catalogue.');
     } finally {
