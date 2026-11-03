@@ -51,7 +51,7 @@ jobs:
               echo "::error::Required GDAL driver ${driver} is unavailable in the RiverShift test environment."
               exit 1
             fi
-            printf 'RIVERSHIFT_GDAL_DRIVER_%s=PASS\\n' "$driver"
+            printf 'RIVERSHIFT_GDAL_DRIVER_%s=PASS\n' "$driver"
           done
           python -m compileall -q tools/river_shift
           echo "RIVERSHIFT_PYTHON_COMPILE=PASS"
