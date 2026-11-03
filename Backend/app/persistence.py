@@ -117,6 +117,7 @@ class JobStore(Protocol):
     def get_river_shift_job_by_idempotency(self, owner_uid: str, idempotency_key: str) -> dict[str, Any] | None: ...
     def create_river_shift_job(self, values: dict[str, Any]) -> dict[str, Any]: ...
     def list_river_shift_jobs(self, owner_uid: str, limit: int = 20) -> list[dict[str, Any]]: ...
+    def list_active_river_shift_jobs(self, owner_uid: str) -> list[dict[str, Any]]: ...
     def get_river_shift_job(self, owner_uid: str, job_id: UUID) -> dict[str, Any] | None: ...
     def get_river_shift_job_unscoped(self, job_id: UUID) -> dict[str, Any] | None: ...
     def update_river_shift_job(self, job_id: UUID, values: dict[str, Any], *, expected_state: str | None = None, expected_sequence: int | None = None) -> dict[str, Any]: ...
@@ -369,6 +370,21 @@ class SupabaseJobStore:
             )
         except Exception:
             raise PersistenceError("Could not list RiverShift jobs.") from None
+        return self._data(response)
+
+    def list_active_river_shift_jobs(self, owner_uid: str) -> list[dict[str, Any]]:
+        try:
+            response = (
+                self.client.table("river_shift_jobs")
+                .select("*")
+                .eq("owner_uid", owner_uid)
+                .in_("state", ["queued", "dispatching", "running"])
+                .order("created_at", desc=True)
+                .limit(2)
+                .execute()
+            )
+        except Exception:
+            raise PersistenceError("Could not check active RiverShift jobs.") from None
         return self._data(response)
 
     def get_river_shift_job(self, owner_uid: str, job_id: UUID) -> dict[str, Any] | None:
