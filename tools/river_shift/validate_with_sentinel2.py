@@ -768,7 +768,8 @@ def run_crosscheck(
             "sentinel2_item_id": primary.get("id"),
             "sentinel2_item_ids": [row.get("id") for row in selected_items],
             "sentinel2_product_uri": properties.get("s2:product_uri"),
-            "sentinel2_datatake_id": properties.get("s2:datatake_id"),
+            "sentinel2_datatake_id": properties.get("s2:datatake_id") or properties.get("instrument:datatake_id"),
+            "sentinel2_processing_baseline": properties.get("s2:processing_baseline"),
             "mgrs_tile": properties.get("s2:mgrs_tile"),
             "mgrs_tiles": raster_meta["sentinel2_mgrs_tiles"],
             "sentinel2_tile_count": len(selected_items),
@@ -790,7 +791,7 @@ def run_crosscheck(
             "mndwi_threshold": float(mndwi_threshold),
             "scl_clear_classes_used": list(SCL_VALID_CLASSES),
             "common_grid": "Sentinel-2 B11 20 m grid expanded to the full NISAR extent; adjacent MGRS tiles from one datatake are mosaicked",
-            "tile_mosaic_method": "same platform, s2:datatake_id and acquisition date; clearest tile fills overlapping valid pixels first",
+            "tile_mosaic_method": "same platform, datatake ID, acquisition date and processing baseline; duplicate MGRS items retain the latest s2:generation_time; clearest valid tile fills overlaps first",
             "b03_resampling": "bilinear",
             "b11_resampling": "bilinear",
             "scl_and_nisar_mask_resampling": "nearest",
@@ -822,6 +823,8 @@ def run_crosscheck(
                 {
                     "item_id": row.get("id"),
                     "mgrs_tile": (row.get("properties") or {}).get("s2:mgrs_tile"),
+                    "processing_baseline": (row.get("properties") or {}).get("s2:processing_baseline"),
+                    "generation_time": (row.get("properties") or {}).get("s2:generation_time"),
                     "cloud_cover_percent": float((row.get("properties") or {}).get("eo:cloud_cover")),
                     "unsigned_assets": {
                         key: _asset_href(row, key)
