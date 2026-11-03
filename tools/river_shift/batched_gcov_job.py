@@ -1287,6 +1287,8 @@ def _assemble_job(
     callbacks: JobCallbacks,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     started = time.monotonic()
+    # Prepared jobs created before the two-mode contract are Event-Based by default.
+    request.setdefault("analysis_mode", "event_based")
     work_dir = Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())) / f"river-shift-{request['job_id']}-assemble"
     if work_dir.exists():
         shutil.rmtree(work_dir)
