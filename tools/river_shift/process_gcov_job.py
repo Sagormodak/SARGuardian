@@ -88,9 +88,15 @@ def build_source_granule_manifest(
                 "SOURCE_RECEIPT_INVALID",
                 f"Download receipt or HDF5 inventory does not match selected granule {name}.",
             )
+        inventory_terms = inventory.get("available_diagonal_terms")
+        if not isinstance(inventory_terms, list):
+            raise WorkerFailure(
+                "SOURCE_RECEIPT_INVALID",
+                f"HDF5 layer inventory for {name} is missing its diagonal-term list.",
+            )
         available = {
             (row.get("frequency"), row.get("term"))
-            for row in inventory.get("available_diagonal_terms", [])
+            for row in inventory_terms
             if isinstance(row, dict)
         }
         if (frequency, term) not in available:
