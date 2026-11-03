@@ -30,10 +30,10 @@ RiverShift focuses on making those observations easier to explore: users select 
 |---|---|---|
 | **NASA–ISRO NISAR Level-2 GCOV** | Primary measurement input. The workflow reads the selected real-valued diagonal covariance term, applies the documented water-screening method, and compares compatible acquisition dates. | The output is a radar-derived screening classification, not direct bathymetry, sediment volume, surveyed bankline, or proof of flood causality. |
 | **Alaska Satellite Facility (ASF) DAAC / NASA Earthdata** | Search, exact-granule access and distribution of the NISAR products used by the processing pipeline. Granule identifiers and checksums are retained. | Catalogue footprint coverage is not the same as valid raster coverage. |
-| **Copernicus Sentinel-2 L2A (optional cross-sensor tool)** | A separate CLI can compare a supplied NISAR water mask with clear-support SCL water and a B03/B11 MNDWI screen; scene identity, date offset, cloud cover and confusion metrics are recorded. | It is not part of the default NISAR worker and has not been run for the example metrics below. Only describe it as used for a particular result when its report is retained. It is cross-sensor agreement, not ground truth. |
+| **Copernicus Sentinel-2 L2A (optional cross-sensor tool)** | A separate CLI compares a supplied NISAR water mask with clear-support SCL water and B03/B11 MNDWI. It mosaics adjacent MGRS tiles only when platform, datatake, acquisition date and processing baseline match; duplicate tile revisions are resolved by processing generation time. | It is not part of the default NISAR worker. Retained-data replays for the 2026-07-12 and 2026-09-10 NISAR observations returned 11.03% and 45.34% clear common support respectively, both below the 80% gate, so no agreement metrics were published. This is cross-sensor screening, not ground truth. |
 | **Google Maps Satellite (Google Maps Platform)** | Third-party visual basemap for geographic orientation and communication of the AOI and result footprints. | Basemap imagery is not an input to the NISAR classification or a validation dataset. Google/imagery-provider attribution remains visible on the map. |
 
-An optional standalone cross-sensor tool, `validate_with_sentinel2.py`, is now available to compare a supplied NISAR water mask with a nearby Copernicus Sentinel-2 L2A scene. It uses SCL clear-class support and a separate B03/B11 MNDWI screen. This optional tool is **not automatically run** by the primary RiverShift job and has not been run for the example metrics below. Only describe Sentinel-2 as an actually used evidence source after a dated report with its STAC item ID, source metadata and checksums has been produced. Do not list Copernicus DEM, GPM IMERG, field survey or other datasets as integrated unless the run actually processed and recorded them.
+An optional standalone cross-sensor tool, `validate_with_sentinel2.py`, compares a supplied NISAR water mask with Copernicus Sentinel-2 L2A using SCL clear-class support and a separate B03/B11 MNDWI screen. It is **not automatically run** by the primary RiverShift job. Its selector groups adjacent MGRS tiles only within the same platform, datatake, acquisition date and processing baseline; canonical STAC `processing:version` / `processing:datetime` are preferred with legacy Sentinel-2 fallbacks. Retained-data replays selected Sentinel-2 2026-07-02 (73.31% scene cloud cover) for NISAR 2026-07-12 and Sentinel-2 2026-09-15 (49.35% scene cloud cover) for NISAR 2026-09-10. Clear common support was 11.03% and 45.34%, respectively. Both are below the 80% gate; neither produced F1/IoU or an agreement score. Do not treat either result as optical corroboration. Do not list Copernicus DEM, GPM IMERG, field survey or other datasets as integrated unless the run actually processed and recorded them.
 
 ## Reproducible workflow
 
@@ -70,6 +70,8 @@ The full-resolution masks, full-resolution scientific GeoJSON, analysis reports,
 ## Example run — provisional screening output
 
 The latest previously analysed example run is [RiverShift Action run #41642281327](https://github.com/moshiour0/SARGuardian-backend/actions/runs/41642281327). It used six actual observation dates from **2026-06-30 to 2026-09-10**.
+
+Retained-data Sentinel-2 replay was performed for two source dates: 2026-07-12 and 2026-09-10. Their selected optical scenes were 2026-07-02 (73.31% scene cloud cover) and 2026-09-15 (49.35%). Clear common support was 11.03% and 45.34%, both below the 80% gate. No optical F1/IoU or agreement metrics were published; the primary NISAR metrics were unchanged. These are insufficient-support outcomes, not ground-truth validation.
 
 The run's reported screening metrics were:
 - New-water coverage: **110.7812 km²**
@@ -119,7 +121,7 @@ python tools/river_shift/validate_with_sentinel2.py \
   --max-day-offset 3 --max-cloud-cover 40 --mndwi-threshold 0.0
 ```
 
-The tool uses the public Planetary Computer STAC API and temporary signed COG access. It never retains the signed token. It selects one tile; if its AOI footprint or clear optical common support is inadequate, it reports an explicit no-result status. It is not part of the default worker and adds no cost to the main NISAR pipeline unless run manually.
+The tool uses the public Planetary Computer STAC API and temporary signed COG access. It never retains the signed token. It mosaics eligible adjacent MGRS tiles from one platform/datatake/date/processing baseline, with the latest processing generation selected per tile. If the mosaic footprint or clear optical common support is inadequate, it reports an explicit no-result status. It is not part of the default worker and adds no cost to the main NISAR pipeline unless run manually.
 
 A second manual workflow, [RiverShift retained-run Sentinel-2 cross-sensor replay](../../.github/workflows/river-shift-sentinel2-retained-replay.yml), can reconstruct the NISAR time-series mask from previously retained per-product COG artifacts and compare an exact actual acquisition date with Sentinel-2 without downloading raw NISAR HDF5 again. It verifies the COG receipts/checksums and uses the original run's recorded threshold. The workflow is optional; do not claim it has corroborated a result until a completed run produces a suitable scene and a report with non-null metrics. The replay is still cross-sensor agreement, not ground truth or field validation.
 
@@ -131,7 +133,7 @@ A second manual workflow, [RiverShift retained-run Sentinel-2 cross-sensor repla
 - Flood-period new-water coverage is not, by itself, independent proof of flood inundation.
 - Persistent land/water transitions are erosion/deposition candidates, not confirmed geomorphic causes.
 - The current automatic workflow does not create a signed river-centreline migration rate or sediment volume.
-- The example run is provisional and has no field-validation or Sentinel-2 cross-sensor report attached.
+- The example run is provisional and has no field validation. The July 2026 Sentinel-2 comparison returned insufficient optical support, so no cross-sensor agreement score is available.
 - Google Satellite is a visual context layer only, not a measurement source.
 
 ## Public code and evidence
@@ -160,12 +162,17 @@ A second manual workflow, [RiverShift retained-run Sentinel-2 cross-sensor repla
 |---|---|---|
 | Impact | Riverbank / flood-change use case, AOI-specific candidate maps and bounded area metrics. | Add a sourced local impact story and independently sourced exposure only if available; do not imply lives/assets saved. |
 | Creativity | User-drawn AOI, target-free change discovery, discrete radar time series, explainable classes and private provenance. | A polished end-to-end demo is still needed. |
-| Validity | Product comparability checks, common-valid support, source hashes, synthetic tests, validation and transect tools, provisional status. | Independent same-AOI optical/field validation is the main scientific gap. |
+| Validity | Product comparability checks, common-valid support, source hashes, synthetic raster/mosaic/replay tests, retained-artifact checksum checks, and provisional release status. Current main CI: 178 RiverShift tests passed; 514 repository regression tests passed (1 skipped); 88 AOI/static checks passed. | Optical comparisons for the example AOI were below the 80% support gate; independent same-AOI reference/field validation remains the main scientific gap. Signed transect measurement still requires independently digitized banklines. |
 | Relevance | NISAR Level-2 GCOV is the primary measurement input; challenge name is explicit. | Explain what radar contributes and why NISAR observations are central. |
 | Presentation | Google Satellite result map, red/green/blue classes, observed-date playback, report and this judge guide. | Record a clear two-minute demo and finish project-page text. |
 | Teamwork | Actual commits, issue/PR history and documented roles. | Team must supply truthful member names, roles and evidence of collaboration. |
 | User experience | Draw-AOI workflow, discovery/processing distinction, map legend, source date and warnings. | Do a first-time-user test and remove unresolved setup friction. |
-| NASA data usage | NISAR GCOV analysis + ASF DAAC provenance + Google Satellite third-party contextual basemap, with each role separated. An optional Copernicus Sentinel-2 L2A cross-sensor tool is now available. | Run and retain a real Sentinel-2 report for the selected AOI/date before claiming that optical data corroborated this result; the tool alone is not evidence that a particular run used Sentinel-2. |
+| NASA data usage | NISAR GCOV is the primary analysis source; ASF DAAC provides exact product access/provenance; Copernicus Sentinel-2 L2A was used in two retained-mask screening attempts; Google Satellite is contextual basemap only. | Both Sentinel-2 attempts failed the 80% common-support gate and provide no corroboration score. Keep all source roles and limitations visible. |
 | Challenge category | “Dancing with the SARs” / Earth Science identified in the UI and project text. | Verify the exact category label shown in the team's official project form. |
 | Repository access | Public backend and Dynamic GitHub repositories. | Verify links in a signed-out browser before final submission. |
 | Project page | This guide and a ready-to-copy project-page draft. | Team must fill required fields and click Submit during the NASA submission window. |
+
+### Women participation bonus (+5%)
+
+The score sheet applies a **5% bonus to the aggregate** when the team includes one or more women members. This must be supported by the real team roster and actual contributions. Add the relevant member(s) and role(s) to the NASA project page; do not claim the bonus until the team confirms the participation information.
+
