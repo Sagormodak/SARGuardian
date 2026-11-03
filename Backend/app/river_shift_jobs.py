@@ -5,14 +5,17 @@ import hmac
 import json
 import mimetypes
 import re
+import tempfile
 from datetime import UTC, date, datetime
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import Request as UrlRequest, urlopen
 from uuid import UUID, uuid4
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .auth import get_current_user
@@ -26,7 +29,7 @@ from .persistence import (
 )
 from .river_shift import RiverShiftCatalogRequest, search_gcov_catalogue
 from science_adapter.geometry import validate_wkt
-from science_adapter.upload_to_drive import DriveUploadError, download_private_result
+from science_adapter.upload_to_drive import DriveUploadError, download_private_result_to_path
 
 router = APIRouter(prefix="/api/river-shift", tags=["RiverShift"])
 MAX_GITHUB_INPUT_BYTES = 60_000
@@ -517,7 +520,7 @@ def download_river_shift_artifact(
     job_id: UUID,
     artifact_index: int,
     user: dict = Depends(get_current_user),
-) -> Response:
+) -> StreamingResponse:
     if artifact_index < 0 or artifact_index > 200:
         raise HTTPException(status_code=404, detail="RiverShift artifact was not found.")
     try:
@@ -534,26 +537,61 @@ def download_river_shift_artifact(
     artifact = artifacts[artifact_index]
     if not isinstance(artifact, dict) or not isinstance(artifact.get("drive_file_id"), str):
         raise HTTPException(status_code=409, detail="RiverShift artifact has no private storage receipt.")
-    try:
-        metadata, content = download_private_result(artifact["drive_file_id"])
-    except DriveUploadError as exc:
-        raise HTTPException(status_code=503, detail="Private RiverShift result storage is temporarily unavailable.") from exc
-    digest = hashlib.sha256(content).hexdigest()
+
+    filename = str(artifact.get("name") or "river-shift-result.bin")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}", filename):
+        raise HTTPException(status_code=409, detail="RiverShift artifact filename is invalid.")
+    expected_bytes = artifact.get("bytes")
+    expected_sha256 = artifact.get("sha256")
     if (
-        len(content) != artifact.get("bytes")
-        or digest != artifact.get("sha256")
-        or metadata.get("size") not in (None, str(len(content)), len(content))
+        isinstance(expected_bytes, bool)
+        or not isinstance(expected_bytes, int)
+        or not 0 < expected_bytes <= MAX_ARTIFACT_BYTES
+        or not isinstance(expected_sha256, str)
+        or not re.fullmatch(r"[a-f0-9]{64}", expected_sha256)
     ):
-        raise HTTPException(status_code=409, detail="Downloaded RiverShift artifact failed its stored checksum or size check.")
-    filename = str(artifact.get("name") or "river-shift-result.bin").replace('"', "")
+        raise HTTPException(status_code=409, detail="RiverShift artifact receipt is incomplete.")
+
     media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-    return Response(
-        content=content,
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix="sarguardian-river-shift-",
+            suffix=Path(filename).suffix or ".bin",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+        receipt = download_private_result_to_path(
+            artifact["drive_file_id"],
+            temporary_path,
+            max_bytes=expected_bytes,
+        )
+    except DriveUploadError:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except (OSError, UnboundLocalError):
+            pass
+        raise HTTPException(status_code=503, detail="Private RiverShift result storage is temporarily unavailable.") from None
+
+    if receipt.get("bytes") != expected_bytes or receipt.get("sha256") != expected_sha256:
+        temporary_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=409, detail="Downloaded RiverShift artifact failed its stored size or SHA-256 check.")
+
+    def stream_verified_file():
+        try:
+            with temporary_path.open("rb") as stream:
+                while chunk := stream.read(1024 * 1024):
+                    yield chunk
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
+    return StreamingResponse(
+        stream_verified_file(),
         media_type=media_type,
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(expected_bytes),
             "Cache-Control": "private, no-store",
-            "X-Content-SHA256": digest,
+            "X-Content-SHA256": expected_sha256,
         },
     )
 
