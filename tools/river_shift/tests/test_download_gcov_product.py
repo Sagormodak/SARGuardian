@@ -12,6 +12,8 @@ from download_gcov_product import (
     _earthaccess_granule_name,
     download_product,
     is_hdf5_file,
+    _earthdata_http_auth_rejection,
+    _reauthenticate_with_username_password,
 )
 
 
@@ -218,3 +220,113 @@ def test_earthdata_token_failure_without_password_fallback_fails_safely(monkeypa
 
     assert fake.login_calls == [{"strategy": "environment"}]
     assert "stale-token-test-value" not in capsys.readouterr().out
+
+def test_earthdata_auth_rejection_classifier_only_matches_401_or_403():
+    assert _earthdata_http_auth_rejection(RuntimeError("Download failed. Status code: 401")) == 401
+    assert _earthdata_http_auth_rejection(RuntimeError("Download failed. Status code: 403")) == 403
+    assert _earthdata_http_auth_rejection(RuntimeError("network timeout")) is None
+    assert _earthdata_http_auth_rejection(RuntimeError("Download failed. Status code: 503")) is None
+
+
+def test_username_password_fallback_resets_cached_earthaccess_token_auth(monkeypatch):
+    class FakeAuth:
+        pass
+
+    class FakeEarthaccess:
+        Auth = FakeAuth
+
+        def __init__(self):
+            self._auth = object()
+            self._store = object()
+            self.login_calls = []
+
+        def login(self, **kwargs):
+            self.login_calls.append({
+                **kwargs,
+                "token_present": bool(os.environ.get("EARTHDATA_TOKEN")),
+            })
+            self._store = "new-user-password-store"
+
+    fake = FakeEarthaccess()
+    monkeypatch.setenv("EARTHDATA_TOKEN", "rejected-token")
+    monkeypatch.setenv("EARTHDATA_USERNAME", "researcher@example.test")
+    monkeypatch.setenv("EARTHDATA_PASSWORD", "password-test-value")
+
+    assert _reauthenticate_with_username_password(fake) is True
+
+    assert fake.login_calls == [{
+        "strategy": "environment",
+        "token_present": False,
+    }]
+    assert isinstance(fake._auth, FakeAuth)
+    assert fake._store == "new-user-password-store"
+    assert os.environ["EARTHDATA_TOKEN"] == "rejected-token"
+
+
+def test_download_retries_only_confirmed_401_with_fresh_username_password_auth(monkeypatch, tmp_path):
+    class FakeAuth:
+        pass
+
+    class TokenRejectedOnFirstDownload(FakeEarthaccess):
+        Auth = FakeAuth
+
+        def __init__(self):
+            super().__init__(results=[_cmr_result()])
+            self._auth = object()
+            self._store = object()
+            self.login_token_modes = []
+
+        def login(self, **kwargs):
+            self.login_token_modes.append(bool(os.environ.get("EARTHDATA_TOKEN")))
+            return True
+
+        def download(self, granules, *, local_path, threads, show_progress):
+            if len(self.download_calls) == 0:
+                self.download_calls.append({"first_attempt": True})
+                raise RuntimeError("Download failed for NISAR product. Status code: 401")
+            return super().download(
+                granules,
+                local_path=local_path,
+                threads=threads,
+                show_progress=show_progress,
+            )
+
+    fake = TokenRejectedOnFirstDownload()
+    monkeypatch.setenv("EARTHDATA_TOKEN", "rejected-token")
+    monkeypatch.setenv("EARTHDATA_USERNAME", "researcher@example.test")
+    monkeypatch.setenv("EARTHDATA_PASSWORD", "password-test-value")
+    monkeypatch.setattr("download_gcov_product._load_earthaccess", lambda: fake)
+
+    result = download_product(_catalogue_row(), tmp_path)
+
+    assert result["downloaded"] is True
+    assert fake.login_token_modes == [True, False]
+    assert len(fake.download_calls) == 2
+    assert os.environ["EARTHDATA_TOKEN"] == "rejected-token"
+
+
+def test_network_download_failure_does_not_trigger_username_password_fallback(monkeypatch, tmp_path):
+    class NetworkFailure(FakeEarthaccess):
+        def __init__(self):
+            super().__init__(results=[_cmr_result()])
+            self._auth = object()
+            self._store = object()
+            self.download_count = 0
+
+        def login(self, **kwargs):
+            return True
+
+        def download(self, granules, *, local_path, threads, show_progress):
+            self.download_count += 1
+            raise RuntimeError("network connection timed out")
+
+    fake = NetworkFailure()
+    monkeypatch.setenv("EARTHDATA_TOKEN", "token")
+    monkeypatch.setenv("EARTHDATA_USERNAME", "researcher@example.test")
+    monkeypatch.setenv("EARTHDATA_PASSWORD", "password-test-value")
+    monkeypatch.setattr("download_gcov_product._load_earthaccess", lambda: fake)
+
+    with pytest.raises(RuntimeError, match="could not download the exact"):
+        download_product(_catalogue_row(), tmp_path)
+
+    assert fake.download_count == 1
