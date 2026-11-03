@@ -879,18 +879,47 @@ def _assemble_job(
     if prepared.get("job_id") != request["job_id"] or prepared.get("request_fingerprint") != request["fingerprint"]:
         raise WorkerFailure("REQUEST_MISMATCH", "The assembly runner received a prepared artifact for a different RiverShift request.")
 
+    _log_worker_stage(
+        "product_batch_import", "START",
+        expected_product_count=len(prepared.get("selected_product_names", [])),
+        expected_batch_count=len(prepared.get("batches", [])),
+    )
     date_product_rasters, provenance_path = _verify_and_stage_product_results(prepared, products_dir, work_dir)
     raster_dir = work_dir / "rasters"
     date_rasters: dict[str, Path] = {}
     for observed_date, exported in date_product_rasters.items():
+        _log_worker_stage(
+            "date_raster_assembly", "START",
+            acquisition_date=observed_date,
+            source_cog_count=len(exported),
+        )
         if len(exported) == 1:
             date_rasters[observed_date] = exported[0]
+            result_path = exported[0]
+            method = "single_source_cog"
         else:
             destination = raster_dir / f"observation_{observed_date}.tif"
             date_rasters[observed_date] = _mosaic_date_rasters(exported, destination)
+            result_path = destination
+            method = "deterministic_gdal_vrt_mosaic"
             for intermediate in exported:
                 intermediate.unlink(missing_ok=True)
                 intermediate.with_suffix(".metadata.json").unlink(missing_ok=True)
+        _log_worker_stage(
+            "date_raster_assembly", "PASS",
+            acquisition_date=observed_date,
+            source_cog_count=len(exported),
+            assembly_method=method,
+            output_bytes=result_path.stat().st_size,
+            output_sha256=sha256_file(result_path),
+        )
+    _log_worker_stage(
+        "product_batch_import", "PASS",
+        verified_product_count=sum(len(rows) for rows in date_product_rasters.values()),
+        assembled_date_count=len(date_rasters),
+        source_provenance_manifest=provenance_path.name,
+        source_provenance_sha256=sha256_file(provenance_path),
+    )
     dates = prepared["dates"]
     event_window = prepared["event_window"]
     selection = prepared["selection"]
@@ -899,15 +928,33 @@ def _assemble_job(
     reference_path = date_rasters[reference_date]
     aligned_observations: dict[str, Path] = {}
     for observed_date, path in date_rasters.items():
-        aligned_observations[observed_date] = _co_register(
+        _log_worker_stage(
+            "observation_grid_alignment", "START",
+            acquisition_date=observed_date,
+            reference_date=reference_date,
+            is_reference=(observed_date == reference_date),
+            source_file=path.name,
+        )
+        aligned = _co_register(
             path, reference_path, is_reference=(observed_date == reference_date)
         )
+        aligned_observations[observed_date] = aligned
+        _log_worker_stage(
+            "observation_grid_alignment", "PASS",
+            acquisition_date=observed_date,
+            reference_date=reference_date,
+            aligned_file=aligned.name,
+            output_bytes=aligned.stat().st_size,
+            output_sha256=sha256_file(aligned),
+        )
+    _log_worker_stage("source_provenance_validation", "START", observation_count=len(aligned_observations))
     require_worker_source_provenance(
         aligned_observations,
         maturity=request["maturity"],
         frequency=request["frequency"],
         term=request["term"],
     )
+    _log_worker_stage("source_provenance_validation", "PASS", observation_count=len(aligned_observations))
 
     callbacks.send("running", "water_time_series_and_change_analysis")
     threshold_args = ["--otsu"] if request["threshold_method"] == "otsu" else ["--threshold-db", str(request["threshold_db"])]
