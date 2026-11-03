@@ -750,20 +750,28 @@ def write_mask_web_preview(
                 )
                 preview_width = max(1, int(math.ceil(source_width / scale)))
                 preview_height = max(1, int(math.ceil(source_height / scale)))
-                sampled = source.read(
-                    1,
-                    out_shape=(preview_height, preview_width),
-                    masked=True,
-                    resampling=Resampling.max,
-                )
-                sampled_mask = np.ma.getmaskarray(sampled)
-                sampled_values = np.asarray(sampled.filled(0), dtype=np.uint8)
-                candidate = (sampled_values == 1) & ~sampled_mask
-                candidate_cells = int(np.count_nonzero(candidate))
                 preview_transform = source_transform * Affine.scale(
                     source_width / float(preview_width),
                     source_height / float(preview_height),
                 )
+                sampled_values = np.zeros((preview_height, preview_width), dtype=np.uint8)
+                # Resampling.max is supported by GDAL warp operations, not
+                # RasterIO reads. Warp onto a coarser grid in the same CRS so
+                # isolated positive source pixels survive downsampling.
+                reproject(
+                    source=rasterio.band(source, 1),
+                    destination=sampled_values,
+                    src_transform=source_transform,
+                    src_crs=source_crs_value,
+                    src_nodata=source_nodata,
+                    dst_transform=preview_transform,
+                    dst_crs=source_crs_value,
+                    dst_nodata=0,
+                    resampling=Resampling.max,
+                    init_dest_nodata=True,
+                )
+                candidate = sampled_values == 1
+                candidate_cells = int(np.count_nonzero(candidate))
                 pixel_x_m = math.hypot(preview_transform.a, preview_transform.d)
                 pixel_y_m = math.hypot(preview_transform.b, preview_transform.e)
                 display_pixel_size_m = max(pixel_x_m, pixel_y_m)
