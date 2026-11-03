@@ -855,7 +855,17 @@ def _report_batch() -> None:
         os.environ["RIVERSHIFT_CALLBACK_URL"],
         initial_sequence=sequence,
     )
-    callbacks.send("running", f"batch_{batch_number:02d}_completed")
+    callbacks.send(
+        "running",
+        f"batch_{batch_number:02d}_completed",
+        result_summary={
+            "batch_number": batch_number,
+            "expected_product_count": len(rows),
+            "verified_product_count": passed,
+            "failed_or_unverifiable_product_count": failed,
+            "retry_eligible_count": failed,
+        },
+    )
     _write_output("callback_sequence", str(callbacks.sequence))
     _write_output("batch_success_count", str(passed))
     _write_output("batch_failure_count", str(failed))
@@ -869,9 +879,9 @@ def _report_batch() -> None:
     ) or "| — | No failed products |"
     _write_step_summary(
         f"## Batch {batch_number} reconciliation\n\n"
-        f"- Expected: **{len(rows)}**\\n"
-        f"- Verified: **{passed}**\\n"
-        f"- Failed/unverifiable: **{failed}**\\n\\n"
+        f"- Expected: **{len(rows)}**\n"
+        f"- Verified: **{passed}**\n"
+        f"- Failed/unverifiable: **{failed}**\n\n"
         "| Product | Outcome |\n|---|---|\n" + detail_rows
     )
 
@@ -921,9 +931,9 @@ def _prepare_retry_wave() -> None:
     _write_output("retry_count", str(len(retry_rows)))
     _write_step_summary(
         "## Delayed retry queue\n\n"
-        f"- First-attempt products: **{len(prepared['selected_product_names'])}**\\n"
-        f"- Retry products queued: **{len(retry_rows)}**\\n"
-        "- Automatic retry attempts per product: **1**\\n"
+        f"- First-attempt products: **{len(prepared['selected_product_names'])}**\n"
+        f"- Retry products queued: **{len(retry_rows)}**\n"
+        "- Automatic retry attempts per product: **1**\n"
         "- Parallel retry runners: **15 maximum**"
     )
 
