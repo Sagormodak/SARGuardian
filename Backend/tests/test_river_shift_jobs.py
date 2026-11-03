@@ -93,7 +93,7 @@ def configure(monkeypatch, store: RiverShiftStore, *, owner: str = "river-user")
     })())
     monkeypatch.setattr(river_module, "_discover_manifest", lambda _payload: ({
         "schema_version": 1,
-        "unique_dates": ["2026-08-01", "2026-08-13", "2026-08-25", "2026-09-06"],
+        "unique_dates": ["2026-08-01", "2026-08-13", "2026-08-25", "2026-09-06", "2026-09-18"],
         "products": [{"granule_name": f"NISAR_L2_GCOV_{i:02d}"} for i in range(4)],
     }, [f"NISAR_L2_GCOV_{i:02d}" for i in range(4)]))
     monkeypatch.setattr(river_module, "_dispatch", lambda *_args: None)
@@ -145,7 +145,7 @@ def test_discovery_manifest_counts_compact_timestamps_and_preserves_selected_fil
         {"granule_name": f"scene-{index}", "start_time_utc": stamp}
         for index, stamp in enumerate((
             "20260802T124243", "20260802T124243",
-            "20260814T232134", "20260826T124242", "20260907T232134",
+            "20260814T232134", "20260826T124242", "20260907T232134", "20260919T124242",
         ))
     ]
     class Product:
@@ -177,7 +177,7 @@ def test_discovery_manifest_counts_compact_timestamps_and_preserves_selected_fil
 
     manifest, names = river_module._discover_manifest(request)
 
-    assert manifest["unique_dates"] == ["2026-08-02", "2026-08-14", "2026-08-26", "2026-09-07"]
+    assert manifest["unique_dates"] == ["2026-08-02", "2026-08-14", "2026-08-26", "2026-09-07", "2026-09-19"]
     assert len(names) == 5
     assert seen == {
         "polarization": "HH+HV",
@@ -256,6 +256,22 @@ def test_dispatch_transition_failure_does_not_leave_a_stuck_queued_job(monkeypat
     assert job["state"] == river_module.JobState.FAILED.value
     assert job["stage"] == "dispatch_failed"
     assert job["error_code"] == "RIVERSHIFT_DISPATCH_FAILED"
+
+
+
+def test_river_shift_requires_one_strictly_pre_event_and_three_strictly_post_event_dates(monkeypatch) -> None:
+    store = RiverShiftStore()
+    api = configure(monkeypatch, store)
+    monkeypatch.setattr(river_module, "_discover_manifest", lambda _payload: ({
+        "unique_dates": ["2026-08-01", "2026-08-13", "2026-08-20", "2026-08-25", "2026-09-06"],
+        "products": [{"granule_name": f"scene-{index}"} for index in range(5)],
+    }, [f"scene-{index}" for index in range(5)]))
+
+    response = api.post("/api/river-shift/jobs", json=payload())
+
+    assert response.status_code == 422
+    assert "strictly before" in response.json()["detail"]
+    assert store.rows == {}
 
 
 def test_river_shift_requires_four_observation_dates_before_job_creation(monkeypatch) -> None:
