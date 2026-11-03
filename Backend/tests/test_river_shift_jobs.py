@@ -74,6 +74,7 @@ def payload() -> dict:
         "aoi_wkt": "POLYGON ((85 27, 85.01 27, 85.01 27.01, 85 27.01, 85 27))",
         "start_date": "2026-08-01",
         "end_date": "2026-09-20",
+        "analysis_mode": "event_based",
         "event_date": "2026-08-20",
         "maturity": "PROVISIONAL",
         "frequency": "frequencyA",
@@ -240,7 +241,7 @@ def test_dispatch_payload_includes_exact_discovery_filters(monkeypatch) -> None:
     )
     assert captured["timeout"] == 20
     assert set(inputs) == {
-        "job_id", "aoi_wkt", "start_date", "end_date", "event_date", "maturity",
+        "job_id", "aoi_wkt", "start_date", "end_date", "analysis_mode", "event_date", "maturity",
         "main_band_polarization", "flight_direction", "frame_coverage",
         "frequency", "covariance_term", "threshold_method", "threshold_db",
         "granule_names_json", "request_fingerprint", "callback_url",
@@ -250,6 +251,7 @@ def test_dispatch_payload_includes_exact_discovery_filters(monkeypatch) -> None:
     assert inputs["aoi_wkt"] == request_snapshot["aoi_wkt"]
     assert inputs["start_date"] == request_snapshot["start_date"]
     assert inputs["end_date"] == request_snapshot["end_date"]
+    assert inputs["analysis_mode"] == "event_based"
     assert inputs["event_date"] == request_snapshot["event_date"]
     assert inputs["maturity"] == "PROVISIONAL"
     assert inputs["frequency"] == "frequencyA"
@@ -403,6 +405,30 @@ def test_river_shift_requires_one_strictly_pre_event_and_three_strictly_post_eve
     assert response.status_code == 422
     assert "strictly before" in response.json()["detail"]
     assert store.rows == {}
+
+
+def test_general_river_change_scan_needs_no_event_date_or_event_bracket(monkeypatch) -> None:
+    store = RiverShiftStore()
+    api = configure(monkeypatch, store)
+    dates = ["2026-08-25", "2026-09-01", "2026-09-08", "2026-09-15"]
+    monkeypatch.setattr(river_module, "_discover_manifest", lambda _payload: ({
+        "unique_dates": dates,
+        "products": [{"granule_name": f"general-scene-{index}"} for index in range(4)],
+    }, [f"general-scene-{index}" for index in range(4)]))
+
+    request = payload() | {
+        "analysis_mode": "general_scan",
+        "event_date": None,
+        "idempotency_key": "general-river-scan-0001",
+    }
+    response = api.post("/api/river-shift/jobs", json=request)
+
+    assert response.status_code == 200, response.text
+    job = response.json()
+    assert job["analysis_mode"] == "general_scan"
+    assert job["event_date"] is None
+    assert job["state"] == "dispatching"
+    assert store.rows[job["id"]]["event_date"] is None
 
 
 def test_river_shift_requires_four_observation_dates_before_job_creation(monkeypatch) -> None:

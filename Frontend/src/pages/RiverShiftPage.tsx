@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
 import type { User } from 'firebase/auth';
 import { importLibrary, setOptions } from '@googlemaps/js-api-loader';
 import { createRiverShiftJob, downloadRiverShiftArtifact, getRiverShiftJob, listRiverShiftJobs, type RiverShiftJob } from '../api/catalog';
@@ -71,6 +70,8 @@ function metricLabel(key: string): string {
   const names: Record<string, string> = {
     baseline_water_area_km2: 'Baseline water area',
     event_proximal_water_area_km2: 'Event-proximal observed water area',
+    comparison_one_water_area_km2: 'Comparison one water area',
+    comparison_two_water_area_km2: 'Comparison two water area',
     peak_water_area_km2: 'Legacy peak-water field (not confirmed peak stage)',
     post_event_water_area_km2: 'Post-event water area',
     newly_water_covered_area_km2: 'New water coverage',
@@ -123,7 +124,9 @@ function ReportPanel({ report }: { report: RiverShiftReport }) {
     ? verification as Record<string, unknown>
     : null;
   const warnings = report.quality.warnings || [];
-  const title = report.analysis_type === 'flood_inundation_screening'
+  const title = report.analysis_type === 'river_change_scan'
+    ? 'General river change scan'
+    : report.analysis_type === 'flood_inundation_screening'
     ? 'Flood inundation screening'
     : report.analysis_type === 'river_morphology_screening'
       ? 'River morphology screening'
@@ -217,6 +220,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
   const [aoiError, setAoiError] = useState('');
   const [timeSeriesIndex, setTimeSeriesIndex] = useState(0);
   const [timeSeriesPlaying, setTimeSeriesPlaying] = useState(false);
+  const [analysisMode, setAnalysisMode] = useState<'general_scan' | 'event_based'>('general_scan');
   const [eventDate, setEventDate] = useState('');
   const [scienceFrequency, setScienceFrequency] = useState<'frequencyA' | 'frequencyB'>('frequencyA');
   const [covarianceTerm, setCovarianceTerm] = useState('HHHH');
@@ -415,16 +419,20 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       setRiverJobError('Sign in with Google before starting live processing.');
       return;
     }
-    if (!eventDate) {
-      setRiverJobError('Add the event date from your independent event record before processing.');
+    if (!aoiWkt.trim() || !startDate || !endDate || endDate < startDate) {
+      setRiverJobError('Draw or paste one valid AOI and choose a valid start/end date window.');
       return;
     }
-    if (!startDate || !endDate || eventDate < startDate || eventDate > endDate) {
-      setRiverJobError('The event date must fall inside the selected NISAR observation window.');
+    if ((new Date(endDate).getTime() - new Date(startDate).getTime()) / 86400000 > 366) {
+      setRiverJobError('The NISAR observation window cannot exceed 366 days.');
       return;
     }
-    if (!catalogueIsCurrent) {
-      setRiverJobError('The catalogue results no longer match the current AOI, dates or discovery filters. Search the GCOV archive again before processing.');
+    if (analysisMode === 'event_based' && (!eventDate || eventDate < startDate || eventDate > endDate)) {
+      setRiverJobError('Event-Based Analysis needs an independently sourced event date inside the selected observation window.');
+      return;
+    }
+    if (analysisMode === 'general_scan' && eventDate) {
+      setRiverJobError('General River Change Scan does not accept an event date. Clear it or switch to Event-Based Analysis.');
       return;
     }
     if (maturity === 'ALL') {
@@ -445,7 +453,9 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     setJobTimeSeriesPlaying(false);
     try {
       const job = await createRiverShiftJob({
-        aoiWkt, startDate, endDate, eventDate, maturity,
+        aoiWkt, startDate, endDate, analysisMode,
+        eventDate: analysisMode === 'event_based' ? eventDate : null,
+        maturity,
         mainBandPolarization: polarization || null,
         flightDirection: direction || null,
         frameCoverage,
@@ -477,8 +487,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     }
   };
 
-  const searchCatalogue = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const searchCatalogue = async () => {
     setCatalogueError('');
     setCatalogue(null);
     setCatalogueQueryKey('');
@@ -762,9 +771,9 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
             <span className="rs-chip">LIVE ASF CATALOGUE</span>
           </div>
           <p className="rs-muted">
-            Search metadata from the ASF DAAC archive. This action does not download products or run scientific analysis.
+            Draw your AOI, set the observation window and choose Run. RiverShift discovers compatible NASA GCOV acquisitions, selects scenes, dispatches processing and loads the retained outputs automatically. An ASF catalogue preview is optional.
           </p>
-          <form onSubmit={searchCatalogue} className="rs-form">
+          <form onSubmit={(event) => { event.preventDefault(); void startLiveProcessing(); }} className="rs-form">
             <section className="rs-aoi-draw" aria-label="Draw study area on the map">
               <div className="rs-section-heading">
                 <div><p className="rs-kicker">STUDY AREA</p><h3>Draw AOI on satellite map</h3></div>
@@ -794,9 +803,21 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
             <div className="rs-fields-two">
               <label className="rs-field"><span>Start date</span><input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required /></label>
               <label className="rs-field"><span>End date</span><input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} required /></label>
-              <label className="rs-field"><span>Event date · from independent record</span><input type="date" value={eventDate} onChange={(event) => setEventDate(event.target.value)} min={startDate} max={endDate} />
-                <small>Event comparison needs at least one compatible acquisition strictly before this date and three strictly after it. A same-calendar-day acquisition is not assumed to be post-event.</small>
+              <label className="rs-field rs-field-full"><span>Analysis mode</span>
+                <select value={analysisMode} onChange={(event) => { setAnalysisMode(event.target.value as typeof analysisMode); if (event.target.value === 'general_scan') setEventDate(''); }}>
+                  <option value="general_scan">General River Change Scan</option>
+                  <option value="event_based">Event-Based Analysis</option>
+                </select>
+                <small>{analysisMode === 'general_scan'
+                  ? 'No event date is assumed. The earliest compatible observation is the baseline and later real acquisitions are compared in date order.'
+                  : 'Supply an event date from an independent record. RiverShift never estimates or infers this date.'}</small>
               </label>
+              {analysisMode === 'event_based' && <label className="rs-field"><span>Event date · independent record required</span><input type="date" value={eventDate} onChange={(event) => setEventDate(event.target.value)} min={startDate} max={endDate} required />
+                <small>Event comparison needs at least one compatible acquisition strictly before this date and three strictly after it. A same-calendar-day acquisition is not assumed to be post-event.</small>
+              </label>}
+              <details className="rs-advanced-settings">
+                <summary>Advanced settings</summary>
+                <div className="rs-fields-two">
               <label className="rs-field"><span>Processing maturity</span>
                 <select value={maturity} onChange={(event) => setMaturity(event.target.value as typeof maturity)}>
                   <option value="PROVISIONAL">PROVISIONAL</option><option value="BETA">BETA</option><option value="ALL">ALL (audit only)</option>
@@ -838,15 +859,17 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
                 </select>
               </label>
               {thresholdMethod === 'manual' && <label className="rs-field"><span>Common threshold (dB)</span><input type="number" min="-60" max="0" step="0.1" required value={thresholdDb} onChange={(event) => setThresholdDb(event.target.value)} /></label>}
+                </div>
+              </details>
             </div>
-            <button className="rs-primary-button" type="submit" disabled={catalogueBusy}>
-              {catalogueBusy ? 'Searching ASF…' : 'Search GCOV archive'}
+            <button className="rs-primary-button" type="submit" disabled={riverJobBusy || !user || !aoiWkt.trim() || !startDate || !endDate || maturity === 'ALL' || (analysisMode === 'event_based' && !eventDate)}>
+              {riverJobBusy ? 'Discovering, selecting and processing…' : 'Run RiverShift'}
             </button>
-            <button className="rs-secondary-button" type="button" disabled={riverJobBusy || !catalogueIsCurrent || !aoiWkt || !eventDate || !user || maturity === 'ALL'} onClick={() => void startLiveProcessing()}>
-              {riverJobBusy ? 'Submitting job…' : 'Download NISAR data & process'}
+            <button className="rs-secondary-button" type="button" disabled={catalogueBusy || !aoiWkt.trim() || !startDate || !endDate || maturity === 'ALL'} onClick={() => void searchCatalogue()}>
+              {catalogueBusy ? 'Searching ASF…' : 'Preview ASF catalogue (optional)'}
             </button>
-            {!user && <p className="rs-muted">Live processing requires account sign-in so job status and private results stay owner-protected.</p>}
-            {eventDate && <p className="rs-warning-inline">The event date is user supplied. Until official gauge/event evidence is attached, results remain provisional.</p>}
+            {!user && <p className="rs-muted">Sign in before running. Job status and private results remain owner-protected.</p>}
+            {analysisMode === 'event_based' && eventDate && <p className="rs-warning-inline">Event date supplied by the user; it is not independently confirmed. Results remain provisional.</p>}
             {catalogueError && <p className="rs-error" role="alert">{catalogueError}</p>}
           </form>
           {catalogue && (
