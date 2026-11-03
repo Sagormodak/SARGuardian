@@ -13,6 +13,7 @@ from process_gcov_job import (
     select_covering_granules,
     select_date_window,
     select_event_compatible_group,
+    require_worker_source_provenance,
 )
 
 
@@ -59,6 +60,23 @@ def test_event_window_does_not_use_pre_event_scene_as_event_observation():
     with pytest.raises(WorkerFailure, match="one qualifying acquisition strictly before"):
         select_date_window(rows, date(2026, 5, 2))
 
+
+
+
+def test_live_worker_rejects_missing_source_sidecars(tmp_path):
+    observation_paths = {}
+    for key in ("before", "event", "post_one", "post_two"):
+        path = tmp_path / f"{key}.tif"
+        path.write_bytes(b"raster placeholder")
+        observation_paths[key] = path
+
+    with pytest.raises(WorkerFailure, match="verified exporter sidecar"):
+        require_worker_source_provenance(
+            observation_paths,
+            maturity="PROVISIONAL",
+            frequency="frequencyA",
+            term="HHHH",
+        )
 
 
 def test_worker_input_preserves_the_catalogue_discovery_filters(monkeypatch):
