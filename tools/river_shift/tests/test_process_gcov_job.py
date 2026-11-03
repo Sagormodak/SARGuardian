@@ -32,6 +32,24 @@ def test_selected_observations_use_a_real_event_window_and_never_interpolate():
     }
 
 
+
+def test_acquisition_on_event_calendar_day_is_not_assumed_post_event():
+    rows = [
+        {"acquisition_date": value, "passes_coverage_gate": True, "granule_names": ["scene"]}
+        for value in ("2026-04-20", "2026-05-02", "2026-05-15", "2026-05-31", "2026-06-15")
+    ]
+
+    selected, event_window = select_date_window(rows, date(2026, 5, 2))
+
+    assert event_window == {
+        "before": "2026-04-20",
+        "event_proximal_observation": "2026-05-15",
+        "post_one": "2026-05-31",
+        "post_two": "2026-06-15",
+    }
+    assert "2026-05-02" in selected  # Kept as an actual time-series date, not used as event-proximal.
+
+
 def test_event_window_does_not_use_pre_event_scene_as_event_observation():
     rows = [
         {"acquisition_date": value, "passes_coverage_gate": True, "granule_names": ["scene"]}
