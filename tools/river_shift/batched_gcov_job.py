@@ -1065,6 +1065,64 @@ def _report_retry_wave() -> None:
         print(f"::error::Delayed retry processing failed: {error_code} · {error_message}", flush=True)
         raise WorkerFailure(error_code or "PRODUCT_RETRY_FAILED", error_message or "Delayed retry wave failed.")
 
+def _rebase_exporter_sidecar_for_assembly(
+    metadata_path: Path,
+    raster_path: Path,
+    *,
+    granule_name: str,
+    expected_source_sha256: str,
+) -> None:
+    """Rebind a verified exporter sidecar to its artifact-imported COG path.
+
+    Product jobs run on isolated GitHub-hosted runners. Their absolute output
+    paths are not valid on the assembly runner after artifact download, so the
+    sidecar path must be rebased only after the copied raster checksum and
+    exact source-granule identity have been verified.
+    """
+    metadata = _read_json(metadata_path, "exporter COG metadata")
+    original_output_path = metadata.get("output_cog")
+    output_digest = metadata.get("output_cog_sha256")
+    source_digest = metadata.get("source_product_sha256")
+    actual_digest = sha256_file(raster_path)
+
+    if (
+        not isinstance(original_output_path, str)
+        or not original_output_path.strip()
+        or not isinstance(output_digest, str)
+        or not re.fullmatch(r"[0-9a-fA-F]{64}", output_digest)
+        or actual_digest.lower() != output_digest.lower()
+    ):
+        raise WorkerFailure(
+            "SOURCE_PROVENANCE_INVALID",
+            f"The imported COG checksum or exporter path is invalid for {granule_name}.",
+        )
+    if (
+        metadata.get("source_granule_name") != granule_name
+        or not isinstance(source_digest, str)
+        or not re.fullmatch(r"[0-9a-fA-F]{64}", source_digest)
+        or source_digest.lower() != expected_source_sha256.lower()
+    ):
+        raise WorkerFailure(
+            "SOURCE_PROVENANCE_INVALID",
+            f"The imported COG source identity or checksum does not match the verified download receipt for {granule_name}.",
+        )
+
+    # Preserve the original product-runner path for audit traceability. The
+    # canonical output_cog field always points at the raster currently being
+    # validated, not at an ephemeral runner filesystem.
+    metadata.setdefault("exporter_output_cog", original_output_path)
+    metadata["output_cog"] = str(raster_path.resolve())
+    metadata["output_cog_sha256"] = actual_digest
+    _write_json(metadata_path, metadata)
+    _log_worker_stage(
+        "source_sidecar_rebind",
+        "PASS",
+        granule_name=granule_name,
+        exporter_path_preserved=True,
+        imported_raster_sha256=actual_digest,
+    )
+
+
 def _verify_and_stage_product_results(
     prepared: dict[str, Any],
     product_artifacts_dir: Path,
@@ -1152,6 +1210,12 @@ def _verify_and_stage_product_results(
         metadata_destination = raster_destination.with_suffix(".metadata.json")
         shutil.copy2(raster_source, raster_destination)
         shutil.copy2(verified_files[f"{name}.metadata.json"], metadata_destination)
+        _rebase_exporter_sidecar_for_assembly(
+            metadata_destination,
+            raster_destination,
+            granule_name=name,
+            expected_source_sha256=str(result.get("source_sha256") or ""),
+        )
         product_rasters[name] = raster_destination
         _log_worker_stage(
             "batch_reconciliation_product", "PASS",
