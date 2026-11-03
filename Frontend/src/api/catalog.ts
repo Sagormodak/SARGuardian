@@ -926,6 +926,19 @@ export async function createRiverShiftJob(input: {
   );
 }
 
+export async function listRiverShiftJobs(
+  user: Pick<User, 'getIdToken'> | null,
+  limit = 20,
+): Promise<RiverShiftJob[]> {
+  const boundedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+  return readAuthenticatedPayload<RiverShiftJob[]>(
+    `${API_BASE}/api/river-shift/jobs?limit=${boundedLimit}`,
+    user,
+    'Could not load your River Shift jobs.',
+    { cache: 'no-store' },
+  );
+}
+
 export async function getRiverShiftJob(
   jobId: string,
   user: Pick<User, 'getIdToken'> | null,
