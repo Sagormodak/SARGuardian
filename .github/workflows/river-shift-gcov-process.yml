@@ -123,11 +123,11 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::RiverShift request context (sensitive values omitted)"
-          printf 'job_id=%s\n' "$RIVERSHIFT_JOB_ID"
-          printf 'date_window=%s..%s\n' "$RIVERSHIFT_START_DATE" "$RIVERSHIFT_END_DATE"
-          printf 'event_date=%s\n' "$RIVERSHIFT_EVENT_DATE"
-          printf 'maturity=%s frequency=%s covariance_term=%s\n' "$RIVERSHIFT_MATURITY" "$RIVERSHIFT_FREQUENCY" "$RIVERSHIFT_COVARIANCE_TERM"
-          printf 'frame_coverage=%s flight_direction=%s main_band_polarization=%s\n' "$RIVERSHIFT_FRAME_COVERAGE" "${RIVERSHIFT_FLIGHT_DIRECTION:-not_set}" "${RIVERSHIFT_MAIN_BAND_POLARIZATION:-not_set}"
+          printf 'job_id=%s\\n' "$RIVERSHIFT_JOB_ID"
+          printf 'date_window=%s..%s\\n' "$RIVERSHIFT_START_DATE" "$RIVERSHIFT_END_DATE"
+          printf 'event_date=%s\\n' "$RIVERSHIFT_EVENT_DATE"
+          printf 'maturity=%s frequency=%s covariance_term=%s\\n' "$RIVERSHIFT_MATURITY" "$RIVERSHIFT_FREQUENCY" "$RIVERSHIFT_COVARIANCE_TERM"
+          printf 'frame_coverage=%s flight_direction=%s main_band_polarization=%s\\n' "$RIVERSHIFT_FRAME_COVERAGE" "${RIVERSHIFT_FLIGHT_DIRECTION:-not_set}" "${RIVERSHIFT_MAIN_BAND_POLARIZATION:-not_set}"
           python - <<'PY'
           import json
           import os
@@ -164,6 +164,15 @@ jobs:
           python --version
           echo "RIVERSHIFT_RUNTIME_STAGE=gdal START"
           gdalinfo --version
+          echo "RIVERSHIFT_RUNTIME_STAGE=gdal-drivers START"
+          gdal_formats="$(gdalinfo --formats)"
+          for driver in HDF5 netCDF; do
+            if ! grep -Eiq "^[[:space:]]*${driver}[[:space:]]+-" <<< "$gdal_formats"; then
+              echo "::error::Required GDAL driver ${driver} is unavailable; check the RiverShift libgdal driver packages."
+              exit 1
+            fi
+            printf 'RIVERSHIFT_GDAL_DRIVER_%s=PASS\\n' "$driver"
+          done
           echo "RIVERSHIFT_RUNTIME_STAGE=python-geospatial-imports START"
           python -c "import rasterio, shapely, pyproj, scipy; print('RIVERSHIFT_GEOSPATIAL_RUNTIME=PASS')"
           echo "RIVERSHIFT_RUNTIME_STAGE=all PASS"
