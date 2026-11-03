@@ -70,6 +70,18 @@ def test_explicit_maturity_enum_is_respected_without_collection_path():
     assert product["download_url"].endswith("/" + GRANULE + ".h5")
 
 
+def test_quad_pol_gcove_main_band_polarization_is_normalized():
+    quad_granule = GRANULE.replace("_DHDH_", "_QPDH_")
+    product = normalize_product({
+        "granuleName": quad_granule,
+        "url": PROVISIONAL_URL.replace(GRANULE, quad_granule),
+        "processingLevel": "GCOV",
+    })
+    assert product is not None
+    assert product["polarization_code"] == "QPDH"
+    assert product["main_band_polarization"] == "HH+HV+VH+VV"
+
+
 def test_search_uses_official_cmr_collection_short_name_and_umm_json(monkeypatch):
     captured = []
 
