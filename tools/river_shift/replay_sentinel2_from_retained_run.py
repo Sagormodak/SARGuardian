@@ -106,26 +106,38 @@ def prepare_source_observations(
             raise ReplayError(f"The retained product identity does not match {name}.")
 
         files = result.get("files")
-        if not isinstance(files, list):
+        if not isinstance(files, list) or not files:
             raise ReplayError(f"The worker receipt for {name} has no file inventory.")
-        raster_receipt = next(
-            (
-                item for item in files
-                if isinstance(item, dict)
-                and isinstance(item.get("name"), str)
-                and item["name"].endswith(".tif")
-            ),
-            None,
-        )
-        if raster_receipt is None:
-            raise ReplayError(f"The worker receipt for {name} has no retained COG.")
-        raster_path = product_dir / raster_receipt["name"]
+        file_receipts: dict[str, dict[str, Any]] = {}
+        for item in files:
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("name"), str)
+                or not isinstance(item.get("sha256"), str)
+                or item["name"] in file_receipts
+            ):
+                raise ReplayError(f"The worker file inventory for {name} is invalid or contains duplicate names.")
+            file_receipts[item["name"]] = item
+            retained_path = product_dir / item["name"]
+            if not retained_path.is_file():
+                raise ReplayError(f"Retained product file {item['name']} is missing for {name}.")
+            if sha256_file(retained_path).lower() != item["sha256"].lower():
+                raise ReplayError(f"Retained product file {item['name']} fails its worker receipt checksum for {name}.")
+
+        raster_names = [
+            filename for filename in file_receipts if filename.lower().endswith(".tif")
+        ]
+        if len(raster_names) != 1:
+            raise ReplayError(f"The worker receipt for {name} must identify exactly one retained COG.")
+        raster_name = raster_names[0]
+        raster_receipt = file_receipts[raster_name]
+        raster_path = product_dir / raster_name
         sidecar_path = raster_path.with_suffix(".metadata.json")
-        if not raster_path.is_file() or not sidecar_path.is_file():
-            raise ReplayError(f"The COG or metadata sidecar for {name} is missing.")
+        sidecar_name = sidecar_path.name
+        sidecar_receipt = file_receipts.get(sidecar_name)
+        if sidecar_receipt is None:
+            raise ReplayError(f"The worker receipt for {name} does not checksum its COG metadata sidecar.")
         raster_digest = sha256_file(raster_path)
-        if raster_digest.lower() != str(raster_receipt.get("sha256", "")).lower():
-            raise ReplayError(f"The COG checksum does not match the worker receipt for {name}.")
         if raster_digest.lower() != str(result.get("raster_sha256", "")).lower():
             raise ReplayError(f"The COG checksum does not match the worker result for {name}.")
 
@@ -174,6 +186,7 @@ def prepare_source_observations(
             "date": observed_date,
             "granule_name": name,
             "cog_sha256": raster_digest,
+            "sidecar_sha256_before_local_path_restore": str(sidecar_receipt["sha256"]).lower(),
             "source_product_sha256": metadata.get("source_product_sha256"),
             "sidecar": sidecar_path.name,
         })
