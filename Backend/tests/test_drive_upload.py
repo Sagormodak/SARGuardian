@@ -24,10 +24,12 @@ class Response:
 class DriveSession:
     def __init__(self) -> None:
         self.requests: list[tuple[str, str, dict]] = []
+        self.token_request: dict | None = None
         self.next_id = 0
         self.files: dict[str, tuple[str, bytes]] = {}
 
-    def post(self, _url, **_kwargs):
+    def post(self, _url, **kwargs):
+        self.token_request = kwargs.get("data")
         return Response({"access_token": "access-token"})
 
     def request(self, method, url, **kwargs):
@@ -119,6 +121,58 @@ def test_accepts_parent_folder_environment_name_used_by_github_actions() -> None
 
     assert config.parent_folder_id == "13BIAepPGLlYYmscUlNPeMCdtepYshjT4"
 
+
+def test_accepts_worker_token_json_and_root_level_oauth_client() -> None:
+    config = drive.load_drive_config({
+        "GOOGLE_DRIVE_OAUTH_CLIENT_JSON": json.dumps({
+            "client_id": "root-client",
+            "client_secret": "root-secret",
+        }),
+        "GOOGLE_DRIVE_REFRESH_TOKEN": json.dumps({
+            "refresh_token": "worker-refresh-token",
+            "type": "authorized_user",
+        }),
+    }, require_parent_folder=False)
+
+    assert config.client_id == "root-client"
+    assert config.client_secret == "root-secret"
+    assert config.token_uri == "https://oauth2.googleapis.com/token"
+    assert config.refresh_token == "worker-refresh-token"
+    assert config.parent_folder_id == ""
+
+
+def test_private_download_sends_normalized_worker_refresh_token(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    payload = b"private-river-shift-preview-from-drive"
+    monkeypatch.setenv("GOOGLE_DRIVE_OAUTH_CLIENT_JSON", json.dumps({
+        "client_id": "root-client",
+        "client_secret": "root-secret",
+    }))
+    monkeypatch.setenv("GOOGLE_DRIVE_REFRESH_TOKEN", json.dumps({
+        "refresh_token": "worker-refresh-token",
+        "type": "authorized_user",
+    }))
+    monkeypatch.delenv("GOOGLE_DRIVE_PARENT_FOLDER_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_DRIVE_FOLDER_ID", raising=False)
+
+    session = StreamingDriveSession(payload)
+    destination = tmp_path / "private-preview.geojson"
+    receipt = drive.download_private_result_to_path(
+        "private-file-123456",
+        destination,
+        session=session,
+        max_bytes=len(payload),
+    )
+
+    assert session.token_request == {
+        "client_id": "root-client",
+        "client_secret": "root-secret",
+        "refresh_token": "worker-refresh-token",
+        "grant_type": "refresh_token",
+    }
+    assert destination.read_bytes() == payload
+    assert receipt == {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
 
 def test_prefers_parent_folder_id_when_both_drive_folder_names_are_present() -> None:
     config = drive.load_drive_config({
