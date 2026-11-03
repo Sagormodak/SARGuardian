@@ -11,9 +11,11 @@ describe('SARGuardian analysis entry points', () => {
     ]);
   });
 
-  it('keeps River Shift in research preview until its dedicated workflow is ready', () => {
+  it('exposes River Shift as its own available engine entry', () => {
     const river = engines.find((engine) => engine.id === 'river-shift');
-    expect(river?.status).toBe('RESEARCH PREVIEW');
+    expect(river?.status).toBe('AVAILABLE');
+    expect(river?.actionLabel).toBe('Open River Shift engine');
+    expect(river?.description).toContain('NISAR GCOV');
   });
 
   it('uses the shared AOI displacement workflow for glacier terrain without claiming a separate model', () => {
