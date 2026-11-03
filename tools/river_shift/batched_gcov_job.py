@@ -80,6 +80,14 @@ def _write_output(name: str, value: str) -> None:
         stream.write(f"{name}<<{delimiter}\n{value}\n{delimiter}\n")
 
 
+def _write_step_summary(markdown: str) -> None:
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+    with Path(summary_path).open("a", encoding="utf-8") as stream:
+        stream.write(markdown.rstrip() + "\n")
+
+
 def _batch_matrix(rows: list[dict[str, Any]], batch_number: int, batch_count: int, total_products: int) -> dict[str, Any]:
     include = []
     for position, row in enumerate(rows, start=1):
@@ -394,6 +402,14 @@ def _write_product_failure(
     return result
 
 
+def _product_catalogue_path(prepared_dir: Path) -> Path:
+    """Return an absolute catalogue path for child tools executed with cwd=TOOLS."""
+    catalogue_path = (prepared_dir / "selected-catalogue.json").resolve()
+    if not catalogue_path.is_file():
+        raise WorkerFailure("BATCH_ARTIFACT_INVALID", "The selected catalogue artifact is missing from the prepared workspace.")
+    return catalogue_path
+
+
 def _run_product_worker() -> int:
     started = time.monotonic()
     granule_name = os.environ.get("RIVERSHIFT_GRANULE_NAME", "").strip()
@@ -433,7 +449,7 @@ def _run_product_worker() -> int:
     _log_worker_stage("product_worker_startup", "START", **context)
     current_stage = "prepared_manifest_validation"
     try:
-        prepared_dir = Path(os.environ.get("RIVERSHIFT_PREPARED_DIR", "prepared"))
+        prepared_dir = Path(os.environ.get("RIVERSHIFT_PREPARED_DIR", "prepared")).resolve()
         prepared = _read_json(prepared_dir / "prepared.json", "prepared selection")
         if prepared.get("job_id") != os.environ.get("RIVERSHIFT_JOB_ID"):
             raise WorkerFailure("REQUEST_MISMATCH", "This product runner received a prepared artifact for a different job.")
@@ -444,7 +460,7 @@ def _run_product_worker() -> int:
         if prepared.get("date_by_name", {}).get(granule_name) != acquisition_date:
             raise WorkerFailure("REQUEST_MISMATCH", "The granule acquisition date does not match the prepared observation date.")
 
-        catalogue_path = prepared_dir / "selected-catalogue.json"
+        catalogue_path = _product_catalogue_path(prepared_dir)
         product_matches = [
             row for row in _read_json(catalogue_path, "selected catalogue").get("products", [])
             if row.get("granule_name") == granule_name
@@ -634,7 +650,7 @@ def _run_product_worker() -> int:
         ):
             raw_file.unlink(missing_ok=True)
         print(f"::error::RiverShift product failed: {exc.code} · {granule_name}", flush=True)
-        return 0
+        return 1
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)
         _write_product_failure(
@@ -650,7 +666,7 @@ def _run_product_worker() -> int:
             failed_stage=current_stage,
         )
         print(f"::error::Unexpected RiverShift product failure · {granule_name}", flush=True)
-        return 0
+        return 1
     finally:
         print("::endgroup::", flush=True)
 
