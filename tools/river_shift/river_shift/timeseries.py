@@ -61,11 +61,17 @@ def run_water_timeseries_analysis(
         paths, maturity=maturity, frequency=frequency, term=polarization_term,
     )
     pixel_area_m2 = require_projected_metre_grid(profiles[ordered[0]["date"]])
+    # Every date is compared on exactly the same spatial support. Using each
+    # acquisition's independent valid mask would make area changes partly a
+    # function of changing coverage rather than water classification.
+    common_valid = np.logical_and.reduce(valids)
+    if not common_valid.any():
+        raise ValueError("The selected acquisitions have no common valid pixels; a comparable time series cannot be measured.")
     db_arrays = [power_to_db(array, units) for array in arrays]
     if threshold_db is None:
         if not use_otsu:
             raise ValueError("Provide threshold_db or enable Otsu.")
-        values = np.concatenate([db[valid & np.isfinite(db)] for db, valid in zip(db_arrays, valids)])
+        values = np.concatenate([db[common_valid & np.isfinite(db)] for db in db_arrays])
         threshold_db = otsu_threshold_db(values.reshape(1, -1), np.isfinite(values).reshape(1, -1))
         threshold_method = "otsu_combined_all_observed_dates_exploratory"
     else:
@@ -76,9 +82,11 @@ def run_water_timeseries_analysis(
     out.mkdir(parents=True, exist_ok=True)
     frames: list[dict[str, Any]] = []
     total_pixels = int(arrays[0].size)
-    for index, (row, array, valid) in enumerate(zip(ordered, arrays, valids)):
+    comparison_pixel_count = int(common_valid.sum())
+    comparison_pixel_fraction = float(comparison_pixel_count / total_pixels) if total_pixels else 0.0
+    for index, (row, array, source_valid) in enumerate(zip(ordered, arrays, valids)):
         water = classify_open_water(
-            array, valid, units=units, threshold_db=threshold_db, minimum_pixels=min_pixels,
+            array, common_valid, units=units, threshold_db=threshold_db, minimum_pixels=min_pixels,
         )
         water_area = float(water.sum() * pixel_area_m2 / 1_000_000.0)
         mask_path = out / f"water_{row['date']}_mask.tif"
@@ -92,8 +100,10 @@ def run_water_timeseries_analysis(
             "date": row["date"],
             "granule_name": metadata["source_granule_name"] if metadata else None,
             "water_area_km2": water_area,
-            "valid_pixel_count": int(valid.sum()),
-            "valid_pixel_fraction": float(valid.sum() / total_pixels) if total_pixels else 0.0,
+            "valid_pixel_count": comparison_pixel_count,
+            "valid_pixel_fraction": comparison_pixel_fraction,
+            "source_valid_pixel_count": int(source_valid.sum()),
+            "source_valid_pixel_fraction": float(source_valid.sum() / total_pixels) if total_pixels else 0.0,
             "water_polygon_count": int(polygon_count),
             "water_mask": mask_path.name,
             "water_mask_sha256": sha256_file(mask_path),
@@ -107,7 +117,7 @@ def run_water_timeseries_analysis(
         scenario_frames = []
         for row, array, valid in zip(ordered, arrays, valids):
             scenario_water = classify_open_water(
-                array, valid, units=units, threshold_db=scenario_threshold, minimum_pixels=min_pixels,
+                array, common_valid, units=units, threshold_db=scenario_threshold, minimum_pixels=min_pixels,
             )
             scenario_frames.append({
                 "date": row["date"],
@@ -153,6 +163,8 @@ def run_water_timeseries_analysis(
         },
         "metrics": {
             "observation_count": len(frames),
+            "comparison_valid_pixel_count": comparison_pixel_count,
+            "comparison_valid_pixel_fraction": comparison_pixel_fraction,
             "minimum_observed_water_area_km2": min(areas),
             "maximum_observed_water_area_km2": max(areas),
         },
@@ -161,10 +173,13 @@ def run_water_timeseries_analysis(
             "status": "OBSERVED_DATE_SCREENING_NOT_INDEPENDENTLY_VALIDATED",
             "release_status": "PROVISIONAL",
             "provenance_complete": provenance_complete,
+            "valid_comparison_pixel_count": comparison_pixel_count,
+            "valid_comparison_pixel_fraction": comparison_pixel_fraction,
             "warnings": [
                 "Each frame is one satellite acquisition date; no daily observations or interpolated states are implied.",
                 "Low-backscatter open-water candidates can omit flooded vegetation and include smooth bare soil or radar shadow.",
-                "Water-area differences are sensitive to valid-mask coverage, water stage and threshold choice.",
+                "All observations are compared on the intersection of their valid-pixel masks; source coverage outside that common support is excluded from every date's area estimate.",
+                "Water-area differences remain sensitive to water stage and threshold choice.",
                 "This time series is not a flood-causation claim and requires independent reference validation.",
             ],
         },
