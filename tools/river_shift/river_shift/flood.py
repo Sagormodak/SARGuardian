@@ -164,7 +164,8 @@ def run_flood_analysis(
         },
         "inputs": {
             "before": str(before_path),
-            "during": str(during_path),\n            "event_proximal_observation": dates.get("during") if dates else None,
+            "during": str(during_path),
+            "event_proximal_observation": dates.get("during") if dates else None,
             "after": str(after_path),
             "permanent_water_mask": str(permanent_water_path) if permanent_water_path else None,
             "dates": dates or {},
