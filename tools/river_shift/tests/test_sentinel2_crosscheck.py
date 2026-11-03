@@ -864,3 +864,36 @@ def test_canonical_stac_processing_fields_group_and_select_latest_tile_generatio
     assert {row["id"] for row in selected} == {"canonical-left-latest", "canonical-right"}
     assert {crosscheck._processing_baseline(row) for row in selected} == {"05.11"}
     assert crosscheck._generation_time(left_latest) == "2026-09-17T01:00:00Z"
+
+ 
+
+def test_read_cross_sensor_arrays_reports_the_failed_item_band_without_exposing_asset_url(tmp_path, monkeypatch):
+    nisar_path = _write_geotiff_at(
+        tmp_path / "nisar-diagnostic-mask.tif",
+        np.zeros((2, 2), dtype=np.uint8),
+        x_origin=500000,
+        nodata=255,
+    )
+    item = _item(
+        "sentinel2-diagnostic-item",
+        box(88.0, 24.0, 89.0, 25.0),
+        "2026-09-15",
+        20.0,
+        datatake_id="S2B_DIAGNOSTIC_PASS",
+        mgrs_tile="45RYJ",
+    )
+    missing_asset_path = tmp_path / "missing-b11.tif"
+    monkeypatch.setattr(
+        crosscheck,
+        "_signed_asset_url",
+        lambda _href: str(missing_asset_path),
+    )
+
+    with pytest.raises(
+        crosscheck.CrosscheckError,
+        match=r"opening reference B11 for Sentinel-2 item sentinel2-diagnostic-item: RasterioIOError",
+    ) as exc_info:
+        crosscheck._read_cross_sensor_arrays(nisar_path=nisar_path, item=item)
+
+    assert "example.test" not in str(exc_info.value)
+    assert "?" not in str(exc_info.value)
