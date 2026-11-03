@@ -134,7 +134,8 @@ def test_compact_iso_and_filename_acquisition_times_normalize_to_utc_dates() -> 
     assert river_module._acquisition_date("2026-06-27T12:42:43.000Z") == "2026-06-27"
     assert river_module._acquisition_date("2026-06-27") == "2026-06-27"
     assert river_module._acquisition_date(None, "NISAR_L2_PR_GCOV_024_019_D_076_4005_DHDH_A_20260627T124243_20260627T124249_P05023_N_P_J_001") == "2026-06-27"
-    assert river_module._acquisition_date("2026-06-27T23:30:00-02:00") == "2026-06-28"\n    assert river_module._acquisition_date("not-a-date") is None
+    assert river_module._acquisition_date("2026-06-27T23:30:00-02:00") == "2026-06-28"
+    assert river_module._acquisition_date("not-a-date") is None
 
 
 def test_discovery_manifest_counts_compact_timestamps_and_preserves_selected_filters(monkeypatch) -> None:
