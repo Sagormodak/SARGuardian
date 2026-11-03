@@ -829,7 +829,6 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
           <p className="rs-error" role="alert">{riverJobError}</p>
         </section>
       )}
-
       {riverJob && <section className="rs-panel rs-job-panel" aria-live="polite">
         <div className="rs-section-heading"><div><p className="rs-kicker">LIVE SCIENCE JOB</p><h2>{riverJob.state.replace(/_/g, ' ')} · {riverJob.stage.replace(/_/g, ' ')}</h2></div>
           <span className="rs-chip">{riverJob.maturity} · {riverJob.frequency} / {riverJob.covariance_term}</span></div>
