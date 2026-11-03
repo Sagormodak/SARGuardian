@@ -57,6 +57,8 @@ from .displacements import (
     workflow_run_status,
 )
 from .models import CatalogResponse, CatalogSearchRequest
+from .river_shift import router as river_shift_catalogue_router
+from .river_shift_jobs import router as river_shift_jobs_router
 from .persistence import (
     PersistenceConfigurationError,
     PersistenceConflictError,
@@ -94,6 +96,8 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="SARGuardian Catalogue API", version="0.1.0", lifespan=lifespan)
+app.include_router(river_shift_catalogue_router)
+app.include_router(river_shift_jobs_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins(),
