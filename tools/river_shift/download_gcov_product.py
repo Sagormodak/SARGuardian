@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -37,8 +38,23 @@ def trusted_asf_url(value: str) -> bool:
         return False
 
 
-def trusted_redirect_chain(response: requests.Response) -> bool:
-    """Allow only ASF product hosts and the official Earthdata Login host."""
+def _host_matches_domain(host: str, domain: str) -> bool:
+    normalized = domain.lower().strip().lstrip(".")
+    if normalized.startswith("*."):
+        normalized = normalized[2:]
+    return bool(normalized) and (host == normalized or host.endswith("." + normalized))
+
+
+def trusted_redirect_chain(response: requests.Response, allowed_domains=()) -> bool:
+    """Allow only ASF hosts and redirect domains explicitly trusted by ASFSession."""
+    approved_domains = set(TRUSTED_ASF_HOSTS | TRUSTED_EARTHDATA_AUTH_HOSTS)
+    approved_domains.update(
+        domain for domain in allowed_domains if isinstance(domain, str) and domain.strip()
+    )
+
+    def approved(host: str) -> bool:
+        return any(_host_matches_domain(host, domain) for domain in approved_domains)
+
     for hop in [*getattr(response, "history", []), response]:
         try:
             parsed = urlparse(str(hop.url))
@@ -48,12 +64,37 @@ def trusted_redirect_chain(response: requests.Response) -> bool:
                 or parsed.port not in (None, 443)
                 or parsed.username is not None
                 or parsed.password is not None
-                or host not in TRUSTED_ASF_HOSTS | TRUSTED_EARTHDATA_AUTH_HOSTS
+                or not approved(host)
             ):
                 return False
         except (TypeError, ValueError):
             return False
-    return urlparse(str(response.url)).hostname in TRUSTED_ASF_HOSTS
+    final_host = (urlparse(str(response.url)).hostname or "").lower()
+    return approved(final_host)
+
+
+def _build_authenticated_asf_session():
+    """Build the ASF-maintained session used by the working SARGuardian download path."""
+    import asf_search
+
+    session = asf_search.ASFSession()
+    token = os.getenv("EARTHDATA_TOKEN", "").strip()
+    if token:
+        session.auth_with_token(token)
+    else:
+        # The worker creates a mode-0600 .netrc before this function is called.
+        # ASFSession inherits Requests' netrc support and its ASF-aware redirects.
+        session.trust_env = True
+    return session
+
+
+def _retry_delay(attempt: int, retry_after: str | None = None) -> float:
+    if retry_after:
+        try:
+            return min(max(float(retry_after), 0.0), 30.0)
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return min(2 ** attempt, 8.0)
 
 
 def is_hdf5_file(path: Path) -> bool:
@@ -124,59 +165,73 @@ def download_product(product: dict, output_dir: Path, timeout_seconds: int) -> d
     output_dir.mkdir(parents=True, exist_ok=True)
     final_path = output_dir / f"{name}.h5"
     partial_path = output_dir / f"{name}.h5.part"
-    token = os.getenv("EARTHDATA_TOKEN", "").strip()
+    session = _build_authenticated_asf_session()
+    allowed_domains = getattr(session, "auth_domains", ())
 
-    session = requests.Session()
-    session.trust_env = True  # Requests reads the user's protected .netrc when present.
-    if token:
-        session.headers.update({"Authorization": f"Bearer {token}"})
+    expected_bytes = None
+    downloaded = 0
+    for attempt in range(1, 4):
+        partial_path.unlink(missing_ok=True)
+        try:
+            with session.get(
+                url,
+                stream=True,
+                allow_redirects=True,
+                timeout=(30, timeout_seconds),
+            ) as response:
+                response.raise_for_status()
+                if not trusted_redirect_chain(response, allowed_domains):
+                    raise RuntimeError("ASF download redirected outside ASFSession's trusted host allowlist.")
+                expected_header = response.headers.get("Content-Length")
+                expected_bytes = int(expected_header) if expected_header and expected_header.isdigit() else None
+                downloaded = 0
+                next_progress = 128 * 1024 * 1024
+                with partial_path.open("wb") as target:
+                    for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
+                        if not chunk:
+                            continue
+                        target.write(chunk)
+                        downloaded += len(chunk)
+                        if downloaded >= next_progress:
+                            print(f"DOWNLOAD_PROGRESS_BYTES={downloaded}", flush=True)
+                            while next_progress <= downloaded:
+                                next_progress += 128 * 1024 * 1024
 
-    try:
-        with session.get(
-            url,
-            stream=True,
-            allow_redirects=True,
-            timeout=(30, timeout_seconds),
-        ) as response:
-            response.raise_for_status()
-            if not trusted_redirect_chain(response):
-                raise RuntimeError("ASF download redirected outside the trusted ASF/Earthdata hosts.")
-            expected_header = response.headers.get("Content-Length")
-            expected_bytes = int(expected_header) if expected_header and expected_header.isdigit() else None
-            downloaded = 0
-            digest = hashlib.sha256()
-            with partial_path.open("wb") as target:
-                for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
-                    if not chunk:
-                        continue
-                    target.write(chunk)
-                    digest.update(chunk)
-                    downloaded += len(chunk)
-                    print(f"DOWNLOAD_PROGRESS_BYTES={downloaded}", flush=True)
-
-        if downloaded <= 0:
-            raise RuntimeError("Downloaded file is empty.")
-        if not is_hdf5_file(partial_path):
-            raise RuntimeError("ASF response is not a valid HDF5 product; an HTML/login or error page may have been returned.")
-        if expected_bytes is not None and downloaded != expected_bytes:
-            raise RuntimeError(
-                f"Downloaded byte count {downloaded} does not match HTTP Content-Length {expected_bytes}."
-            )
-        partial_path.replace(final_path)
-    except requests.exceptions.HTTPError as exc:
-        partial_path.unlink(missing_ok=True)
-        status = getattr(exc.response, "status_code", None)
-        if status in {401, 403}:
-            raise RuntimeError(
-                "Earthdata authentication was rejected. Configure EARTHDATA_TOKEN or a protected ~/.netrc entry."
-            ) from None
-        raise RuntimeError(f"ASF download failed with HTTP status {status or 'unknown'}.") from None
-    except requests.exceptions.RequestException:
-        partial_path.unlink(missing_ok=True)
-        raise RuntimeError("ASF download failed due to a network or timeout error.") from None
-    except Exception:
-        partial_path.unlink(missing_ok=True)
-        raise
+            if downloaded <= 0:
+                raise RuntimeError("Downloaded file is empty.")
+            if expected_bytes is not None and downloaded != expected_bytes:
+                raise RuntimeError(
+                    f"Downloaded byte count {downloaded} does not match HTTP Content-Length {expected_bytes}."
+                )
+            if not is_hdf5_file(partial_path):
+                raise RuntimeError("ASF response is not a valid HDF5 product; an HTML/login or error page may have been returned.")
+            partial_path.replace(final_path)
+            break
+        except requests.exceptions.HTTPError as exc:
+            partial_path.unlink(missing_ok=True)
+            status = getattr(exc.response, "status_code", None)
+            if status in {401, 403}:
+                raise RuntimeError(
+                    "Earthdata authentication was rejected. Configure EARTHDATA_TOKEN or a protected ~/.netrc entry."
+                ) from None
+            if status not in {408, 425, 429, 500, 502, 503, 504} or attempt >= 3:
+                raise RuntimeError(f"ASF download failed with HTTP status {status or 'unknown'}.") from None
+            retry_after = getattr(exc.response, "headers", {}).get("Retry-After")
+            delay = _retry_delay(attempt, retry_after)
+            print(f"DOWNLOAD_RETRY attempt={attempt}/3 reason=HTTP_{status} sleep_seconds={delay:g}", flush=True)
+            time.sleep(delay)
+        except requests.exceptions.RequestException as exc:
+            partial_path.unlink(missing_ok=True)
+            if attempt >= 3:
+                raise RuntimeError("ASF download failed due to a network or timeout error after 3 attempts.") from None
+            delay = _retry_delay(attempt)
+            print(f"DOWNLOAD_RETRY attempt={attempt}/3 reason={type(exc).__name__} sleep_seconds={delay:g}", flush=True)
+            time.sleep(delay)
+        except Exception:
+            partial_path.unlink(missing_ok=True)
+            raise
+    else:
+        raise RuntimeError("ASF_DOWNLOAD_ATTEMPTS_EXHAUSTED")
 
     result = {
         "schema_version": 1,
