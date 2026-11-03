@@ -79,9 +79,11 @@ Add these secrets in the moshiour0/SARGuardian-backend repository:
 - EARTHDATA_TOKEN, or the existing EARTHDATA_USERNAME and EARTHDATA_PASSWORD credentials accepted by the downloader.
 - GOOGLE_DRIVE_OAUTH_CLIENT_JSON.
 - GOOGLE_DRIVE_REFRESH_TOKEN.
-- GOOGLE_DRIVE_FOLDER_ID or GOOGLE_DRIVE_PARENT_FOLDER_ID — the workflow supports either existing naming convention.
+- GOOGLE_DRIVE_PARENT_FOLDER_ID — the sole configured parent folder for RiverShift. The worker automatically finds or creates the fixed `RiverShift` child folder beneath it, then a UUID-named job folder and output hierarchy. Do not configure `GOOGLE_DRIVE_FOLDER_ID` for RiverShift.
 
 Drive result storage remains private. The worker does not publish original raw HDF5 products as downloadable result artifacts. The Dynamic API authorizes the signed-in owner before it reads any Drive artifact.
+
+The API reads each already-retained file by its `drive_file_id`, then verifies the byte count and SHA-256 before streaming it to the authenticated owner. It does not create the `RiverShift` folder or upload job results; those operations belong to the backend GitHub Actions worker.
 
 ## Activation order
 
