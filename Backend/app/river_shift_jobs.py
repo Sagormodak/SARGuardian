@@ -661,7 +661,23 @@ def download_river_shift_artifact(
             temporary_path,
             max_bytes=expected_bytes,
         )
-    except DriveUploadError:
+    except DriveUploadError as exc:
+        cause = exc.__cause__
+        upstream_response = getattr(cause, "response", None)
+        upstream_status = (
+            getattr(upstream_response, "status_code", None)
+            or getattr(cause, "status_code", None)
+            or getattr(cause, "code", None)
+        )
+        logger.warning(
+            "RiverShift private artifact retrieval failed "
+            "(job_id=%s artifact_name=%s drive_error=%s upstream_http_status=%s cause_type=%s)",
+            str(job_id),
+            filename,
+            str(exc)[:180],
+            upstream_status,
+            type(cause).__name__ if cause is not None else "none",
+        )
         try:
             temporary_path.unlink(missing_ok=True)
         except (OSError, UnboundLocalError):
