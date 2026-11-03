@@ -734,6 +734,14 @@ def write_mask_web_preview(
             source_crs_value = source.crs
             source_nodata = source.nodata
             source_mask_sha256 = sha256_file(mask_path)
+            # Independently inventory the exact source-positive pixels once.
+            # Some GDAL builds can yield tiny non-zero average-warp values for
+            # an all-zero raster; this prevents those numerical artefacts from
+            # becoming false map candidates and verifies empty/non-empty state.
+            source_candidate_pixels = 0
+            for _, source_window in source.block_windows(1):
+                source_block = source.read(1, window=source_window)
+                source_candidate_pixels += int(np.count_nonzero(source_block == 1))
 
             dimensions = sorted({
                 min(max_dimension, value)
@@ -772,7 +780,14 @@ def write_mask_web_preview(
                     init_dest_nodata=True,
                 )
                 candidate = sampled_values > 0.0
+                if source_candidate_pixels == 0:
+                    candidate.fill(False)
                 candidate_cells = int(np.count_nonzero(candidate))
+                if source_candidate_pixels > 0 and candidate_cells == 0:
+                    raise WorkerFailure(
+                        "PREVIEW_GENERATION_FAILED",
+                        f"The source mask {mask_path.name} contains {source_candidate_pixels} positive candidate pixels, but resampling produced an empty display layer.",
+                    )
                 pixel_x_m = math.hypot(preview_transform.a, preview_transform.d)
                 pixel_y_m = math.hypot(preview_transform.b, preview_transform.e)
                 display_pixel_size_m = max(pixel_x_m, pixel_y_m)
@@ -813,7 +828,7 @@ def write_mask_web_preview(
                         "properties": {
                             "class": class_name,
                             "river_shift_layer": class_name,
-                            "preview_geometry": "max_aggregated_mask_footprint",
+                            "preview_geometry": "average_aggregated_mask_footprint",
                         },
                         "geometry": mapping(geographic),
                     }]
@@ -838,6 +853,7 @@ def write_mask_web_preview(
                         "preview_width": preview_width,
                         "preview_height": preview_height,
                         "preview_candidate_cells": candidate_cells,
+                        "source_candidate_pixels": source_candidate_pixels,
                         "display_pixel_size_m": round(display_pixel_size_m, 3),
                         "feature_count": len(features),
                         "features_omitted_for_size": 0,
