@@ -698,14 +698,14 @@ jobs:
                   raise SystemExit('RETRY_MATRIX_HANDOFF_FAILED: retry matrix contains an invalid or duplicate product identity.')
               seen.add(name)
           with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as stream:
-              stream.write(f'retry_matrix={raw}\\n')
-              stream.write(f'retry_count={count}\\n')
+              stream.write(f'retry_matrix={raw}\n')
+              stream.write(f'retry_count={count}\n')
           Path(os.environ['GITHUB_STEP_SUMMARY']).write_text(
-              '## Retry matrix handoff validation\\n\\n'
-              f'- retry_prepare count: **{count}**\\n'
-              f'- validated matrix rows: **{len(rows)}**\\n'
-              '- Identity uniqueness: **PASS**\\n'
-              '- Retry attempt cap: **one retry per product**\\n',
+              '## Retry matrix handoff validation\n\n'
+              f'- retry_prepare count: **{count}**\n'
+              f'- validated matrix rows: **{len(rows)}**\n'
+              '- Identity uniqueness: **PASS**\n'
+              '- Retry attempt cap: **one retry per product**\n',
               encoding='utf-8',
           )
           print(f'RIVERSHIFT_RETRY_MATRIX_HANDOFF=PASS count={count}', flush=True)
