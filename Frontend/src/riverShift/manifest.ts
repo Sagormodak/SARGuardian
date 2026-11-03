@@ -81,6 +81,7 @@ export function parseRiverShiftReport(value: unknown): RiverShiftReport {
   }
   const validTypes = [
     'flood_inundation_screening',
+    'river_change_scan',
     'river_morphology_screening',
     'classification_validation',
     'bankline_migration',

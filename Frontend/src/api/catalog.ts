@@ -876,7 +876,8 @@ export type RiverShiftJob = {
   aoi_wkt: string;
   start_date: string;
   end_date: string;
-  event_date: string;
+  analysis_mode: 'general_scan' | 'event_based';
+  event_date: string | null;
   maturity: 'BETA' | 'PROVISIONAL';
   frequency: 'frequencyA' | 'frequencyB';
   covariance_term: string;
@@ -896,7 +897,8 @@ export async function createRiverShiftJob(input: {
   aoiWkt: string;
   startDate: string;
   endDate: string;
-  eventDate: string;
+  analysisMode: 'general_scan' | 'event_based';
+  eventDate: string | null;
   maturity: 'BETA' | 'PROVISIONAL';
   mainBandPolarization: 'HH' | 'HH+HV' | 'HH+HV+VH+VV' | 'VV' | 'VV+VH' | 'LH+LV' | 'RH+RV' | null;
   flightDirection: 'ASCENDING' | 'DESCENDING' | null;
@@ -917,6 +919,7 @@ export async function createRiverShiftJob(input: {
         aoi_wkt: input.aoiWkt,
         start_date: input.startDate,
         end_date: input.endDate,
+        analysis_mode: input.analysisMode,
         event_date: input.eventDate,
         maturity: input.maturity,
         main_band_polarization: input.mainBandPolarization,

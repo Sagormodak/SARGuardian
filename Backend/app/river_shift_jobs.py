@@ -48,7 +48,8 @@ class CreateRiverShiftJobRequest(BaseModel):
     aoi_wkt: str = Field(min_length=20, max_length=100_000)
     start_date: date
     end_date: date
-    event_date: date
+    analysis_mode: Literal["general_scan", "event_based"] = "event_based"
+    event_date: date | None = None
     maturity: Literal["BETA", "PROVISIONAL"] = "PROVISIONAL"
     main_band_polarization: Polarization | None = None
     flight_direction: FlightDirection | None = None
@@ -73,10 +74,15 @@ class CreateRiverShiftJobRequest(BaseModel):
             raise ValueError("end_date must be on or after start_date.")
         if (self.end_date - self.start_date).days > 366:
             raise ValueError("RiverShift observation window cannot exceed 366 days.")
-        if self.end_date > date.today() or self.event_date > date.today():
+        if self.end_date > date.today() or (self.event_date is not None and self.event_date > date.today()):
             raise ValueError("Observation and event dates cannot be in the future.")
-        if not self.start_date <= self.event_date <= self.end_date:
-            raise ValueError("event_date must fall inside the observation window.")
+        if self.analysis_mode == "event_based":
+            if self.event_date is None:
+                raise ValueError("Event-Based Analysis requires an independently supplied event_date.")
+            if not self.start_date <= self.event_date <= self.end_date:
+                raise ValueError("event_date must fall inside the observation window.")
+        elif self.event_date is not None:
+            raise ValueError("General River Change Scan must not include an event_date.")
         if self.threshold_method == "manual":
             if self.threshold_db is None or not -60 <= self.threshold_db <= 0:
                 raise ValueError("Manual water threshold must be between -60 and 0 dB.")
@@ -113,7 +119,8 @@ class RiverShiftJobResponse(BaseModel):
     aoi_wkt: str
     start_date: date
     end_date: date
-    event_date: date
+    analysis_mode: Literal["general_scan", "event_based"]
+    event_date: date | None = None
     maturity: Literal["BETA", "PROVISIONAL"]
     frequency: Literal["frequencyA", "frequencyB"]
     covariance_term: str
@@ -259,7 +266,8 @@ def _dispatch(settings: Any, job_id: UUID, request_snapshot: dict[str, Any], gra
         "aoi_wkt": request_snapshot["aoi_wkt"],
         "start_date": request_snapshot["start_date"],
         "end_date": request_snapshot["end_date"],
-        "event_date": request_snapshot["event_date"],
+        "analysis_mode": request_snapshot["analysis_mode"],
+        "event_date": request_snapshot.get("event_date") or "",
         "maturity": request_snapshot["maturity"],
         "main_band_polarization": request_snapshot.get("main_band_polarization") or "",
         "flight_direction": request_snapshot.get("flight_direction") or "",
@@ -413,18 +421,21 @@ def create_river_shift_job(payload: CreateRiverShiftJobRequest, user: dict = Dep
     # Enforce this at the API boundary after discovery, not inside the
     # catalogue helper, so every dispatch path and the contract tests exercise
     # the same no-job-before-valid-event-window rule.
-    event_key = payload.event_date.isoformat()
-    pre_event_dates = [value for value in valid_dates if value < event_key]
-    post_event_dates = [value for value in valid_dates if value > event_key]
-    if not pre_event_dates or len(post_event_dates) < 3:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "The requested event date is not bracketed by enough distinct NISAR acquisitions. "
-                "RiverShift needs at least one comparable acquisition strictly before the event date "
-                "and three strictly after it; same-calendar-day acquisitions are not assumed to be post-event."
-            ),
-        )
+    if payload.analysis_mode == "event_based":
+        # Event dates are user input only; never infer one from the acquisition sequence.
+        assert payload.event_date is not None
+        event_key = payload.event_date.isoformat()
+        pre_event_dates = [value for value in valid_dates if value < event_key]
+        post_event_dates = [value for value in valid_dates if value > event_key]
+        if not pre_event_dates or len(post_event_dates) < 3:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "The requested event date is not bracketed by enough distinct NISAR acquisitions. "
+                    "RiverShift needs at least one comparable acquisition strictly before the event date "
+                    "and three strictly after it; same-calendar-day acquisitions are not assumed to be post-event."
+                ),
+            )
     if not isinstance(granule_names, list) or not granule_names or len(granule_names) > 100:
         raise HTTPException(
             status_code=422,
@@ -442,7 +453,8 @@ def create_river_shift_job(payload: CreateRiverShiftJobRequest, user: dict = Dep
         "aoi_wkt": payload.aoi_wkt,
         "start_date": payload.start_date.isoformat(),
         "end_date": payload.end_date.isoformat(),
-        "event_date": payload.event_date.isoformat(),
+        "analysis_mode": payload.analysis_mode,
+        "event_date": payload.event_date.isoformat() if payload.event_date else None,
         "maturity": payload.maturity,
         "frequency": payload.frequency,
         "covariance_term": payload.covariance_term,

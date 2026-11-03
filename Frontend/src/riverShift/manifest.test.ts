@@ -27,6 +27,32 @@ describe('RiverShift result manifest', () => {
     expect(isRiverShiftReportVerified(result)).toBe(false);
   });
 
+  it('accepts a provisional general river change scan without event attribution', () => {
+    const result = parseRiverShiftReport({
+      schema_version: 1,
+      engine: 'RiverShift',
+      analysis_type: 'river_change_scan',
+      analysis_mode: 'general_scan',
+      source: { mission: 'NISAR', product: 'GCOV', maturity: 'PROVISIONAL' },
+      inputs: { comparison_basis: 'date-window comparison; no event date supplied or inferred' },
+      method: { comparison_semantics: 'observed-date water coverage comparison; not an event attribution' },
+      metrics: {
+        baseline_water_area_km2: 10,
+        comparison_one_water_area_km2: 12,
+        comparison_two_water_area_km2: 11,
+        newly_water_covered_area_km2: 2
+      },
+      quality: {
+        status: 'SCREENING_NOT_INDEPENDENTLY_VALIDATED',
+        release_status: 'PROVISIONAL',
+        warnings: ['No event date was supplied or inferred.']
+      }
+    });
+    expect(result.analysis_type).toBe('river_change_scan');
+    expect(result.metrics.comparison_one_water_area_km2).toBe(12);
+    expect(isRiverShiftReportVerified(result)).toBe(false);
+  });
+
   it('requires review evidence and complete provenance before a result can be displayed', () => {
     const result = parseRiverShiftReport({
       schema_version: 1,
