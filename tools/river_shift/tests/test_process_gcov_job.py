@@ -6,9 +6,12 @@ import stat
 import pytest
 from shapely.geometry import Polygon, mapping
 
+from drive_upload_adapter import DriveUploadError
+
 from process_gcov_job import (
     WorkerFailure,
     _configure_earthdata_credentials,
+    _diagnose_alternate_drive_parent,
     _product_date,
     _read_input,
     select_covering_granules,
@@ -277,3 +280,42 @@ def test_earthdata_credentials_require_a_token_or_complete_login(monkeypatch, tm
 
     with pytest.raises(WorkerFailure, match="EARTHDATA_TOKEN"):
         _configure_earthdata_credentials()
+
+def test_drive_parent_alias_diagnostic_checks_legacy_secret_without_switching(monkeypatch, capsys):
+    monkeypatch.setenv("GOOGLE_DRIVE_PARENT_FOLDER_ID", "canonical-parent-id")
+    monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "legacy-parent-id")
+    checked = []
+
+    class FakeDrive:
+        def verify_parent_folder(self, folder_id):
+            checked.append(folder_id)
+            if folder_id != "legacy-parent-id":
+                raise DriveUploadError("not accessible")
+
+    _diagnose_alternate_drive_parent(
+        FakeDrive(), "canonical-parent-id", "GOOGLE_DRIVE_PARENT_FOLDER_ID"
+    )
+
+    output = capsys.readouterr().out
+    assert checked == ["legacy-parent-id"]
+    assert '"stage": "drive_parent_folder_alias_diagnostic"' in output
+    assert '"status": "PASS"' in output
+    assert '"candidate_variable": "GOOGLE_DRIVE_FOLDER_ID"' in output
+    assert "legacy-parent-id" not in output
+    assert "canonical-parent-id" not in output
+
+
+def test_drive_parent_alias_diagnostic_skips_when_both_variables_resolve_to_same_id(monkeypatch, capsys):
+    monkeypatch.setenv("GOOGLE_DRIVE_PARENT_FOLDER_ID", "same-parent-id")
+    monkeypatch.setenv("GOOGLE_DRIVE_FOLDER_ID", "same-parent-id")
+
+    class FakeDrive:
+        def verify_parent_folder(self, _folder_id):
+            raise AssertionError("same folder should not be checked twice")
+
+    _diagnose_alternate_drive_parent(
+        FakeDrive(), "same-parent-id", "GOOGLE_DRIVE_PARENT_FOLDER_ID"
+    )
+
+    output = capsys.readouterr().out
+    assert "same_folder_id_as_selected" in output
