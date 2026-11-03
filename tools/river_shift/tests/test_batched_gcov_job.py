@@ -7,7 +7,14 @@ import warnings
 from pyproj import Transformer
 from shapely.geometry import box, mapping
 
-from batched_gcov_job import BATCH_SIZE, MAX_BATCHES, _write_batch_outputs
+from batched_gcov_job import (
+    BATCH_SIZE,
+    MAX_BATCHES,
+    _product_result_problem,
+    _retry_matrix,
+    _select_retry_rows,
+    _write_batch_outputs,
+)
 from process_gcov_job import write_web_preview
 
 
@@ -100,3 +107,79 @@ def test_preview_size_guard_keeps_largest_display_features_instead_of_failing(tm
     assert preview["river_shift_preview"]["features_omitted_for_size"] > 0
     assert 0 < len(preview["features"]) < len(features)
     assert len(json.loads(source.read_text(encoding="utf-8"))["features"]) == len(features)
+
+
+
+def test_retry_matrix_is_one_delayed_wave_with_max_parallel_controlled_by_workflow():
+    rows = [
+        {"granule_name": f"granule-{index:02d}", "acquisition_date": "2026-01-01"}
+        for index in range(1, 19)
+    ]
+    matrix = _retry_matrix(rows)
+    assert len(matrix["include"]) == 18
+    assert [row["product_index"] for row in matrix["include"]] == list(range(1, 19))
+    assert all(row["retry_attempt"] == 1 for row in matrix["include"])
+    assert all(row["batch_number"] == MAX_BATCHES + 1 for row in matrix["include"])
+    assert all(row["batch_count"] == 1 for row in matrix["include"])
+
+
+def test_failed_and_missing_products_are_queued_once_but_verified_passes_are_not(tmp_path):
+    import hashlib
+
+    prepared = {
+        "job_id": "job-1",
+        "request_fingerprint": "fingerprint-1",
+        "selected_product_names": ["good-product-0001", "failed-product-0002", "missing-product-0003"],
+        "date_by_name": {
+            "good-product-0001": "2026-01-01",
+            "failed-product-0002": "2026-01-02",
+            "missing-product-0003": "2026-01-03",
+        },
+    }
+    first_dir = tmp_path / "first"
+    good_dir = first_dir / "good-product-0001"
+    good_dir.mkdir(parents=True)
+    required = [
+        "good-product-0001.tif",
+        "good-product-0001.metadata.json",
+        "good-product-0001.download.json",
+        "good-product-0001.gcov_inventory.json",
+    ]
+    good_files = []
+    for filename in required:
+        payload = filename.encode("utf-8")
+        (good_dir / filename).write_bytes(payload)
+        good_files.append({"name": filename, "sha256": hashlib.sha256(payload).hexdigest()})
+    good = {
+        "status": "PASS",
+        "job_id": "job-1",
+        "request_fingerprint": "fingerprint-1",
+        "granule_name": "good-product-0001",
+        "acquisition_date": "2026-01-01",
+        "files": good_files,
+    }
+    failed = {
+        "status": "FAIL",
+        "job_id": "job-1",
+        "request_fingerprint": "fingerprint-1",
+        "granule_name": "failed-product-0002",
+        "acquisition_date": "2026-01-02",
+        "error_code": "DOWNLOAD_FAILED",
+        "files": [],
+    }
+    results = {
+        "good-product-0001": good,
+        "failed-product-0002": failed,
+    }
+
+    queued = _select_retry_rows(prepared, results, first_dir)
+    assert [row["granule_name"] for row in queued] == [
+        "failed-product-0002",
+        "missing-product-0003",
+    ]
+    assert _product_result_problem(
+        prepared,
+        {"granule_name": "good-product-0001", "acquisition_date": "2026-01-01"},
+        good,
+        first_dir,
+    ) is None
