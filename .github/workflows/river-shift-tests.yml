@@ -11,6 +11,7 @@ on:
     branches:
       - main
       - feat/river-shift-gcov-worker-20261103
+      - fix/river-shift-drive-uploader-logging-20261103
     paths:
       - "tools/river_shift/**"
       - ".github/workflows/river-shift-gcov-process.yml"
