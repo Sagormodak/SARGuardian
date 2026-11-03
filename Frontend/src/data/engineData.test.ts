@@ -13,7 +13,7 @@ describe('SARGuardian analysis entry points', () => {
 
   it('exposes River Shift as its own available engine entry', () => {
     const river = engines.find((engine) => engine.id === 'river-shift');
-    expect(river?.status).toBe('AVAILABLE');
+    expect(river?.status).toBe('SETUP REQUIRED');
     expect(river?.actionLabel).toBe('Open River Shift engine');
     expect(river?.description).toContain('NISAR GCOV');
   });
