@@ -368,7 +368,13 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       || (jobFrameJobId === riverJobId && jobFrameDate === currentJobFrameDate)) return undefined;
     const artifacts = riverJobArtifactManifest || [];
     const artifactIndex = artifacts.findIndex((item) => item.name === currentJobFrameGeoJSON && item.bytes <= 4_000_000);
-    if (artifactIndex < 0) return undefined;
+    if (artifactIndex < 0) {
+      setJobTimeSeriesPlaying(false);
+      setJobPreview((current) => current?.jobId === riverJobId
+        ? { ...current, error: `The private result manifest is missing the ${currentJobFrameGeoJSON} frame artifact.` }
+        : current);
+      return undefined;
+    }
     let cancelled = false;
     const loadFrame = async () => {
       try {
@@ -384,9 +390,12 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
         const data = parseRiverShiftGeoJSON(JSON.parse(new TextDecoder().decode(bytes)) as unknown);
         if (!cancelled) setJobFrame({ jobId: riverJobId, date: currentJobFrameDate, data });
       } catch (error) {
-        if (!cancelled) setJobPreview((current) => current?.jobId === riverJobId
-          ? { ...current, error: error instanceof Error ? error.message : 'Could not load this observed-date preview.' }
-          : current);
+        if (!cancelled) {
+          setJobTimeSeriesPlaying(false);
+          setJobPreview((current) => current?.jobId === riverJobId
+            ? { ...current, error: error instanceof Error ? error.message : 'Could not load this observed-date preview.' }
+            : current);
+        }
       }
     };
     void loadFrame();
@@ -678,11 +687,23 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
 
   useEffect(() => {
     if (!jobTimeSeriesPlaying || jobTimeSeriesFrames.length < 2) return;
-    const timer = window.setInterval(() => {
+    // Job frames are fetched from private storage on demand. Do not advance
+    // until the current frame has passed SHA-256 verification and is visible.
+    if (
+      !currentJobFrameMetadata
+      || !currentJobFrame
+      || currentJobFrame.date !== currentJobFrameMetadata.date
+    ) return;
+    const timer = window.setTimeout(() => {
       setJobTimeSeriesIndex((index) => (index + 1) % jobTimeSeriesFrames.length);
     }, 1800);
-    return () => window.clearInterval(timer);
-  }, [jobTimeSeriesPlaying, jobTimeSeriesFrames.length]);
+    return () => window.clearTimeout(timer);
+  }, [
+    jobTimeSeriesPlaying,
+    jobTimeSeriesFrames.length,
+    currentJobFrameMetadata?.date,
+    currentJobFrame?.date,
+  ]);
 
   const resultType = useMemo(() => report ? report.analysis_type.replace(/_/g, ' ') : 'No result imported', [report]);
 
