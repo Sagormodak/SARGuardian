@@ -142,16 +142,26 @@ def select_date_window(
     if len(set(parsed_dates)) != len(parsed_dates):
         raise WorkerFailure("DUPLICATE_CATALOGUE_DATE", "The footprint audit contains duplicate acquisition dates.")
 
-    # Do not label a pre-event scene as the flood observation. The event-proximal
-    # scene is the first actual NISAR acquisition on/after the user-supplied date.
+    # A date-only event record cannot order an acquisition on that same
+    # calendar date. Keep it in the discrete series, but do not treat it as
+    # either a confirmed pre-event or post-event observation.
+    before_index = next(
+        (index for index in range(len(parsed_dates) - 1, -1, -1) if parsed_dates[index] < event_date),
+        None,
+    )
     event_index = next((index for index, observed in enumerate(parsed_dates) if observed > event_date), None)
-    if event_index is None or event_index < 1 or event_index + 2 >= len(dates):
+    if before_index is None or event_index is None or event_index + 2 >= len(dates):
         raise WorkerFailure(
             "EVENT_WINDOW_NOT_BRACKETED",
             "Need one qualifying acquisition strictly before the event date and three strictly after it (event-proximal plus two later observations).",
         )
 
-    quartet = dates[event_index - 1:event_index + 3]
+    quartet = [
+        dates[before_index],
+        dates[event_index],
+        dates[event_index + 1],
+        dates[event_index + 2],
+    ]
     anchors = set(quartet)
     selected = set(anchors)
     while len(selected) < min(maximum_dates, len(dates)):
