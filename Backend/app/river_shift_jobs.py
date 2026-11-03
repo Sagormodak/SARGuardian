@@ -293,6 +293,22 @@ def create_river_shift_job(payload: CreateRiverShiftJobRequest, user: dict = Dep
     except Exception:
         raise HTTPException(status_code=502, detail="NASA CMR discovery failed. No RiverShift processing job was dispatched.") from None
 
+    unique_dates = manifest.get("unique_dates") if isinstance(manifest, dict) else None
+    valid_dates = sorted({
+        value for value in unique_dates
+        if isinstance(value, str) and re.fullmatch(r"\\d{4}-\\d{2}-\\d{2}", value)
+    }) if isinstance(unique_dates, list) else []
+    if len(valid_dates) < 4:
+        raise HTTPException(
+            status_code=422,
+            detail="RiverShift processing requires at least four distinct catalogue acquisition dates for the requested AOI and window.",
+        )
+    if not isinstance(granule_names, list) or not granule_names or len(granule_names) > 100:
+        raise HTTPException(
+            status_code=422,
+            detail="The exact GCOV granule selection is empty or exceeds the 100-granule worker limit.",
+        )
+
     fingerprint = request_fingerprint(request_snapshot, manifest)
     job_id = uuid4()
     record = {
