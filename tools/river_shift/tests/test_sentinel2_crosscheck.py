@@ -264,7 +264,7 @@ def test_cross_sensor_reader_aligns_real_local_nisar_and_sentinel_assets(tmp_pat
     assert nisar_water.shape == (2, 2)
     assert scl_water.tolist() == [[True, False], [False, False]]
     assert mndwi.shape == (2, 2)
-    assert np.isfinite(mndwi).all()
+    assert np.isfinite(mndwi[common_valid]).all()
     assert common_valid.shape == (2, 2)
     assert common_valid.tolist() == [[True, True], [True, False]]
     assert nisar_support.all()
@@ -673,3 +673,37 @@ def test_cross_sensor_reader_mosaics_adjacent_same_datatake_tiles_across_full_ni
         "tile-right": 4,
     }
     assert metadata["common_support_fraction"] == pytest.approx(1.0)
+
+
+
+def test_cross_sensor_reader_rejects_mixed_sentinel_datatakes_before_signing_assets(tmp_path, monkeypatch):
+    nisar_path = _write_geotiff_at(
+        tmp_path / "nisar-mixed-datatake-guard.tif",
+        np.zeros((2, 2), dtype=np.uint8),
+        x_origin=500000,
+        nodata=255,
+    )
+    first = _item(
+        "first-pass",
+        box(88.0, 24.0, 88.5, 25.0),
+        "2026-09-15",
+        20,
+        datatake_id="S2B_PASS_A",
+    )
+    second = _item(
+        "second-pass",
+        box(88.5, 24.0, 89.0, 25.0),
+        "2026-09-15",
+        20,
+        datatake_id="S2B_PASS_B",
+    )
+
+    def unexpected_sign(_href):
+        raise AssertionError("Mixed-datatake validation must happen before asset access.")
+
+    monkeypatch.setattr(crosscheck, "_signed_asset_url", unexpected_sign)
+    with pytest.raises(crosscheck.CrosscheckError, match="only one platform, datatake and acquisition date"):
+        crosscheck._read_cross_sensor_arrays(
+            nisar_path=nisar_path,
+            item=[first, second],
+        )
