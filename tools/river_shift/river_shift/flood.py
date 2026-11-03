@@ -38,7 +38,7 @@ def run_flood_analysis(
     polarization_term: str = "HHHH",
     sensitivity_delta_db: float = 2.0,
 ) -> dict[str, Any]:
-    """Run three-date flood-water expansion screening on one co-registered GCOV layer."""
+    """Screen water expansion using one baseline, event-proximal and later GCOV acquisition."""
     arrays: dict[str, np.ndarray] = {}
     valids: dict[str, np.ndarray] = {}
     profiles: dict[str, dict[str, Any]] = {}
@@ -105,11 +105,11 @@ def run_flood_analysis(
         permanent_excluded = True
 
     baseline_area = float(water["before"][valid_common].sum() * pixel_area_m2 / 1_000_000)
-    peak_area = float(water["during"][valid_common].sum() * pixel_area_m2 / 1_000_000)
+    event_proximal_area = float(water["during"][valid_common].sum() * pixel_area_m2 / 1_000_000)
     post_area = float(water["after"][valid_common].sum() * pixel_area_m2 / 1_000_000)
     new_area = float(new_water.sum() * pixel_area_m2 / 1_000_000)
     change_percent = (
-        ((peak_area - baseline_area) / baseline_area) * 100.0
+        ((event_proximal_area - baseline_area) / baseline_area) * 100.0
         if baseline_area > 0
         else None
     )
@@ -130,7 +130,7 @@ def run_flood_analysis(
         threshold_sensitivity.append({
             "threshold_db": candidate_threshold,
             "baseline_water_area_km2": float(scenario_water["before"][valid_common].sum() * pixel_area_m2 / 1_000_000),
-            "peak_water_area_km2": float(scenario_water["during"][valid_common].sum() * pixel_area_m2 / 1_000_000),
+            "event_proximal_water_area_km2": float(scenario_water["during"][valid_common].sum() * pixel_area_m2 / 1_000_000),
             "newly_water_covered_area_km2": float(scenario_new.sum() * pixel_area_m2 / 1_000_000),
         })
 
@@ -164,7 +164,7 @@ def run_flood_analysis(
         },
         "inputs": {
             "before": str(before_path),
-            "during": str(during_path),
+            "during": str(during_path),\n            "event_proximal_observation": dates.get("during") if dates else None,
             "after": str(after_path),
             "permanent_water_mask": str(permanent_water_path) if permanent_water_path else None,
             "dates": dates or {},
@@ -186,7 +186,7 @@ def run_flood_analysis(
         },
         "metrics": {
             "baseline_water_area_km2": baseline_area,
-            "peak_water_area_km2": peak_area,
+            "event_proximal_water_area_km2": event_proximal_area,
             "post_event_water_area_km2": post_area,
             "newly_water_covered_area_km2": new_area,
             "water_area_change_percent": safe_float(change_percent),
@@ -199,7 +199,7 @@ def run_flood_analysis(
             "valid_comparison_pixel_count": int(comparison_valid.sum()),
             "permanent_water_filter_applied": permanent_excluded,
             "warnings": [
-                "New water coverage relative to the pre-event observation is not automatically proof of floodplain inundation.",
+                "The event-proximal observation is the first qualifying NISAR acquisition on or after the user-supplied event date; it is not a measured peak-stage observation.",\n            "New water coverage relative to the pre-event observation is not automatically proof of floodplain inundation.",
                 "Use comparable orbit geometry, acquisition mode, frequency, polarization, maturity and hydrological conditions.",
                 "Low-backscatter screening may miss inundated vegetation because double-bounce scattering can be bright.",
                 "Validate the water mask against independent reference data before reporting accuracy or impact claims.",
