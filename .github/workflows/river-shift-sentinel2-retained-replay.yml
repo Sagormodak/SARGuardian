@@ -104,7 +104,7 @@ jobs:
 
       - name: Publish a privacy-safe summary
         if: always()
-        shell: micromamba-shell {0}
+        shell: bash
         env:
           SUMMARY_REPORT: replay-output/sentinel2-cross-sensor/sentinel2_cross_sensor_agreement.json
           REPLAY_MANIFEST: replay-output/cross_sensor_replay_manifest.json
