@@ -32,6 +32,38 @@ RESUMABLE_THRESHOLD_BYTES = 5 * 1024 * 1024
 RESUMABLE_CHUNK_BYTES = 8 * 1024 * 1024
 MAX_RETRY_ATTEMPTS = 5
 RETRYABLE_HTTP_STATUSES = {408, 425, 429, 500, 502, 503, 504}
+EXPECTED_DRIVE_ACCOUNT = "sarguardian.org@gmail.com"
+
+
+def _log_drive_stage(stage: str, status: str, **details: Any) -> None:
+    """Emit structured, secret-safe diagnostics for each Drive operation."""
+    payload = {"stage": stage, "status": status, **details}
+    print("RIVERSHIFT_DRIVE_STAGE " + json.dumps(payload, sort_keys=True, default=str), flush=True)
+
+
+def _run_drive_stage(stage: str, operation: Any, **details: Any) -> Any:
+    started = time.monotonic()
+    _log_drive_stage(stage, "START", **details)
+    try:
+        result = operation()
+    except Exception as exc:
+        _log_drive_stage(
+            stage,
+            "FAIL",
+            elapsed_seconds=round(time.monotonic() - started, 3),
+            error_type=type(exc).__name__,
+            error=str(exc),
+            **details,
+        )
+        raise
+    _log_drive_stage(
+        stage,
+        "PASS",
+        elapsed_seconds=round(time.monotonic() - started, 3),
+        **details,
+    )
+    return result
+
 
 def _retry_delay(attempt: int, retry_after: str | None = None) -> float:
     if retry_after:
@@ -72,32 +104,70 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _parse_oauth_client(raw_client_json: str) -> tuple[str, str, str, str]:
+    """Match the working uploader: installed, web, or root-level OAuth JSON."""
+    try:
+        document = json.loads(raw_client_json)
+    except json.JSONDecodeError:
+        raise DriveUploadError("Google Drive OAuth client JSON is invalid.") from None
+    if not isinstance(document, dict):
+        raise DriveUploadError("Google Drive OAuth client JSON is invalid.")
+    client = document.get("installed") or document.get("web") or document
+    if not isinstance(client, dict):
+        raise DriveUploadError("Google Drive OAuth client JSON is invalid.")
+    client_id = client.get("client_id")
+    client_secret = client.get("client_secret")
+    token_uri = client.get("token_uri") or "https://oauth2.googleapis.com/token"
+    if not isinstance(client_id, str) or not client_id.strip():
+        raise DriveUploadError("Google Drive OAuth client ID is missing.")
+    if not isinstance(client_secret, str) or not client_secret.strip():
+        raise DriveUploadError("Google Drive OAuth client secret is missing.")
+    if not isinstance(token_uri, str) or token_uri not in GOOGLE_TOKEN_URIS:
+        raise DriveUploadError("Google Drive OAuth client uses an unsupported token endpoint.")
+    credential_format = "installed" if isinstance(document.get("installed"), dict) else (
+        "web" if isinstance(document.get("web"), dict) else "root"
+    )
+    return client_id, client_secret, token_uri, credential_format
+
+
+def _parse_refresh_token(raw_secret: str) -> tuple[str, str]:
+    """Match the working uploader: bare refresh token or token.json input."""
+    try:
+        parsed = json.loads(raw_secret)
+    except json.JSONDecodeError:
+        token = raw_secret
+        token_format = "bare"
+    else:
+        if isinstance(parsed, dict):
+            token = parsed.get("refresh_token")
+            token_format = "token_json"
+        elif isinstance(parsed, str):
+            token = parsed
+            token_format = "json_string"
+        else:
+            token = None
+            token_format = "unsupported"
+    if not isinstance(token, str) or not token.strip():
+        raise DriveUploadError("Google Drive refresh token is missing or has an unsupported format.")
+    return token.strip(), token_format
+
+
 def load_drive_config(environ: dict[str, str] | None = None) -> DriveConfig:
     values = environ if environ is not None else os.environ
     raw_client = values.get("GOOGLE_DRIVE_OAUTH_CLIENT_JSON", "").strip()
-    refresh_token = values.get("GOOGLE_DRIVE_REFRESH_TOKEN", "").strip()
+    raw_refresh_token = values.get("GOOGLE_DRIVE_REFRESH_TOKEN", "").strip()
+    # Match the established uploader's canonical variable first. The workflow
+    # continues to provide the alternate name as a backwards-compatible alias.
     parent_folder_id = (
-        values.get("GOOGLE_DRIVE_FOLDER_ID", "").strip()
-        or values.get("GOOGLE_DRIVE_PARENT_FOLDER_ID", "").strip()
+        values.get("GOOGLE_DRIVE_PARENT_FOLDER_ID", "").strip()
+        or values.get("GOOGLE_DRIVE_FOLDER_ID", "").strip()
     )
-    if not raw_client or not refresh_token or not parent_folder_id:
-        raise DriveUploadError("Google Drive result storage is not fully configured; check GOOGLE_DRIVE_OAUTH_CLIENT_JSON, GOOGLE_DRIVE_REFRESH_TOKEN and GOOGLE_DRIVE_FOLDER_ID or GOOGLE_DRIVE_PARENT_FOLDER_ID.")
+    if not raw_client or not raw_refresh_token or not parent_folder_id:
+        raise DriveUploadError("Google Drive result storage is not fully configured; check GOOGLE_DRIVE_OAUTH_CLIENT_JSON, GOOGLE_DRIVE_REFRESH_TOKEN and GOOGLE_DRIVE_PARENT_FOLDER_ID or GOOGLE_DRIVE_FOLDER_ID.")
     if not FOLDER_ID_PATTERN.fullmatch(parent_folder_id):
         raise DriveUploadError("Configured Google Drive folder identifier is invalid.")
-    try:
-        parsed = json.loads(raw_client)
-    except json.JSONDecodeError as exc:
-        raise DriveUploadError("Google Drive OAuth client JSON is invalid.") from exc
-    client = (parsed.get("web") or parsed.get("installed")) if isinstance(parsed, dict) else None
-    if not isinstance(client, dict):
-        raise DriveUploadError("Google Drive OAuth client JSON must contain web or installed credentials.")
-    client_id = client.get("client_id")
-    client_secret = client.get("client_secret")
-    token_uri = client.get("token_uri")
-    if not all(isinstance(value, str) and value.strip() for value in (client_id, client_secret, token_uri)):
-        raise DriveUploadError("Google Drive OAuth client JSON is incomplete.")
-    if token_uri not in GOOGLE_TOKEN_URIS:
-        raise DriveUploadError("Google Drive OAuth client uses an unsupported token endpoint.")
+    client_id, client_secret, token_uri, _client_format = _parse_oauth_client(raw_client)
+    refresh_token, _token_format = _parse_refresh_token(raw_refresh_token)
     return DriveConfig(client_id, client_secret, token_uri, refresh_token, parent_folder_id)
 
 
@@ -108,21 +178,57 @@ class DriveClient:
         self.access_token = self._refresh_access_token()
 
     def _refresh_access_token(self) -> str:
-        try:
-            response = self.session.post(
-                self.config.token_uri,
-                data={
-                    "client_id": self.config.client_id,
-                    "client_secret": self.config.client_secret,
-                    "refresh_token": self.config.refresh_token,
-                    "grant_type": "refresh_token",
-                },
-                timeout=30,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except (requests.RequestException, ValueError) as exc:
-            raise DriveUploadError("Could not authenticate to Google Drive result storage.") from exc
+        payload: Any = None
+        for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
+            _log_drive_stage("oauth_token_refresh_attempt", "START", attempt=attempt, max_attempts=MAX_RETRY_ATTEMPTS)
+            try:
+                response = self.session.post(
+                    self.config.token_uri,
+                    data={
+                        "client_id": self.config.client_id,
+                        "client_secret": self.config.client_secret,
+                        "refresh_token": self.config.refresh_token,
+                        "grant_type": "refresh_token",
+                    },
+                    timeout=30,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                _log_drive_stage("oauth_token_refresh_attempt", "PASS", attempt=attempt)
+                break
+            except requests.HTTPError as exc:
+                failed_response = getattr(exc, "response", None)
+                status = getattr(failed_response, "status_code", None)
+                oauth_error = None
+                if failed_response is not None:
+                    try:
+                        error_payload = failed_response.json()
+                    except (ValueError, AttributeError):
+                        error_payload = {}
+                    if isinstance(error_payload, dict):
+                        candidate = error_payload.get("error")
+                        if isinstance(candidate, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", candidate):
+                            oauth_error = candidate
+                if status in RETRYABLE_HTTP_STATUSES and attempt < MAX_RETRY_ATTEMPTS:
+                    _log_drive_stage("oauth_token_refresh_attempt", "RETRY", attempt=attempt, http_status=status)
+                    retry_after = getattr(failed_response, "headers", {}).get("Retry-After")
+                    time.sleep(_retry_delay(attempt, retry_after))
+                    continue
+                detail = f"HTTP {status}" if status else "HTTP status unavailable"
+                if oauth_error:
+                    detail += f"; oauth_error={oauth_error}"
+                _log_drive_stage("oauth_token_refresh_attempt", "FAIL", attempt=attempt, diagnostic=detail)
+                raise DriveUploadError(f"Google Drive OAuth token refresh failed ({detail}).") from None
+            except ValueError:
+                _log_drive_stage("oauth_token_refresh_attempt", "FAIL", attempt=attempt, diagnostic="invalid_json")
+                raise DriveUploadError("Google Drive OAuth token endpoint returned invalid JSON.") from None
+            except requests.RequestException as exc:
+                if attempt < MAX_RETRY_ATTEMPTS:
+                    _log_drive_stage("oauth_token_refresh_attempt", "RETRY", attempt=attempt, error_type=type(exc).__name__)
+                    time.sleep(_retry_delay(attempt))
+                    continue
+                _log_drive_stage("oauth_token_refresh_attempt", "FAIL", attempt=attempt, diagnostic="network_or_timeout")
+                raise DriveUploadError("Google Drive OAuth token refresh failed (network or timeout).") from None
         token = payload.get("access_token") if isinstance(payload, dict) else None
         if not isinstance(token, str) or not token:
             raise DriveUploadError("Google Drive did not return an access token.")
@@ -131,13 +237,48 @@ class DriveClient:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.access_token}"}
 
+    def verify_authenticated_account(self) -> None:
+        payload = self._json(
+            "GET",
+            f"{DRIVE_API}/about",
+            params={"fields": "user(emailAddress)"},
+        )
+        user = payload.get("user")
+        email = user.get("emailAddress") if isinstance(user, dict) else None
+        if not isinstance(email, str) or email.lower() != EXPECTED_DRIVE_ACCOUNT:
+            raise DriveUploadError("Google Drive authenticated account does not match the configured SARGuardian storage account.")
+
+    def verify_parent_folder(self, folder_id: str) -> None:
+        payload = self._json(
+            "GET",
+            f"{DRIVE_API}/files/{quote(folder_id, safe='')}",
+            params={"fields": "id,mimeType"},
+        )
+        if payload.get("id") != folder_id or payload.get("mimeType") != FOLDER_MIME_TYPE:
+            raise DriveUploadError("Configured Google Drive parent identifier is not an accessible folder.")
+
     def _json(self, method: str, url: str, **kwargs: Any) -> dict[str, Any]:
+        # Shared Drive-compatible flags are harmless for My Drive and required
+        # when the configured parent folder belongs to a Shared Drive.
+        params = dict(kwargs.pop("params", {}) or {})
+        normalized_url = url.split("?", 1)[0]
+        if normalized_url.startswith(DRIVE_API + "/files"):
+            params.setdefault("supportsAllDrives", "true")
+            if method.upper() == "GET" and normalized_url == DRIVE_API + "/files":
+                params.setdefault("includeItemsFromAllDrives", "true")
+                params.setdefault("spaces", "drive")
+        if params:
+            kwargs["params"] = params
         try:
             response = self.session.request(method, url, headers=self._headers(), timeout=60, **kwargs)
             response.raise_for_status()
             payload = response.json() if response.content else {}
+        except requests.HTTPError as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            detail = f" (HTTP {status})" if status else ""
+            raise DriveUploadError(f"Google Drive result storage request failed{detail}.") from exc
         except (requests.RequestException, ValueError) as exc:
-            raise DriveUploadError("Google Drive result storage request failed.") from exc
+            raise DriveUploadError("Google Drive result storage request failed (network or invalid response).") from exc
         if not isinstance(payload, dict):
             raise DriveUploadError("Google Drive returned an invalid result-storage response.")
         return payload
@@ -249,7 +390,7 @@ class DriveClient:
                     method,
                     url,
                     headers=self._headers(),
-                    params={"uploadType": "multipart", "fields": "id,name,size,md5Checksum,mimeType"},
+                    params={"uploadType": "multipart", "supportsAllDrives": "true", "fields": "id,name,size,md5Checksum,mimeType"},
                     files={
                         "metadata": (None, json.dumps(metadata), "application/json; charset=UTF-8"),
                         "file": (path.name, stream, "application/octet-stream"),
@@ -325,7 +466,7 @@ class DriveClient:
                     "X-Upload-Content-Type": "application/octet-stream",
                     "X-Upload-Content-Length": str(total),
                 },
-                params={"uploadType": "resumable", "fields": "id,name,size,md5Checksum,mimeType"},
+                params={"uploadType": "resumable", "supportsAllDrives": "true", "fields": "id,name,size,md5Checksum,mimeType"},
                 json=metadata,
                 timeout=60,
             )
@@ -530,26 +671,65 @@ def _validated_result_files(work_dir: Path) -> tuple[dict[str, Any], list[Path]]
 
 
 def upload_validated_results(work_dir: Path, *, config: DriveConfig | None = None, session: Any | None = None) -> dict[str, Any]:
-    manifest, files = _validated_result_files(work_dir)
+    manifest, files = _run_drive_stage(
+        "result_manifest_validation",
+        lambda: _validated_result_files(work_dir),
+    )
     job_id = manifest.get("job_id")
     if not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-fA-F-]{36}", job_id):
         raise DriveUploadError("Result manifest has an invalid job identifier.")
-    client = DriveClient(config or load_drive_config(), session=session)
-    client.require_private_folder(client.config.parent_folder_id)
-    job_folder = client.find_or_create_folder(job_id, client.config.parent_folder_id)
-    client.require_private_folder(job_folder)
-    outputs_folder = client.find_or_create_folder("outputs", job_folder)
+    drive_config = _run_drive_stage(
+        "credential_configuration",
+        lambda: config or load_drive_config(),
+    )
+    client = _run_drive_stage(
+        "oauth_token_refresh",
+        lambda: DriveClient(drive_config, session=session),
+    )
+    _run_drive_stage("authenticated_account_verification", client.verify_authenticated_account)
+    _run_drive_stage(
+        "parent_folder_access_verification",
+        lambda: client.verify_parent_folder(client.config.parent_folder_id),
+    )
+    _run_drive_stage(
+        "parent_folder_privacy_verification",
+        lambda: client.require_private_folder(client.config.parent_folder_id),
+    )
+    job_folder = _run_drive_stage(
+        "job_folder_find_or_create",
+        lambda: client.find_or_create_folder(job_id, client.config.parent_folder_id),
+    )
+    _run_drive_stage(
+        "job_folder_privacy_verification",
+        lambda: client.require_private_folder(job_folder),
+    )
+    outputs_folder = _run_drive_stage(
+        "outputs_folder_find_or_create",
+        lambda: client.find_or_create_folder("outputs", job_folder),
+    )
     root = work_dir.resolve()
     receipts = []
     output_by_path = {str(item.get("path")): item for item in manifest.get("validated_outputs", []) if isinstance(item, dict)}
-    for path in files:
+    _log_drive_stage("result_upload_plan", "PASS", file_count=len(files))
+    for index, path in enumerate(files, start=1):
         parent = job_folder if path.name == "result-manifest.json" else outputs_folder
         if path.name != "result-manifest.json":
             relative_parent = path.relative_to(root / "outputs").parent
             for part in relative_parent.parts:
-                parent = client.find_or_create_folder(part, parent)
-        receipt = client.upload_file(path, parent)
+                parent = _run_drive_stage(
+                    "output_subfolder_find_or_create",
+                    lambda part=part, parent=parent: client.find_or_create_folder(part, parent),
+                    folder_level=part,
+                )
         relative = str(path.relative_to(root)).replace("\\", "/")
+        receipt = _run_drive_stage(
+            "result_file_upload_and_remote_checksum",
+            lambda path=path, parent=parent: client.upload_file(path, parent),
+            file_index=index,
+            file_count=len(files),
+            file_name=relative,
+            file_bytes=path.stat().st_size,
+        )
         receipt["path"] = relative
         receipts.append(receipt)
         if relative in output_by_path:
@@ -559,13 +739,29 @@ def upload_validated_results(work_dir: Path, *, config: DriveConfig | None = Non
                                         "job_folder_id": job_folder, "receipts": receipts,
                                         "retained_bytes": sum(item["bytes"] for item in receipts)}
     manifest_path = root / "result-manifest.json"
-    # The manifest stored remotely is refreshed once more below. Its own hash is
-    # intentionally not a recursive part of the inventory.
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-    manifest_receipt = client.upload_file(manifest_path, job_folder)
+    _run_drive_stage(
+        "local_result_manifest_refresh",
+        lambda: manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"),
+    )
+    manifest_receipt = _run_drive_stage(
+        "remote_result_manifest_first_verification",
+        lambda: client.upload_file(manifest_path, job_folder),
+    )
     manifest["storage_verification"]["manifest_receipt"] = manifest_receipt
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-    client.upload_file(manifest_path, job_folder)
+    _run_drive_stage(
+        "local_result_manifest_final_refresh",
+        lambda: manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"),
+    )
+    _run_drive_stage(
+        "remote_result_manifest_final_verification",
+        lambda: client.upload_file(manifest_path, job_folder),
+    )
+    _log_drive_stage(
+        "private_result_publication",
+        "PASS",
+        file_count=len(receipts) + 1,
+        retained_bytes=sum(item["bytes"] for item in receipts) + manifest_path.stat().st_size,
+    )
     return manifest["storage_verification"]
 
 

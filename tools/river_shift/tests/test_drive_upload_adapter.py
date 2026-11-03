@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import pytest
 import requests
 
-from drive_upload_adapter import DriveClient, DriveUploadError, _md5_file
+from drive_upload_adapter import (
+    DRIVE_API,
+    DriveClient,
+    DriveUploadError,
+    _md5_file,
+    _parse_oauth_client,
+    _parse_refresh_token,
+    _run_drive_stage,
+    load_drive_config,
+)
 
 
 def test_drive_md5_checksum_streams_file_and_matches_google_drive_checksum(tmp_path, monkeypatch):
@@ -26,11 +36,14 @@ class FakeResponse:
         self.status_code = status_code
         self.headers = headers or {}
         self.payload = payload or {}
+        self.content = b"{}"
         self.closed = False
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise requests.HTTPError(f"HTTP {self.status_code}")
+            error = requests.HTTPError(f"HTTP {self.status_code}")
+            error.response = self
+            raise error
 
     def json(self):
         return self.payload
@@ -195,3 +208,117 @@ def test_result_manifest_is_the_only_artifact_that_can_be_refreshed(tmp_path):
     assert receipt["reused"] is False
 
 
+
+@pytest.mark.parametrize(
+    ("raw_secret", "expected_token", "expected_format"),
+    [
+        ("bare-refresh-token", "bare-refresh-token", "bare"),
+        ('{"refresh_token":"json-refresh-token","token":"ignored"}', "json-refresh-token", "token_json"),
+        ('"quoted-refresh-token"', "quoted-refresh-token", "json_string"),
+    ],
+)
+def test_refresh_token_parser_matches_working_uploader(raw_secret, expected_token, expected_format):
+    assert _parse_refresh_token(raw_secret) == (expected_token, expected_format)
+
+
+@pytest.mark.parametrize(
+    ("document", "expected_format"),
+    [
+        ({"installed": {"client_id": "id", "client_secret": "secret"}}, "installed"),
+        ({"web": {"client_id": "id", "client_secret": "secret"}}, "web"),
+        ({"client_id": "id", "client_secret": "secret"}, "root"),
+    ],
+)
+def test_oauth_client_parser_accepts_working_uploader_formats(document, expected_format):
+    client_id, client_secret, token_uri, credential_format = _parse_oauth_client(json.dumps(document))
+    assert (client_id, client_secret) == ("id", "secret")
+    assert token_uri == "https://oauth2.googleapis.com/token"
+    assert credential_format == expected_format
+
+
+def test_load_drive_config_accepts_token_json_and_prefers_canonical_parent_folder():
+    config = load_drive_config({
+        "GOOGLE_DRIVE_OAUTH_CLIENT_JSON": json.dumps({
+            "client_id": "client-id",
+            "client_secret": "client-secret",
+        }),
+        "GOOGLE_DRIVE_REFRESH_TOKEN": json.dumps({"refresh_token": "refresh-token"}),
+        "GOOGLE_DRIVE_FOLDER_ID": "folder-alias-123",
+        "GOOGLE_DRIVE_PARENT_FOLDER_ID": "canonical-parent-123",
+    })
+    assert config.refresh_token == "refresh-token"
+    assert config.parent_folder_id == "canonical-parent-123"
+
+
+def test_drive_file_list_requests_include_shared_drive_compatibility_flags():
+    session = FakeSession(
+        request_response=FakeResponse(200, payload={"files": []}),
+        put_responses=[],
+    )
+    drive = _drive_for_upload(session)
+
+    drive._json("GET", f"{DRIVE_API}/files", params={"q": "trashed = false"})
+
+    params = session.request_calls[0][2]["params"]
+    assert params["supportsAllDrives"] == "true"
+    assert params["includeItemsFromAllDrives"] == "true"
+    assert params["spaces"] == "drive"
+
+
+def test_authenticated_account_verification_requires_established_storage_account():
+    drive = DriveClient.__new__(DriveClient)
+    drive._json = lambda *_args, **_kwargs: {"user": {"emailAddress": "sarguardian.org@gmail.com"}}
+    drive.verify_authenticated_account()
+
+    drive._json = lambda *_args, **_kwargs: {"user": {"emailAddress": "other@example.com"}}
+    with pytest.raises(DriveUploadError, match="account does not match"):
+        drive.verify_authenticated_account()
+
+
+def test_parent_folder_verification_requires_an_accessible_folder():
+    drive = DriveClient.__new__(DriveClient)
+    drive._json = lambda *_args, **_kwargs: {
+        "id": "parent-folder-123",
+        "mimeType": "application/vnd.google-apps.folder",
+    }
+    drive.verify_parent_folder("parent-folder-123")
+
+    drive._json = lambda *_args, **_kwargs: {"id": "parent-folder-123", "mimeType": "text/plain"}
+    with pytest.raises(DriveUploadError, match="not an accessible folder"):
+        drive.verify_parent_folder("parent-folder-123")
+
+
+def test_drive_stage_logger_emits_pass_and_failure_without_suppressing_errors(capsys):
+    assert _run_drive_stage("test_stage", lambda: "ok", safe_detail="present") == "ok"
+    with pytest.raises(RuntimeError, match="expected safe error"):
+        _run_drive_stage("failing_stage", lambda: (_ for _ in ()).throw(RuntimeError("expected safe error")))
+    output = capsys.readouterr().out
+    assert '"stage": "test_stage"' in output
+    assert '"status": "PASS"' in output
+    assert '"stage": "failing_stage"' in output
+    assert '"status": "FAIL"' in output
+    assert '"error": "expected safe error"' in output
+
+
+def test_oauth_refresh_failure_reports_safe_http_status_and_provider_error(capsys):
+    class OAuthSession:
+        def post(self, *_args, **_kwargs):
+            return FakeResponse(400, payload={"error": "invalid_grant", "error_description": "sensitive details are omitted"})
+
+    drive = DriveClient.__new__(DriveClient)
+    drive.session = OAuthSession()
+    drive.config = type("Config", (), {
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "client_id": "client-id",
+        "client_secret": "client-secret",
+        "refresh_token": "do-not-log-this-refresh-token",
+    })()
+
+    with pytest.raises(DriveUploadError, match="HTTP 400; oauth_error=invalid_grant"):
+        drive._refresh_access_token()
+
+    output = capsys.readouterr().out
+    assert "invalid_grant" in output
+    assert "do-not-log-this-refresh-token" not in output
+    assert "sensitive details are omitted" not in output
+    assert '"status": "FAIL"' in output

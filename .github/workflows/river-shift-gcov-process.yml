@@ -104,6 +104,7 @@ jobs:
       RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
       RIVERSHIFT_CALLBACK_URL: ${{ inputs.callback_url }}
       RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+      PYTHONUNBUFFERED: "1"
       EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
       EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
       EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
@@ -118,6 +119,36 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
+      - name: Log non-secret RiverShift dispatch context
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::RiverShift request context (sensitive values omitted)"
+          printf 'job_id=%s\n' "$RIVERSHIFT_JOB_ID"
+          printf 'date_window=%s..%s\n' "$RIVERSHIFT_START_DATE" "$RIVERSHIFT_END_DATE"
+          printf 'event_date=%s\n' "$RIVERSHIFT_EVENT_DATE"
+          printf 'maturity=%s frequency=%s covariance_term=%s\n' "$RIVERSHIFT_MATURITY" "$RIVERSHIFT_FREQUENCY" "$RIVERSHIFT_COVARIANCE_TERM"
+          printf 'frame_coverage=%s flight_direction=%s main_band_polarization=%s\n' "$RIVERSHIFT_FRAME_COVERAGE" "${RIVERSHIFT_FLIGHT_DIRECTION:-not_set}" "${RIVERSHIFT_MAIN_BAND_POLARIZATION:-not_set}"
+          python - <<'PY'
+          import json
+          import os
+          raw = os.environ.get("RIVERSHIFT_GRANULE_NAMES_JSON", "")
+          try:
+              names = json.loads(raw)
+              count = len(names) if isinstance(names, list) else "invalid"
+          except json.JSONDecodeError:
+              count = "invalid"
+          print(f"accepted_granule_count={count}")
+          for key in (
+              "EARTHDATA_TOKEN", "EARTHDATA_USERNAME", "EARTHDATA_PASSWORD",
+              "GOOGLE_DRIVE_OAUTH_CLIENT_JSON", "GOOGLE_DRIVE_REFRESH_TOKEN",
+              "GOOGLE_DRIVE_PARENT_FOLDER_ID", "GOOGLE_DRIVE_FOLDER_ID",
+              "RIVERSHIFT_CALLBACK_SECRET",
+          ):
+              print(f"{key}_present={'yes' if os.environ.get(key, '').strip() else 'no'}")
+          PY
+          echo "::endgroup::"
+
       - name: Install GDAL and geospatial dependencies
         uses: mamba-org/setup-micromamba@v3
         with:
@@ -128,10 +159,17 @@ jobs:
       - name: Verify runtime
         shell: micromamba-shell {0}
         run: |
+          set -euo pipefail
+          echo "::group::RiverShift runtime verification"
+          echo "RIVERSHIFT_RUNTIME_STAGE=python START"
           python --version
+          echo "RIVERSHIFT_RUNTIME_STAGE=gdal START"
           gdalinfo --version
+          echo "RIVERSHIFT_RUNTIME_STAGE=python-geospatial-imports START"
           python -c "import rasterio, shapely, pyproj, scipy; print('RIVERSHIFT_GEOSPATIAL_RUNTIME=PASS')"
+          echo "RIVERSHIFT_RUNTIME_STAGE=all PASS"
+          echo "::endgroup::"
 
       - name: Discover, download, process, retain private results and report callbacks
         shell: micromamba-shell {0}
-        run: python tools/river_shift/process_gcov_job.py
+        run: python -u tools/river_shift/process_gcov_job.py

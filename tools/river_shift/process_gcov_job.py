@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import traceback
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -48,6 +49,12 @@ class WorkerFailure(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+def _log_worker_stage(stage: str, status: str, **details: Any) -> None:
+    """Print structured diagnostics without exposing credentials, AOI WKT or callback secrets."""
+    payload = {"stage": stage, "status": status, **details}
+    print("RIVERSHIFT_WORKER_STAGE " + json.dumps(payload, sort_keys=True, default=str), flush=True)
 
 
 def build_source_granule_manifest(
@@ -389,6 +396,7 @@ class JobCallbacks:
     ) -> None:
         sequence = self.sequence + 1
         self.stage = stage
+        _log_worker_stage("signed_api_callback", "START", state=state, callback_stage=stage, sequence=sequence)
         payload = {
             "job_id": self.job_id,
             "request_fingerprint": self.fingerprint,
@@ -412,19 +420,52 @@ class JobCallbacks:
                 timeout=(15, 45),
             )
             response.raise_for_status()
-        except requests.RequestException:
+        except requests.RequestException as exc:
+            _log_worker_stage(
+                "signed_api_callback",
+                "FAIL",
+                state=state,
+                callback_stage=stage,
+                sequence=sequence,
+                error_type=type(exc).__name__,
+            )
             raise WorkerFailure("CALLBACK_REJECTED", "SARGuardian did not accept a signed processing update.") from None
         self.sequence = sequence
+        _log_worker_stage("signed_api_callback", "PASS", state=state, callback_stage=stage, sequence=sequence)
 
 
-def run_step(stage: str, command: list[str]) -> None:
+def run_step(stage: str, command: list[str], *, context: dict[str, Any] | None = None) -> None:
+    started = time.monotonic()
+    executable = Path(command[0]).name if command else "unknown"
+    script = Path(command[1]).name if len(command) > 1 else None
+    safe_context = context or {}
+    _log_worker_stage("processing_command", "START", processing_step=stage, executable=executable, script=script, **safe_context)
     try:
         subprocess.run(command, cwd=TOOLS, check=True)
     except subprocess.CalledProcessError as exc:
+        _log_worker_stage(
+            "processing_command",
+            "FAIL",
+            processing_step=stage,
+            executable=executable,
+            script=script,
+            exit_code=exc.returncode,
+            elapsed_seconds=round(time.monotonic() - started, 3),
+            **safe_context,
+        )
         raise WorkerFailure(
             "SCIENCE_STEP_FAILED",
             f"The {stage.replace('_', ' ')} step failed with exit code {exc.returncode}; inspect the processing run logs.",
         ) from None
+    _log_worker_stage(
+        "processing_command",
+        "PASS",
+        processing_step=stage,
+        executable=executable,
+        script=script,
+        elapsed_seconds=round(time.monotonic() - started, 3),
+        **safe_context,
+    )
 
 
 def _mosaic_date_rasters(paths: list[Path], destination: Path) -> Path:
@@ -750,12 +791,86 @@ def _configure_earthdata_credentials() -> None:
     os.chmod(netrc_path, 0o600)
 
 def _ensure_credentials() -> None:
-    _configure_earthdata_credentials()
+    _log_worker_stage("earthdata_credentials", "START")
     try:
-        drive = DriveClient(load_drive_config())
-        drive.require_private_folder(drive.config.parent_folder_id)
-    except DriveUploadError:
-        raise WorkerFailure("PRIVATE_STORAGE_UNAVAILABLE", "Private Google Drive result storage is not ready.") from None
+        _configure_earthdata_credentials()
+    except WorkerFailure as exc:
+        _log_worker_stage("earthdata_credentials", "FAIL", error_code=exc.code, error=str(exc))
+        raise
+    earthdata_mode = "bearer_token" if os.environ.get("EARTHDATA_TOKEN", "").strip() else "netrc"
+    _log_worker_stage("earthdata_credentials", "PASS", authentication_mode=earthdata_mode)
+
+    _log_worker_stage("drive_configuration", "START")
+    try:
+        config = load_drive_config()
+    except DriveUploadError as exc:
+        _log_worker_stage("drive_configuration", "FAIL", error=str(exc))
+        raise WorkerFailure(
+            "PRIVATE_STORAGE_CONFIGURATION_INVALID",
+            "Google Drive configuration could not be parsed; inspect the sanitized Drive stage log.",
+        ) from None
+    folder_source = (
+        "GOOGLE_DRIVE_PARENT_FOLDER_ID"
+        if os.environ.get("GOOGLE_DRIVE_PARENT_FOLDER_ID", "").strip()
+        else "GOOGLE_DRIVE_FOLDER_ID"
+    )
+    raw_token = os.environ.get("GOOGLE_DRIVE_REFRESH_TOKEN", "").strip()
+    try:
+        parsed_token = json.loads(raw_token)
+        token_format = "token_json" if isinstance(parsed_token, dict) else "json_string"
+    except json.JSONDecodeError:
+        token_format = "bare"
+    _log_worker_stage(
+        "drive_configuration",
+        "PASS",
+        refresh_token_format=token_format,
+        parent_folder_variable=folder_source,
+        oauth_client_json_present=bool(os.environ.get("GOOGLE_DRIVE_OAUTH_CLIENT_JSON", "").strip()),
+    )
+
+    _log_worker_stage("drive_oauth_refresh", "START")
+    try:
+        drive = DriveClient(config)
+    except DriveUploadError as exc:
+        _log_worker_stage("drive_oauth_refresh", "FAIL", error=str(exc))
+        raise WorkerFailure(
+            "PRIVATE_STORAGE_AUTHENTICATION_FAILED",
+            "Google Drive OAuth token refresh failed; inspect the sanitized Drive stage log.",
+        ) from None
+    _log_worker_stage("drive_oauth_refresh", "PASS")
+
+    _log_worker_stage("drive_account_verification", "START")
+    try:
+        drive.verify_authenticated_account()
+    except DriveUploadError as exc:
+        _log_worker_stage("drive_account_verification", "FAIL", error=str(exc))
+        raise WorkerFailure(
+            "PRIVATE_STORAGE_ACCOUNT_VERIFICATION_FAILED",
+            "The authenticated Google Drive account did not pass the SARGuardian account check.",
+        ) from None
+    _log_worker_stage("drive_account_verification", "PASS")
+
+    _log_worker_stage("drive_parent_folder_access", "START", folder_variable=folder_source)
+    try:
+        drive.verify_parent_folder(config.parent_folder_id)
+    except DriveUploadError as exc:
+        _log_worker_stage("drive_parent_folder_access", "FAIL", error=str(exc))
+        raise WorkerFailure(
+            "PRIVATE_STORAGE_PARENT_FOLDER_UNAVAILABLE",
+            "The configured Google Drive parent folder is not accessible or is not a folder.",
+        ) from None
+    _log_worker_stage("drive_parent_folder_access", "PASS")
+
+    _log_worker_stage("drive_parent_folder_privacy", "START")
+    try:
+        drive.require_private_folder(config.parent_folder_id)
+    except DriveUploadError as exc:
+        _log_worker_stage("drive_parent_folder_privacy", "FAIL", error=str(exc))
+        raise WorkerFailure(
+            "PRIVATE_STORAGE_FOLDER_NOT_PRIVATE",
+            "The configured Google Drive parent folder does not satisfy RiverShift private-storage policy.",
+        ) from None
+    _log_worker_stage("drive_parent_folder_privacy", "PASS")
 
 
 def _copy_result_files(source_dirs: list[tuple[str, Path]], output_root: Path) -> list[dict[str, str]]:
@@ -811,6 +926,18 @@ def _callback_artifacts(manifest: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    _log_worker_stage(
+        "job_request_summary",
+        "PASS",
+        job_id=request["job_id"],
+        start_date=request["start_date"].isoformat(),
+        end_date=request["end_date"].isoformat(),
+        event_date=request["event_date"].isoformat(),
+        maturity=request["maturity"],
+        frequency=request["frequency"],
+        covariance_term=request["term"],
+        requested_granule_count=len(request["granule_names"]),
+    )
     _ensure_credentials()
     work_dir = Path(os.environ.get("RUNNER_TEMP", str(ROOT / ".river-shift-runner"))) / f"river-shift-{request['job_id']}"
     if work_dir.exists():
@@ -838,7 +965,9 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
     returned = {row.get("granule_name") for row in catalogue_rows}
     if returned != submitted:
         missing = len(submitted - returned)
+        _log_worker_stage("exact_catalogue_match", "FAIL", submitted_count=len(submitted), returned_count=len(returned), missing_count=missing)
         raise WorkerFailure("CATALOGUE_CHANGED", f"NASA CMR no longer returns {missing} of the exact granules from the accepted request.")
+    _log_worker_stage("exact_catalogue_match", "PASS", submitted_count=len(submitted), returned_count=len(returned))
     manifest["products"] = catalogue_rows
     manifest["product_count"] = len(catalogue_rows)
     manifest["query"]["maturity"] = request["maturity"]
@@ -894,6 +1023,14 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
         "release_status": "PROVISIONAL",
     }
     selection_path.write_text(json.dumps(selection, indent=2), encoding="utf-8")
+    _log_worker_stage(
+        "observation_selection",
+        "PASS",
+        selected_date_count=len(dates),
+        selected_granule_count=len(set(selected_product_names)),
+        selected_dates=dates,
+        granules_per_date={observed_date: len(rows) for observed_date, rows in products_by_date.items()},
+    )
 
     callbacks.send("running", "exact_product_download")
     raw_dir = work_dir / "raw"
@@ -910,10 +1047,14 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
             run_step("exact-product download", [
                 sys.executable, "download_gcov_product.py", "--catalogue", str(catalogue_for_download),
                 "--granule-name", name, "--out-dir", str(raw_dir), "--read-timeout", "900",
-            ])
+            ], context={"granule_name": name, "acquisition_date": observed_date})
             product_path = raw_dir / f"{name}.h5"
             inventory_path = raw_dir / f"{name}.gcov_inventory.json"
-            run_step("NISAR HDF5 inspection", [sys.executable, "inspect_gcov_product.py", "--product", str(product_path), "--out", str(inventory_path)])
+            run_step(
+                "NISAR HDF5 inspection",
+                [sys.executable, "inspect_gcov_product.py", "--product", str(product_path), "--out", str(inventory_path)],
+                context={"granule_name": name, "acquisition_date": observed_date},
+            )
             inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
             available = {(item.get("frequency"), item.get("term")) for item in inventory.get("available_diagonal_terms", [])}
             if (request["frequency"], request["term"]) not in available:
@@ -923,7 +1064,7 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
                 sys.executable, "export_gcov_layer.py", "--product", str(product_path),
                 "--frequency", request["frequency"], "--term", request["term"],
                 "--maturity", request["maturity"], "--aoi-wkt", request["aoi_wkt"], "--out", str(raster_path),
-            ])
+            ], context={"granule_name": name, "acquisition_date": observed_date})
             exported.append(raster_path)
             # The exporter has already bound the HDF5 source checksum, download
             # receipt and native layer inventory into the COG sidecar. Retain
@@ -996,6 +1137,7 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
     ])
 
     callbacks.send("running", "private_result_publication")
+    _log_worker_stage("result_package_assembly", "START")
     output_root = work_dir / "outputs"
     inventory = []
     for label, directory in (("time-series", time_dir), ("flood", flood_dir), ("morphology", morphology_dir)):
@@ -1054,10 +1196,27 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
         ],
     }
     manifest_path = _build_manifest(work_dir, inventory, selection)
+    _log_worker_stage(
+        "result_package_assembly",
+        "PASS",
+        validated_output_count=len(inventory),
+        manifest_sha256=sha256_file(manifest_path),
+    )
     try:
         storage = upload_validated_results(work_dir)
-    except DriveUploadError:
-        raise WorkerFailure("PRIVATE_STORAGE_UNVERIFIED", "Private Google Drive storage did not verify every RiverShift result checksum.") from None
+    except DriveUploadError as exc:
+        _log_worker_stage("private_result_publication", "FAIL", error=str(exc))
+        raise WorkerFailure(
+            "PRIVATE_STORAGE_PUBLICATION_FAILED",
+            "Google Drive result publication failed; inspect the per-file Drive stage logs.",
+        ) from None
+    _log_worker_stage(
+        "private_result_publication",
+        "PASS",
+        storage_status=storage.get("status"),
+        receipt_count=len(storage.get("receipts", [])),
+        retained_bytes=storage.get("retained_bytes"),
+    )
     manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     if storage.get("status") != "PASS":
         raise WorkerFailure("PRIVATE_STORAGE_UNVERIFIED", "Google Drive did not return a successful remote checksum verification.")
@@ -1067,9 +1226,18 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
 
 def main() -> int:
     callbacks: JobCallbacks | None = None
+    started = time.monotonic()
+    _log_worker_stage("worker_startup", "START", python_version=sys.version.split()[0])
     try:
         # Validate the callback contract before doing any expensive satellite IO.
+        _log_worker_stage("request_validation", "START")
         request = _read_input()
+        _log_worker_stage(
+            "request_validation",
+            "PASS",
+            job_id=request["job_id"],
+            requested_granule_count=len(request["granule_names"]),
+        )
         callbacks = JobCallbacks(request["job_id"], request["fingerprint"], _required_env("RIVERSHIFT_CALLBACK_URL"))
         callbacks.send("running", "worker_started")
         summary, artifacts = run_job(request, callbacks)
@@ -1077,10 +1245,12 @@ def main() -> int:
         print("RIVERSHIFT_PROCESSING_STATUS=PASS", flush=True)
         print("RIVERSHIFT_RELEASE_STATUS=PROVISIONAL", flush=True)
         print(f"RIVERSHIFT_ARTIFACT_COUNT={len(artifacts)}", flush=True)
+        _log_worker_stage("worker_completion", "PASS", elapsed_seconds=round(time.monotonic() - started, 3), artifact_count=len(artifacts))
         return 0
     except WorkerFailure as exc:
         message = str(exc)[:500]
         print(f"RIVERSHIFT_PROCESSING_STATUS=FAIL code={exc.code} message={message}", file=sys.stderr, flush=True)
+        _log_worker_stage("worker_completion", "FAIL", error_code=exc.code, elapsed_seconds=round(time.monotonic() - started, 3))
         if callbacks:
             try:
                 callbacks.send("failed", callbacks.stage, error_code=exc.code, error_message=message)
@@ -1090,6 +1260,7 @@ def main() -> int:
     except Exception:
         message = "An unexpected RiverShift worker error occurred; inspect the processing run logs."
         print(f"RIVERSHIFT_PROCESSING_STATUS=FAIL type={type(sys.exc_info()[1]).__name__} message={message}", file=sys.stderr, flush=True)
+        _log_worker_stage("worker_completion", "FAIL", error_code="UNEXPECTED_WORKER_ERROR", error_type=type(sys.exc_info()[1]).__name__, elapsed_seconds=round(time.monotonic() - started, 3))
         traceback.print_exc(file=sys.stderr)
         if callbacks:
             try:
