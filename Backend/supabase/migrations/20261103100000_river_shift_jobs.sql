@@ -86,7 +86,8 @@ begin
     raise exception 'RiverShift callback sequence is invalid';
   end if;
 
-  if old.state in ('succeeded', 'failed', 'cancelled') and new.state <> old.state then
+  if old.state in ('succeeded', 'failed', 'cancelled')
+    and (to_jsonb(new) - 'updated_at') is distinct from (to_jsonb(old) - 'updated_at') then
     raise exception 'terminal RiverShift jobs are immutable';
   end if;
 
