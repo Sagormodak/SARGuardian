@@ -475,6 +475,8 @@ def _read_cross_sensor_arrays(
         for row in items
     ]
     try:
+        reference_item_id = str(signed_items[0]["item"].get("id") or "unknown-item")
+        raster_stage = f"opening reference B11 for Sentinel-2 item {reference_item_id}"
         with rasterio.open(signed_items[0]["assets"]["B11"]) as reference_b11:
             if reference_b11.crs is None:
                 raise CrosscheckError("Sentinel-2 B11 asset must have a CRS.")
@@ -531,6 +533,7 @@ def _read_cross_sensor_arrays(
             properties = row.get("properties") or {}
             item_id = str(row.get("id") or "")
             with ExitStack() as stack:
+                raster_stage = f"opening B11 for Sentinel-2 item {item_id}"
                 b11 = stack.enter_context(rasterio.open(record["assets"]["B11"]))
                 b11_nodata = b11.nodata if b11.nodata is not None else 0
                 b11_vrt = stack.enter_context(WarpedVRT(
@@ -543,10 +546,12 @@ def _read_cross_sensor_arrays(
                     src_nodata=b11_nodata,
                     nodata=0,
                 ))
+                raster_stage = f"reading aligned B11 for Sentinel-2 item {item_id}"
                 b11_array = b11_vrt.read(1, masked=True)
                 b11_values = np.asarray(b11_array.astype(np.float32).filled(np.nan), dtype=np.float32)
                 b11_valid = (~np.ma.getmaskarray(b11_array)) & np.isfinite(b11_values) & (b11_values > 0)
 
+                raster_stage = f"opening B03 for Sentinel-2 item {item_id}"
                 b03 = stack.enter_context(rasterio.open(record["assets"]["B03"]))
                 b03_nodata = b03.nodata if b03.nodata is not None else 0
                 b03_vrt = stack.enter_context(WarpedVRT(
@@ -559,10 +564,12 @@ def _read_cross_sensor_arrays(
                     src_nodata=b03_nodata,
                     nodata=0,
                 ))
+                raster_stage = f"reading aligned B03 for Sentinel-2 item {item_id}"
                 b03_array = b03_vrt.read(1, masked=True)
                 b03_values = np.asarray(b03_array.astype(np.float32).filled(np.nan), dtype=np.float32)
                 b03_valid = (~np.ma.getmaskarray(b03_array)) & np.isfinite(b03_values) & (b03_values > 0)
 
+                raster_stage = f"opening SCL for Sentinel-2 item {item_id}"
                 scl = stack.enter_context(rasterio.open(record["assets"]["SCL"]))
                 scl_nodata = scl.nodata if scl.nodata is not None else 0
                 scl_vrt = stack.enter_context(WarpedVRT(
@@ -575,6 +582,7 @@ def _read_cross_sensor_arrays(
                     src_nodata=scl_nodata,
                     nodata=0,
                 ))
+                raster_stage = f"reading aligned SCL for Sentinel-2 item {item_id}"
                 scl_values = scl_vrt.read(1).astype(np.uint8)
                 _scl_water, scl_valid = _scl_water_reference(scl_values)
 
@@ -586,6 +594,7 @@ def _read_cross_sensor_arrays(
                 mosaic_valid[take] = True
                 tile_valid_pixel_counts[item_id] = int(np.count_nonzero(take))
 
+        raster_stage = "reprojecting the NISAR mask onto the Sentinel-2 mosaic grid"
         nisar_on_s2 = np.full((height, width), 255, dtype=np.uint8)
         reproject(
             source=nisar_data,
@@ -614,6 +623,7 @@ def _read_cross_sensor_arrays(
             init_dest_nodata=True,
         )
         nisar_support = (nisar_valid_on_s2 == 1) & (nisar_on_s2 != 255)
+        raster_stage = "computing MNDWI on the clear Sentinel-2 mosaic"
         index, index_valid = _mndwi(mosaic_b03, mosaic_b11)
         common_valid = nisar_support & mosaic_valid & index_valid
         pixel_area = abs(target_transform.a * target_transform.e - target_transform.b * target_transform.d)
@@ -644,7 +654,9 @@ def _read_cross_sensor_arrays(
     except CrosscheckError:
         raise
     except (rasterio.errors.RasterioError, OSError, ValueError) as exc:
-        raise CrosscheckError(f"Could not read or align Sentinel-2 datatake mosaic: {type(exc).__name__}.") from None
+        raise CrosscheckError(
+            f"Could not complete Sentinel-2 mosaic stage ({raster_stage}): {type(exc).__name__}."
+        ) from None
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
