@@ -636,3 +636,40 @@ def test_river_shift_migration_enforces_one_active_job_per_owner() -> None:
     assert "where state in ('queued', 'dispatching', 'running')" in migration.lower()
     assert "to_jsonb(new) - 'updated_at'" in migration.lower()
     assert "terminal rivershift jobs are immutable" in migration.lower()
+
+def test_river_shift_artifact_download_logs_safe_drive_failure_diagnostics(monkeypatch, caplog) -> None:
+    store = RiverShiftStore()
+    api = configure(monkeypatch, store)
+    created = api.post("/api/river-shift/jobs", json=payload()).json()
+    job_id = created["id"]
+    store.rows[job_id].update({
+        "state": "succeeded",
+        "artifact_manifest": [{
+            "name": "river_change_candidates_preview.geojson",
+            "path": "outputs/map/river_change_candidates_preview.geojson",
+            "bytes": 12,
+            "sha256": "a" * 64,
+            "drive_file_id": "private-file-id-123",
+        }],
+    })
+
+    def fail_private_download(*_args, **_kwargs):
+        raise river_module.DriveUploadError(
+            "Could not retrieve the private result artifact."
+        ) from HTTPError(
+            "https://www.googleapis.com/drive/v3/files/private-file-id-123?alt=media",
+            403,
+            "Forbidden",
+            {},
+            BytesIO(b"body text must never enter the application log"),
+        )
+
+    monkeypatch.setattr(river_module, "download_private_result_to_path", fail_private_download)
+    with caplog.at_level("WARNING", logger=river_module.__name__):
+        response = api.get(f"/api/river-shift/jobs/{job_id}/artifacts/0")
+
+    assert response.status_code == 503
+    assert "upstream_http_status=403" in caplog.text
+    assert "artifact_name=river_change_candidates_preview.geojson" in caplog.text
+    assert "private-file-id-123" not in caplog.text
+    assert "body text must never enter" not in caplog.text
