@@ -51,7 +51,7 @@ jobs:
         run: |
           set -euo pipefail
           ruby -e 'require "yaml"; YAML.load_file(".github/workflows/river-shift-gcov-process.yml"); puts "RIVERSHIFT_WORKFLOW_YAML=PASS"'
-          grep -q 'run-name: RiverShift \\${{ inputs.job_id }}' .github/workflows/river-shift-gcov-process.yml
+          grep -Fq 'run-name: RiverShift ${{ inputs.job_id }}' .github/workflows/river-shift-gcov-process.yml
           grep -q 'RIVERSHIFT_CALLBACK_SECRET:' .github/workflows/river-shift-gcov-process.yml
           grep -q 'RIVERSHIFT_REQUEST_FINGERPRINT:' .github/workflows/river-shift-gcov-process.yml
           grep -q 'python tools/river_shift/process_gcov_job.py' .github/workflows/river-shift-gcov-process.yml
