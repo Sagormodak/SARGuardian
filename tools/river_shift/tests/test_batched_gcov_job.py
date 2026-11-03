@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import warnings
 
 from pyproj import Transformer
 from shapely.geometry import box, mapping
@@ -54,6 +55,7 @@ def test_batch_plan_is_sequential_barriers_of_at_most_15_products(tmp_path, monk
         assert len(matrix["include"]) == expected_count
         assert all(row["batch_number"] == index for row in matrix["include"])
         assert all(row["batch_count"] == 3 for row in matrix["include"])
+        assert all(row["total_products"] == 33 for row in matrix["include"])
 
     assert [row["product_index"] for row in json.loads(result["batch_1_matrix"])["include"]] == list(range(1, 16))
     assert [row["product_index"] for row in json.loads(result["batch_2_matrix"])["include"]] == list(range(16, 31))
@@ -81,14 +83,16 @@ def test_preview_size_guard_keeps_largest_display_features_instead_of_failing(tm
 
     project = Transformer.from_crs("EPSG:4326", "EPSG:32645", always_xy=True).transform
     unproject = Transformer.from_crs("EPSG:32645", "EPSG:4326", always_xy=True).transform
-    preview = write_web_preview(
-        source,
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*shapely.ops.transform.*", category=DeprecationWarning)
+        preview = write_web_preview(
+            source,
         destination,
         project,
         unproject,
         pixel_size_m=10.0,
-        max_bytes=18_000,
-    )
+            max_bytes=18_000,
+        )
 
     encoded = destination.read_bytes()
     assert len(encoded) <= 18_000
