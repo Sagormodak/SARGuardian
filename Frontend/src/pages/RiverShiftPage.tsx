@@ -618,7 +618,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       if (geometry) geometry.forEachLatLng((point) => bounds.extend(point));
     });
     if (!bounds.isEmpty()) map.fitBounds(bounds);
-  }, [mapReady, currentTimeSeriesFrame, verifiedGeoJSONFiles, jobPreview, currentJobFrame, riverJobId]);
+  }, [mapReady, currentTimeSeriesFrame, verifiedGeoJSONFiles, jobPreview, currentJobFrame, riverJobId, hasJobPreviewOverlay]);
 
   useEffect(() => {
     if (!timeSeriesPlaying || playbackFrames.length < 2) return;
