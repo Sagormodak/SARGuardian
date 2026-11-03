@@ -68,7 +68,8 @@ function formatDate(value?: string | null): string {
 function metricLabel(key: string): string {
   const names: Record<string, string> = {
     baseline_water_area_km2: 'Baseline water area',
-    event_proximal_water_area_km2: 'Event-proximal observed water area',\n    peak_water_area_km2: 'Legacy peak-water field (not confirmed peak stage)',
+    event_proximal_water_area_km2: 'Event-proximal observed water area',
+    peak_water_area_km2: 'Legacy peak-water field (not confirmed peak stage)',
     post_event_water_area_km2: 'Post-event water area',
     newly_water_covered_area_km2: 'New water coverage',
     water_area_change_percent: 'Water-area change',
