@@ -1,0 +1,163 @@
+import json
+
+import numpy as np
+import rasterio
+from rasterio.transform import from_origin
+
+from process_gcov_job import (
+    MAX_WEB_PREVIEW_BYTES,
+    create_web_previews,
+    sha256_file,
+    write_mask_web_preview,
+)
+
+
+def _write_mask(path, values):
+    height, width = values.shape
+    profile = {
+        "driver": "GTiff",
+        "height": height,
+        "width": width,
+        "count": 1,
+        "dtype": "uint8",
+        "crs": "EPSG:32645",
+        "transform": from_origin(500000, 2700000, 10, 10),
+        "nodata": 255,
+        "compress": "deflate",
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(path, "w", **profile) as destination:
+        destination.write(values.astype(np.uint8), 1)
+    return path
+
+
+def test_mask_preview_preserves_an_isolated_source_candidate_after_downsampling(tmp_path):
+    source = np.zeros((512, 512), dtype=np.uint8)
+    source[257, 251] = 1
+    source_path = _write_mask(tmp_path / "isolated_mask.tif", source)
+    original_digest = sha256_file(source_path)
+    preview_path = tmp_path / "isolated_preview.geojson"
+
+    preview = write_mask_web_preview(
+        source_path,
+        preview_path,
+        class_name="erosion",
+        max_bytes=50_000,
+        max_dimension=64,
+    )
+
+    assert len(preview["features"]) == 1
+    assert preview["river_shift_preview"]["preview_candidate_cells"] >= 1
+    assert preview["river_shift_preview"]["features_omitted_for_size"] == 0
+    assert preview["river_shift_preview"]["method"] == "average_occupancy_gt_zero_then_polygonize"
+    assert preview_path.stat().st_size <= 50_000
+    assert sha256_file(source_path) == original_digest
+    assert preview["features"][0]["properties"]["class"] == "erosion"
+
+
+def test_empty_mask_is_explicitly_distinguished_from_a_lost_preview(tmp_path):
+    source = np.zeros((128, 128), dtype=np.uint8)
+    source_path = _write_mask(tmp_path / "empty_mask.tif", source)
+
+    preview = write_mask_web_preview(
+        source_path,
+        tmp_path / "empty_preview.geojson",
+        class_name="deposition",
+        max_dimension=64,
+    )
+
+    assert preview["features"] == []
+    assert preview["river_shift_preview"]["feature_count"] == 0
+    assert "no candidate pixels" in preview["river_shift_preview"]["empty_reason"]
+
+
+def test_raster_first_job_previews_keep_each_change_class_and_each_observed_date(tmp_path):
+    morphology_dir = tmp_path / "morphology"
+    flood_dir = tmp_path / "flood"
+    time_dir = tmp_path / "time_series"
+    work_dir = tmp_path / "work"
+    morphology_dir.mkdir()
+    flood_dir.mkdir()
+    time_dir.mkdir()
+
+    erosion = np.zeros((160, 160), dtype=np.uint8)
+    erosion[12:35, 14:43] = 1
+    deposition = np.zeros((160, 160), dtype=np.uint8)
+    deposition[48:76, 55:91] = 1
+    new_water = np.zeros((160, 160), dtype=np.uint8)
+    new_water[103:145, 109:148] = 1
+    water_one = np.zeros((160, 160), dtype=np.uint8)
+    water_one[22:55, 80:120] = 1
+    water_two = np.zeros((160, 160), dtype=np.uint8)
+    water_two[30:70, 70:115] = 1
+
+    source_masks = {
+        morphology_dir / "erosion_candidate_mask.tif": erosion,
+        morphology_dir / "deposition_candidate_mask.tif": deposition,
+        flood_dir / "newly_water_covered_mask.tif": new_water,
+        time_dir / "water_2026-06-30_mask.tif": water_one,
+        time_dir / "water_2026-07-12_mask.tif": water_two,
+    }
+    original_digests = {
+        path: sha256_file(_write_mask(path, values))
+        for path, values in source_masks.items()
+    }
+    reference = _write_mask(
+        tmp_path / "reference.tif",
+        np.zeros((160, 160), dtype=np.uint8),
+    )
+    report_path = time_dir / "river_shift_timeseries.json"
+    report_path.write_text(json.dumps({
+        "analysis_type": "water_timeseries_screening",
+        "quality": {"warnings": []},
+        "time_series": [
+            {
+                "date": "2026-06-30",
+                "water_mask": "water_2026-06-30_mask.tif",
+                "water_geojson": "water_2026-06-30.geojson",
+                "water_geojson_sha256": "0" * 64,
+            },
+            {
+                "date": "2026-07-12",
+                "water_mask": "water_2026-07-12_mask.tif",
+                "water_geojson": "water_2026-07-12.geojson",
+                "water_geojson_sha256": "0" * 64,
+            },
+        ],
+    }), encoding="utf-8")
+
+    layers = create_web_previews(
+        work_dir,
+        time_dir,
+        flood_dir,
+        morphology_dir,
+        reference,
+        report_path,
+    )
+
+    combined_path = work_dir / "outputs" / "map" / "river_change_candidates_preview.geojson"
+    combined = json.loads(combined_path.read_text(encoding="utf-8"))
+    class_names = {
+        feature["properties"]["river_shift_layer"]
+        for feature in combined["features"]
+    }
+    assert class_names == {"erosion", "deposition", "new_water"}
+    assert len(combined["features"]) == 3
+    assert combined["river_shift_preview"]["features_omitted_for_size"] == 0
+    assert combined_path.stat().st_size <= MAX_WEB_PREVIEW_BYTES
+
+    updated_report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert len(updated_report["time_series"]) == 2
+    for frame in updated_report["time_series"]:
+        frame_path = work_dir / "outputs" / "map" / frame["water_geojson"]
+        frame_preview = json.loads(frame_path.read_text(encoding="utf-8"))
+        assert len(frame_preview["features"]) == 1
+        assert frame_preview["river_shift_preview"]["preview_candidate_cells"] > 0
+        assert frame["water_preview_feature_count"] == 1
+        assert frame["water_geojson_sha256"] == sha256_file(frame_path)
+
+    for source_path, digest in original_digests.items():
+        assert sha256_file(source_path) == digest
+    for layer in layers:
+        layer_path = work_dir / layer["path"]
+        assert sha256_file(layer_path) == layer["sha256"]
