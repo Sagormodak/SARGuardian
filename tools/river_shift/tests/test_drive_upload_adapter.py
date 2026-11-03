@@ -122,3 +122,76 @@ def test_resumable_upload_rejects_untrusted_session_url(tmp_path):
     with pytest.raises(DriveUploadError, match="untrusted resumable upload URL"):
         _drive_for_upload(session)._upload_resumable(path, {"name": path.name}, "POST", "https://www.googleapis.com/upload/drive/v3/files")
 
+
+
+def test_existing_byte_identical_scientific_artifact_is_reused(tmp_path):
+    path = tmp_path / "water-mask.tif"
+    data = b"immutable scientific raster"
+    path.write_bytes(data)
+    md5 = hashlib.md5(data).hexdigest()
+    drive = DriveClient.__new__(DriveClient)
+    drive._find_named_file = lambda *_args: "existing-drive-id"
+    drive._json = lambda *_args, **_kwargs: {
+        "id": "existing-drive-id", "name": path.name,
+        "size": str(len(data)), "md5Checksum": md5,
+    }
+    drive._upload_multipart = lambda *_args: (_ for _ in ()).throw(AssertionError("identical output must be reused"))
+    drive._upload_resumable = drive._upload_multipart
+
+    receipt = drive.upload_file(path, "job-output-folder")
+
+    assert receipt["status"] == "PASS"
+    assert receipt["reused"] is True
+    assert receipt["drive_file_id"] == "existing-drive-id"
+
+
+def test_existing_different_scientific_artifact_is_never_overwritten(tmp_path):
+    path = tmp_path / "water-mask.tif"
+    path.write_bytes(b"new scientific raster")
+    drive = DriveClient.__new__(DriveClient)
+    drive._find_named_file = lambda *_args: "existing-drive-id"
+    drive._json = lambda *_args, **_kwargs: {
+        "id": "existing-drive-id", "name": path.name,
+        "size": "19", "md5Checksum": hashlib.md5(b"old raster bytes").hexdigest(),
+    }
+    drive._upload_multipart = lambda *_args: (_ for _ in ()).throw(AssertionError("must not overwrite"))
+    drive._upload_resumable = drive._upload_multipart
+
+    with pytest.raises(DriveUploadError, match="immutable overwrite is blocked"):
+        drive.upload_file(path, "job-output-folder")
+
+
+@pytest.mark.parametrize("permission_type", ["anyone", "domain", "group"])
+def test_result_folder_rejects_public_or_shared_drive_permissions(permission_type):
+    drive = DriveClient.__new__(DriveClient)
+    drive._json = lambda *_args, **_kwargs: {
+        "permissions": [{"type": "user", "role": "owner"}, {"type": permission_type, "role": "reader"}]
+    }
+
+    with pytest.raises(DriveUploadError, match="shared beyond its owner"):
+        drive.require_private_folder("parent-folder-id")
+
+
+def test_result_manifest_is_the_only_artifact_that_can_be_refreshed(tmp_path):
+    path = tmp_path / "result-manifest.json"
+    data = b'{"storage_verification":{"status":"PASS"}}'
+    path.write_bytes(data)
+    md5 = hashlib.md5(data).hexdigest()
+    drive = DriveClient.__new__(DriveClient)
+    drive._find_named_file = lambda *_args: "existing-manifest-id"
+    calls = []
+    drive._upload_multipart = lambda _path, _metadata, method, _url: (
+        calls.append(method) or {"id": "existing-manifest-id"}
+    )
+    drive._json = lambda *_args, **_kwargs: {
+        "id": "existing-manifest-id", "name": path.name,
+        "size": str(len(data)), "md5Checksum": md5,
+    }
+
+    receipt = drive.upload_file(path, "job-folder")
+
+    assert calls == ["PATCH"]
+    assert receipt["status"] == "PASS"
+    assert receipt["reused"] is False
+
+
