@@ -1,0 +1,121 @@
+name: RiverShift retained September NISAR Sentinel-2 cross-check
+
+on:
+  push:
+    branches:
+      - run/rivershift-sentinel2-sep10-once-20261104
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: river-shift-sentinel2-sep10-41642281327-2026-09-10
+  cancel-in-progress: false
+
+jobs:
+  cross-sensor:
+    name: Rebuild retained NISAR mask and compare September date with Sentinel-2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Check out the merged RiverShift implementation
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download retained per-product COG artifacts from original RiverShift run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-product-b01-*
+          path: source-products/
+          run-id: "41642281327"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Download original prepared selection manifest
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-prepared-*
+          path: prepared/
+          run-id: "41642281327"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Install pinned RiverShift geospatial environment
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+
+      - name: Rebuild 2026-09-10 NISAR mask and cross-check Sentinel-2
+        shell: micromamba-shell {0}
+        working-directory: tools/river_shift
+        run: |
+          set -euo pipefail
+          python --version
+          gdalinfo --version
+          python -c "import rasterio, numpy, scipy, shapely, pyproj, requests; print('RIVERSHIFT_CROSS_SENSOR_RUNTIME=PASS')"
+          python -u replay_sentinel2_from_retained_run.py \
+            --products-dir ../../source-products \
+            --prepared-dir ../../prepared \
+            --source-run-id "41642281327" \
+            --observation-date "2026-09-10" \
+            --output-dir ../../replay-output \
+            --max-day-offset 5 \
+            --max-cloud-cover 60 \
+            --mndwi-threshold "0.0" \
+            --minimum-common-support "0.80"
+
+      - name: Publish privacy-safe September comparison summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          report_path = Path("replay-output/sentinel2-cross-sensor/sentinel2_cross_sensor_agreement.json")
+          manifest_path = Path("replay-output/cross_sensor_replay_manifest.json")
+          summary_path = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          if not report_path.is_file() or not manifest_path.is_file():
+              summary_path.write_text("## RiverShift September Sentinel-2 replay\n\nNo report was produced. Review the preceding logs.\n", encoding="utf-8")
+              raise SystemExit(0)
+          report = json.loads(report_path.read_text(encoding="utf-8"))
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          obs = report.get("observation") or {}
+          support = report.get("spatial_support") or {}
+          metrics = report.get("metrics")
+          lines = [
+              "## RiverShift retained September Sentinel-2 replay",
+              "",
+              f"- Status: **{report.get('status')}**",
+              f"- NISAR date: `{manifest.get('requested_observation_date')}`",
+              f"- Sentinel-2 item: `{obs.get('sentinel2_item_id') or 'not found'}`",
+              f"- Sentinel-2 date: `{obs.get('sentinel2_date') or 'not found'}`",
+              f"- Date offset: {obs.get('absolute_date_offset_days')} days",
+              f"- Scene cloud cover: {obs.get('cloud_cover_percent')}%",
+              f"- AOI footprint overlap: {obs.get('aoi_footprint_overlap_fraction')}",
+              f"- Clear common support: {support.get('common_support_fraction')}",
+              "",
+          ]
+          if isinstance(metrics, dict):
+              lines.extend(["| Reference | Precision | Recall | F1 | IoU |", "|---|---:|---:|---:|---:|"])
+              for key, label in (("scl_water_class", "SCL water"), ("mndwi_water_class", "MNDWI water")):
+                  m = metrics.get(key) or {}
+                  def fmt(v): return "n/a" if v is None else f"{float(v):.3f}"
+                  lines.append(f"| {label} | {fmt(m.get('precision'))} | {fmt(m.get('recall'))} | {fmt(m.get('f1_score'))} | {fmt(m.get('intersection_over_union'))} |")
+          else:
+              lines.append("No accuracy metric was calculated because no eligible scene or sufficient common support was available.")
+          lines.extend([
+              "",
+              "**Interpretation:** cross-sensor agreement only, not ground truth or field validation. The NISAR result remains PROVISIONAL.",
+              "",
+              "The runner used retained COG artifacts only; it did not download raw NISAR HDF5 or publish AOI coordinates, masks, signed URLs or full reports.",
+          ])
+          summary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          PY
