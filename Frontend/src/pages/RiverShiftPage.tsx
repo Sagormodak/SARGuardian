@@ -260,7 +260,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     if (!report || report.analysis_type === 'water_timeseries_screening') return [];
     return geoJSONFiles.filter((file) => isRiverShiftGeoJSONApproved(report, file.sha256));
   }, [report, geoJSONFiles]);
-  const hasVerifiedOverlay = Boolean(currentTimeSeriesFrame || verifiedGeoJSONFiles.length);
+  const hasVerifiedOverlay = Boolean(!hasJobPreviewOverlay && (currentTimeSeriesFrame || verifiedGeoJSONFiles.length));
 
   useEffect(() => {
     if (!user || !riverJob || !['queued', 'dispatching', 'running'].includes(riverJob.state)) return undefined;
@@ -581,13 +581,11 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     const map = resultMapInstance.current;
     if (!map) return;
     map.data.forEach((feature) => map.data.remove(feature));
-    const displayLayers = currentTimeSeriesFrame
-      ? [currentTimeSeriesFrame.data]
-      : verifiedGeoJSONFiles.length
-        ? verifiedGeoJSONFiles.map((file) => file.data)
-        : jobPreview && riverJobId && jobPreview.jobId === riverJobId
-          ? [jobPreview.changeLayer?.data, currentJobFrame].filter((layer): layer is RiverShiftGeoJSON => Boolean(layer))
-          : [];
+    const displayLayers = hasJobPreviewOverlay && jobPreview && riverJobId && jobPreview.jobId === riverJobId
+      ? [jobPreview.changeLayer?.data, currentJobFrame].filter((layer): layer is RiverShiftGeoJSON => Boolean(layer))
+      : currentTimeSeriesFrame
+        ? [currentTimeSeriesFrame.data]
+        : verifiedGeoJSONFiles.map((file) => file.data);
     displayLayers.forEach((layer) => map.data.addGeoJson(layer as unknown as object));
     map.data.setStyle((feature) => {
       const name = String(feature.getProperty('class') || feature.getProperty('change_type') || '').toLowerCase();
