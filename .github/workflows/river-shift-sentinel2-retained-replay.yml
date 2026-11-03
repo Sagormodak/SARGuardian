@@ -63,7 +63,7 @@ jobs:
           pattern: rivershift-product-b01-*
           path: source-products/
           run-id: ${{ inputs.source_run_id }}
-          github-token: ${ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           merge-multiple: false
 
       - name: Download the exact prepared selection manifest
@@ -72,7 +72,7 @@ jobs:
           pattern: rivershift-prepared-*
           path: prepared/
           run-id: ${{ inputs.source_run_id }}
-          github-token: ${ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           merge-multiple: false
 
       - name: Install the pinned RiverShift geospatial environment
@@ -134,9 +134,12 @@ jobs:
               f"- Source RiverShift run: {manifest.get('source_workflow_run_id')}",
               f"- NISAR acquisition date: {manifest.get('requested_observation_date')}",
               f"- NISAR dates in replay: {', '.join(manifest.get('actual_nisar_observation_dates') or [])}",
-              f"- Sentinel-2 item: {observation.get('sentinel2_item_id') or 'not found'}",
+              f"- Sentinel-2 item(s): {', '.join(observation.get('sentinel2_item_ids') or []) or 'not found'}",
               f"- Sentinel-2 date: {observation.get('sentinel2_date') or 'not found'}",
-              f"- Scene cloud cover: {observation.get('cloud_cover_percent')}",
+              f"- MGRS tile(s): {', '.join(observation.get('mgrs_tiles') or []) or 'not reported'}",
+              f"- Tile count: {observation.get('sentinel2_tile_count', 0)}",
+              f"- Mean tile cloud cover: {observation.get('cloud_cover_percent')}",
+              f"- Maximum tile cloud cover: {observation.get('maximum_tile_cloud_cover_percent')}",
               f"- Date offset: {observation.get('absolute_date_offset_days')}",
               f"- AOI footprint overlap: {observation.get('aoi_footprint_overlap_fraction')}",
               f"- Clear common support: {support.get('common_support_fraction')}",
