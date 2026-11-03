@@ -431,7 +431,7 @@ def test_oauth_refresh_failure_reports_safe_http_status_subtype_and_recovery_gui
     with pytest.raises(DriveUploadError, match="invalid_rapt") as error:
         drive._refresh_access_token()
 
-    assert "re-authorize the configured Drive account" in str(error.value)
+    assert "re-authorize the configured drive account" in str(error.value).lower()
     assert "GOOGLE_DRIVE_OAUTH_CLIENT_JSON" in str(error.value)
     assert "GOOGLE_DRIVE_REFRESH_TOKEN" in str(error.value)
     assert "Workspace session-control policy" in str(error.value)
