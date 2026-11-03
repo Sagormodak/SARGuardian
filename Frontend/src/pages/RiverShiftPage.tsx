@@ -68,7 +68,7 @@ function formatDate(value?: string | null): string {
 function metricLabel(key: string): string {
   const names: Record<string, string> = {
     baseline_water_area_km2: 'Baseline water area',
-    peak_water_area_km2: 'Peak water area',
+    event_proximal_water_area_km2: 'Event-proximal observed water area',\n    peak_water_area_km2: 'Legacy peak-water field (not confirmed peak stage)',
     post_event_water_area_km2: 'Post-event water area',
     newly_water_covered_area_km2: 'New water coverage',
     water_area_change_percent: 'Water-area change',
@@ -200,6 +200,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
   const [direction, setDirection] = useState('');
   const [frameCoverage, setFrameCoverage] = useState<'ALL' | 'FULL' | 'PARTIAL'>('ALL');
   const [catalogue, setCatalogue] = useState<CatalogueResponse | null>(null);
+  const [catalogueQueryKey, setCatalogueQueryKey] = useState('');
   const [catalogueBusy, setCatalogueBusy] = useState(false);
   const [catalogueError, setCatalogueError] = useState('');
   const [report, setReport] = useState<RiverShiftReport | null>(null);
@@ -261,6 +262,19 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     return geoJSONFiles.filter((file) => isRiverShiftGeoJSONApproved(report, file.sha256));
   }, [report, geoJSONFiles]);
   const hasVerifiedOverlay = Boolean(!hasJobPreviewOverlay && (currentTimeSeriesFrame || verifiedGeoJSONFiles.length));
+
+  const currentCatalogueQueryKey = JSON.stringify({
+    aoiWkt: aoiWkt.trim(),
+    startDate,
+    endDate,
+    maturity,
+    polarization: polarization || null,
+    direction: direction || null,
+    frameCoverage,
+  });
+  const catalogueIsCurrent = Boolean(
+    catalogue?.status === 'ready' && catalogueQueryKey === currentCatalogueQueryKey,
+  );
 
   useEffect(() => {
     if (!user) {
@@ -459,6 +473,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
         throw new Error(detail);
       }
       setCatalogue(payload as CatalogueResponse);
+      setCatalogueQueryKey(queryKey);
     } catch (error) {
       setCatalogueError(error instanceof Error ? error.message : 'Could not search the ASF catalogue.');
     } finally {
@@ -720,10 +735,10 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
                   <option value="PROVISIONAL">PROVISIONAL</option><option value="BETA">BETA</option><option value="ALL">ALL (audit only)</option>
                 </select>
               </label>
-              <label className="rs-field"><span>Frequency A polarization</span>
+              <label className="rs-field"><span>Main-band polarization</span>
                 <select value={polarization} onChange={(event) => setPolarization(event.target.value)}>
                   <option value="">Any</option><option value="VV">VV</option><option value="VV+VH">VV + VH</option>
-                  <option value="HH">HH</option><option value="HH+HV">HH + HV</option><option value="HH+VV">HH + VV</option>
+                  <option value="HH">HH</option><option value="HH+HV">HH + HV</option>
                   <option value="HH+HV+VH+VV">Full quad-pol</option><option value="LH+LV">LH + LV</option><option value="RH+RV">RH + RV</option>
                 </select>
               </label>
@@ -760,7 +775,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
             <button className="rs-primary-button" type="submit" disabled={catalogueBusy}>
               {catalogueBusy ? 'Searching ASF…' : 'Search GCOV archive'}
             </button>
-            <button className="rs-secondary-button" type="button" disabled={riverJobBusy || catalogue?.status !== 'ready' || !aoiWkt || !eventDate || !user || maturity === 'ALL'} onClick={() => void startLiveProcessing()}>
+            <button className="rs-secondary-button" type="button" disabled={riverJobBusy || !catalogueIsCurrent || !aoiWkt || !eventDate || !user || maturity === 'ALL'} onClick={() => void startLiveProcessing()}>
               {riverJobBusy ? 'Submitting job…' : 'Download NISAR data & process'}
             </button>
             {!user && <p className="rs-muted">Live processing requires account sign-in so job status and private results stay owner-protected.</p>}
@@ -770,6 +785,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
           {catalogue && (
             <div className="rs-catalogue-result">
               <div className="rs-result-summary"><strong>{catalogue.product_count} product(s)</strong><span>{catalogue.message}</span></div>
+              <p className="rs-muted">These are catalogue candidates, not individually selected processing inputs. RiverShift rechecks the same filters and then selects only dates/scenes that pass orbit, mode, HDF5-layer and AOI-footprint compatibility checks.</p>
               <div className="rs-info-banner">Catalogue discovery only · Data downloaded: No · Scientific analysis: Not performed</div>
               {catalogue.warnings.map((warning, index) => <p className="rs-warning-inline" key={index}>{warning}</p>)}
               {catalogue.products.length > 0 && (
