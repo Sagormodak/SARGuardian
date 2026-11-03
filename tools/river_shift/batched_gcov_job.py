@@ -11,12 +11,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
 import time
 import traceback
-from datetime import UTC, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -34,16 +35,7 @@ from process_gcov_job import (
     _metric_crs,
     _read_input,
     _product_date,
-    _callback_artifacts,
     _configure_earthdata_credentials,
-    _copy_result_files,
-    _build_manifest,
-    _metric_crs,
-    _mosaic_date_rasters,
-    _co_register,
-    _ensure_credentials,
-    _log_worker_stage,
-    _read_input,
     build_source_granule_manifest,
     create_web_previews,
     require_worker_source_provenance,
@@ -252,7 +244,7 @@ def _prepare_job(request: dict[str, Any], callbacks: JobCallbacks) -> None:
         "event_window": event_window,
         "event_proximal_observation_offset_days": (
             (event_window["event_proximal_observation"] and
-             (__import__("datetime").date.fromisoformat(event_window["event_proximal_observation"]) - request["event_date"]).days)
+             (date.fromisoformat(event_window["event_proximal_observation"]) - request["event_date"]).days)
         ),
         "granule_names": selected_product_names,
         "aoi_coverage_gate_percent": 90,
