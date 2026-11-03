@@ -41,12 +41,41 @@ MAX_GRANULES_PER_DATE = 4
 MAX_WEB_PREVIEW_BYTES = 3_500_000
 
 from drive_upload_adapter import DriveClient, DriveUploadError, load_drive_config, upload_validated_results  # noqa: E402
+from river_shift.raster_io import RasterContractError, validate_gcov_series  # noqa: E402
 
 
 class WorkerFailure(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+def require_worker_source_provenance(
+    observation_paths: dict[str, Path],
+    *,
+    maturity: str,
+    frequency: str,
+    term: str,
+) -> list[dict[str, Any]]:
+    """Fail the live worker unless every aligned date is bound to GCOV source hashes."""
+    try:
+        records, complete = validate_gcov_series(
+            {key: str(path) for key, path in observation_paths.items()},
+            maturity=maturity,
+            frequency=frequency,
+            term=term,
+        )
+    except (RasterContractError, OSError, ValueError):
+        raise WorkerFailure(
+            "SOURCE_PROVENANCE_INVALID",
+            "At least one aligned NISAR observation failed its source, maturity, layer or raster checksum provenance contract.",
+        ) from None
+    if not complete or len(records) != len(observation_paths):
+        raise WorkerFailure(
+            "SOURCE_PROVENANCE_MISSING",
+            "Every live RiverShift observation must include a verified exporter sidecar with exact source granule SHA-256 values.",
+        )
+    return records
 
 
 def sha256_file(path: Path) -> str:
@@ -827,6 +856,12 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
     for observed_date, path in date_rasters.items():
         aligned_observations[observed_date] = _co_register(path, reference_path, is_reference=(observed_date == reference_date))
 
+    require_worker_source_provenance(
+        aligned_observations,
+        maturity=request["maturity"],
+        frequency=request["frequency"],
+        term=request["term"],
+    )
     callbacks.send("running", "water_time_series_and_change_analysis")
     threshold_args = ["--otsu"] if request["threshold_method"] == "otsu" else ["--threshold-db", str(request["threshold_db"])]
     time_dir = work_dir / "analysis" / "time-series"
