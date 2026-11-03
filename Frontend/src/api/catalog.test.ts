@@ -7,6 +7,7 @@ import {
   getProcessingJob,
   listDisplacementJobs,
   listProcessingJobs,
+  listRiverShiftJobs,
   searchNisarCatalog,
 } from './catalog';
 
@@ -390,4 +391,20 @@ describe('NISAR catalogue preflight API contract', () => {
     await expect(createQueuedJob('preflight-1', 'sarguardian-idempotency-001', null)).rejects.toThrow('Sign in');
     expect(fetchMock).not.toHaveBeenCalled();
   });
+  it('restores the most recent River Shift jobs through an owner-authenticated no-store request', async () => {
+    const jobs = [{ id: 'river-job-1', state: 'running' }];
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => jobs });
+    vi.stubGlobal('fetch', fetchMock);
+    const jobUser = { getIdToken: vi.fn().mockResolvedValue('firebase-id-token') };
+
+    await expect(listRiverShiftJobs(jobUser, 7)).resolves.toEqual(jobs);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/api/river-shift/jobs?limit=7');
+    expect(fetchMock.mock.calls[0][1].cache).toBe('no-store');
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({
+      Authorization: 'Bearer firebase-id-token',
+    });
+  });
+
 });
