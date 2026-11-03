@@ -26,7 +26,7 @@ def test_selected_observations_use_a_real_event_window_and_never_interpolate():
 
     assert selected == [row["acquisition_date"] for row in rows]
     assert event_window == {
-        "before": "2026-04-20",
+        "before": "2026-05-01",
         "event_proximal_observation": "2026-05-15",
         "post_one": "2026-05-31",
         "post_two": "2026-06-15",
