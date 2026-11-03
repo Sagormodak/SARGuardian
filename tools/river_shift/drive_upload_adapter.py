@@ -406,7 +406,7 @@ class DriveClient:
                         if not value:
                             server_offset = 0
                         else:
-                match = re.fullmatch(r"bytes=0-(\d+)", value.strip())
+                            match = re.fullmatch(r"bytes=0-(\d+)", value.strip())
                             if not match:
                                 raise DriveUploadError("Google Drive returned an invalid acknowledged byte range.")
                             server_offset = int(match.group(1)) + 1
