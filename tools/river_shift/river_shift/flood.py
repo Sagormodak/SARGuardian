@@ -200,7 +200,7 @@ def run_flood_analysis(
             "valid_comparison_pixel_count": int(comparison_valid.sum()),
             "permanent_water_filter_applied": permanent_excluded,
             "warnings": [
-                "The event-proximal observation is the first qualifying NISAR acquisition on or after the user-supplied event date; it is not a measured peak-stage observation.",
+                "The event-proximal observation is the first qualifying NISAR acquisition strictly after the user-supplied event date; it is not a measured peak-stage observation.",
                 "New water coverage relative to the pre-event observation is not automatically proof of floodplain inundation.",
                 "Use comparable orbit geometry, acquisition mode, frequency, polarization, maturity and hydrological conditions.",
                 "Low-backscatter screening may miss inundated vegetation because double-bounce scattering can be bright.",
