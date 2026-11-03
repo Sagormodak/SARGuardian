@@ -203,16 +203,19 @@ def test_workflow_hdf5_checks_are_safe_with_pipefail():
     assert workflow.count("grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-' <<< \"$gdal_formats\"") == 5
 
 
-def test_retry_job_is_not_gated_by_the_retry_count_output():
+def test_retry_job_consumes_only_the_validated_cross_job_matrix():
     repository_root = Path(__file__).resolve().parents[3]
     workflow = (repository_root / ".github" / "workflows" / "river-shift-gcov-process.yml").read_text(encoding="utf-8")
+    retry_dispatch = workflow.split("\n  retry_dispatch:\n", 1)[1].split("\n  retry:\n", 1)[0]
     retry_job = workflow.split("\n  retry:\n", 1)[1].split("\n  retry_status:\n", 1)[0]
 
-    # The matrix itself is the authoritative queue. Do not suppress the retry
-    # job based on a second scalar output that can diverge from that matrix.
-    assert "if: needs.retry_prepare.result == 'success'" in retry_job
-    assert "retry_count !=" not in retry_job
-    assert "matrix: ${{ fromJSON(needs.retry_prepare.outputs.retry_matrix) }}" in retry_job
+    assert "RIVERSHIFT_RETRY_MATRIX_JSON:" in retry_dispatch
+    assert "RIVERSHIFT_RETRY_COUNT:" in retry_dispatch
+    assert "len(rows) != count" in retry_dispatch
+    assert "needs.retry_dispatch.result == 'success'" in retry_job
+    assert "needs.retry_dispatch.outputs.retry_count != '0'" in retry_job
+    assert "matrix: ${{ fromJSON(needs.retry_dispatch.outputs.retry_matrix) }}" in retry_job
+    assert "continue-on-error: true" not in retry_job
 
 def test_product_catalogue_path_is_absolute_from_child_tools_working_directory(tmp_path, monkeypatch):
     tools_dir = tmp_path / "tools" / "river_shift"
@@ -447,7 +450,7 @@ def test_workflow_does_not_mask_product_worker_failures_and_validates_retry_hand
 
     # Product-matrix failure must be visible; reconciliation jobs separately
     # preserve the ability to start later batches and the delayed retry wave.
-    assert "continue-on-error: true\\n    strategy:" not in workflow
+    assert "continue-on-error: true\n    strategy:" not in workflow
     assert "retry_dispatch:" in workflow
     assert "RIVERSHIFT_RETRY_MATRIX_JSON:" in workflow
     assert "matrix_include_count=" in workflow
