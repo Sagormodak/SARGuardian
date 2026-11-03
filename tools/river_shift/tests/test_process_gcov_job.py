@@ -1,4 +1,5 @@
 from datetime import date
+import json
 from netrc import netrc
 import stat
 
@@ -15,6 +16,7 @@ from process_gcov_job import (
     select_event_compatible_group,
     require_worker_source_provenance,
     build_source_granule_manifest,
+    sha256_file,
 )
 
 
