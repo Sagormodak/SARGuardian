@@ -178,21 +178,50 @@ class DriveClient:
         self.access_token = self._refresh_access_token()
 
     def _refresh_access_token(self) -> str:
-        try:
-            response = self.session.post(
-                self.config.token_uri,
-                data={
-                    "client_id": self.config.client_id,
-                    "client_secret": self.config.client_secret,
-                    "refresh_token": self.config.refresh_token,
-                    "grant_type": "refresh_token",
-                },
-                timeout=30,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except (requests.RequestException, ValueError) as exc:
-            raise DriveUploadError("Could not authenticate to Google Drive result storage.") from exc
+        payload: Any = None
+        for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
+            try:
+                response = self.session.post(
+                    self.config.token_uri,
+                    data={
+                        "client_id": self.config.client_id,
+                        "client_secret": self.config.client_secret,
+                        "refresh_token": self.config.refresh_token,
+                        "grant_type": "refresh_token",
+                    },
+                    timeout=30,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                break
+            except requests.HTTPError as exc:
+                failed_response = getattr(exc, "response", None)
+                status = getattr(failed_response, "status_code", None)
+                oauth_error = None
+                if failed_response is not None:
+                    try:
+                        error_payload = failed_response.json()
+                    except (ValueError, AttributeError):
+                        error_payload = {}
+                    if isinstance(error_payload, dict):
+                        candidate = error_payload.get("error")
+                        if isinstance(candidate, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", candidate):
+                            oauth_error = candidate
+                if status in RETRYABLE_HTTP_STATUSES and attempt < MAX_RETRY_ATTEMPTS:
+                    retry_after = getattr(failed_response, "headers", {}).get("Retry-After")
+                    time.sleep(_retry_delay(attempt, retry_after))
+                    continue
+                detail = f"HTTP {status}" if status else "HTTP status unavailable"
+                if oauth_error:
+                    detail += f"; oauth_error={oauth_error}"
+                raise DriveUploadError(f"Google Drive OAuth token refresh failed ({detail}).") from None
+            except requests.RequestException as exc:
+                if attempt < MAX_RETRY_ATTEMPTS:
+                    time.sleep(_retry_delay(attempt))
+                    continue
+                raise DriveUploadError("Google Drive OAuth token refresh failed (network or timeout).") from exc
+            except ValueError:
+                raise DriveUploadError("Google Drive OAuth token endpoint returned invalid JSON.") from None
         token = payload.get("access_token") if isinstance(payload, dict) else None
         if not isinstance(token, str) or not token:
             raise DriveUploadError("Google Drive did not return an access token.")
