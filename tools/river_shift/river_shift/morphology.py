@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 from datetime import date
+import math
 
 import numpy as np
 from scipy import ndimage
@@ -23,10 +24,44 @@ from .raster_io import (
 from .water_detection import classify_open_water, otsu_threshold_db
 
 
-def _boundary(mask: np.ndarray) -> np.ndarray:
-    return np.asarray(mask, dtype=bool) ^ ndimage.binary_erosion(
-        np.asarray(mask, dtype=bool), structure=np.ones((3, 3), dtype=bool), border_value=0
+def _boundary(mask: np.ndarray, valid: np.ndarray | None = None) -> np.ndarray:
+    """Return water-class boundary pixels away from invalid-data edges."""
+    values = np.asarray(mask, dtype=bool)
+    support = np.ones(values.shape, dtype=bool) if valid is None else np.asarray(valid, dtype=bool)
+    if support.shape != values.shape:
+        raise ValueError("Boundary mask and valid-pixel support must have identical shapes.")
+    # A shoreline is measurable only where its full 8-neighbourhood is observed.
+    # This avoids turning NoData holes or the raster edge into artificial banks.
+    support_interior = ndimage.binary_erosion(
+        support, structure=np.ones((3, 3), dtype=bool), border_value=0,
     )
+    observed_water = values & support
+    edge = observed_water ^ ndimage.binary_erosion(
+        observed_water, structure=np.ones((3, 3), dtype=bool), border_value=0,
+    )
+    return edge & support_interior
+
+
+def _orthogonal_pixel_sizes(transform: Any) -> tuple[float, float]:
+    """Return row/column pixel-vector lengths; EDT cannot represent affine shear."""
+    column_vector = (float(transform.a), float(transform.d))
+    row_vector = (float(transform.b), float(transform.e))
+    column_size = math.hypot(*column_vector)
+    row_size = math.hypot(*row_vector)
+    dot = column_vector[0] * row_vector[0] + column_vector[1] * row_vector[1]
+    scale = max(column_size * row_size, 1.0)
+    if (
+        not np.isfinite(column_size)
+        or not np.isfinite(row_size)
+        or column_size <= 0
+        or row_size <= 0
+        or abs(dot) > scale * 1e-8
+    ):
+        raise ValueError(
+            "Boundary-distance analysis requires an orthogonal projected raster grid; "
+            "reproject the observations to a north-up or rotated orthogonal grid."
+        )
+    return row_size, column_size
 
 
 def symmetric_boundary_distance_m(
@@ -35,19 +70,38 @@ def symmetric_boundary_distance_m(
     *,
     pixel_size_y_m: float,
     pixel_size_x_m: float,
+    valid_mask: np.ndarray | None = None,
 ) -> tuple[float | None, float | None]:
-    """Return symmetric mean and 95th-percentile distance between water boundaries.
+    """Return symmetric boundary distance within shared observed support only.
 
     This is a boundary-change screening proxy, not a signed transect-based bank
     retreat/accretion rate. Complex braided channels may have multiple nearby banks.
+    Boundaries within one pixel of NoData or image edges are omitted.
     """
-    before_edge = _boundary(before_water)
-    after_edge = _boundary(after_water)
+    before_values = np.asarray(before_water, dtype=bool)
+    after_values = np.asarray(after_water, dtype=bool)
+    if before_values.shape != after_values.shape:
+        raise ValueError("Before and after water masks must have identical shapes.")
+    support = np.ones(before_values.shape, dtype=bool) if valid_mask is None else np.asarray(valid_mask, dtype=bool)
+    if support.shape != before_values.shape:
+        raise ValueError("Water masks and valid-pixel support must have identical shapes.")
+    if (
+        not np.isfinite(pixel_size_y_m) or pixel_size_y_m <= 0
+        or not np.isfinite(pixel_size_x_m) or pixel_size_x_m <= 0
+    ):
+        raise ValueError("Pixel-vector lengths must be finite positive metres.")
+
+    before_edge = _boundary(before_values, support)
+    after_edge = _boundary(after_values, support)
     if not before_edge.any() or not after_edge.any():
         return None, None
 
-    distance_to_after = ndimage.distance_transform_edt(~after_edge, sampling=(pixel_size_y_m, pixel_size_x_m))
-    distance_to_before = ndimage.distance_transform_edt(~before_edge, sampling=(pixel_size_y_m, pixel_size_x_m))
+    distance_to_after = ndimage.distance_transform_edt(
+        ~after_edge, sampling=(pixel_size_y_m, pixel_size_x_m)
+    )
+    distance_to_before = ndimage.distance_transform_edt(
+        ~before_edge, sampling=(pixel_size_y_m, pixel_size_x_m)
+    )
     distances = np.concatenate(
         [distance_to_after[before_edge], distance_to_before[after_edge]]
     )
@@ -55,7 +109,6 @@ def symmetric_boundary_distance_m(
     if distances.size == 0:
         return None, None
     return float(np.mean(distances)), float(np.percentile(distances, 95))
-
 
 def run_morphology_analysis(
     *,
@@ -130,11 +183,13 @@ def run_morphology_analysis(
     net_land_change = deposition_area - erosion_area
 
     transform = profiles["before"]["transform"]
+    pixel_size_y_m, pixel_size_x_m = _orthogonal_pixel_sizes(transform)
     mean_shift, p95_shift = symmetric_boundary_distance_m(
-        water["before"],
+        water["before"] & valid,
         stable_post_water,
-        pixel_size_y_m=abs(float(transform.e)),
-        pixel_size_x_m=abs(float(transform.a)),
+        pixel_size_y_m=pixel_size_y_m,
+        pixel_size_x_m=pixel_size_x_m,
+        valid_mask=valid,
     )
 
     threshold_sensitivity = []
