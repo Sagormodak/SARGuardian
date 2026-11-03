@@ -40,6 +40,12 @@ create index river_shift_jobs_owner_created_idx
 create index river_shift_jobs_state_idx
   on public.river_shift_jobs (state);
 
+-- The API pre-check provides a friendly response; this unique partial index
+-- closes the concurrent-dispatch race at the database boundary.
+create unique index river_shift_jobs_one_active_per_owner_idx
+  on public.river_shift_jobs (owner_uid)
+  where state in ('queued', 'dispatching', 'running');
+
 create or replace function public.enforce_river_shift_job_transition()
 returns trigger language plpgsql set search_path = public as $$
 begin
