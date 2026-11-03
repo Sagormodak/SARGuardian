@@ -352,6 +352,9 @@ class SupabaseJobStore:
             existing = self.get_river_shift_job_by_idempotency(values["owner_uid"], values["idempotency_key"])
             if existing:
                 return existing
+            active = self.list_active_river_shift_jobs(values["owner_uid"])
+            if active:
+                raise PersistenceConflictError("An active RiverShift job already exists for this account.") from None
             raise PersistenceError("Could not persist the RiverShift job.") from None
         rows = self._data(response)
         if not rows:
