@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -172,3 +173,48 @@ def test_download_requires_one_known_collection_maturity(maturity, monkeypatch, 
     assert fake.login_calls == []
     assert fake.search_calls == []
     assert fake.download_calls == []
+
+def test_rejected_earthdata_token_falls_back_once_to_username_password(monkeypatch, tmp_path):
+    class TokenRejectingEarthaccess(FakeEarthaccess):
+        def login(self, **kwargs):
+            self.login_calls.append({
+                **kwargs,
+                "token_present": bool(os.environ.get("EARTHDATA_TOKEN")),
+            })
+            if os.environ.get("EARTHDATA_TOKEN"):
+                raise ValueError("do not expose provider detail")
+            return True
+
+    fake = TokenRejectingEarthaccess(results=[_cmr_result()])
+    monkeypatch.setenv("EARTHDATA_TOKEN", "stale-token-test-value")
+    monkeypatch.setenv("EARTHDATA_USERNAME", "researcher@example.test")
+    monkeypatch.setenv("EARTHDATA_PASSWORD", "password-test-value")
+    monkeypatch.setattr("download_gcov_product._load_earthaccess", lambda: fake)
+
+    result = download_product(_catalogue_row(), tmp_path)
+
+    assert result["downloaded"] is True
+    assert fake.login_calls == [
+        {"strategy": "environment", "token_present": True},
+        {"strategy": "environment", "token_present": False},
+    ]
+    assert os.environ["EARTHDATA_TOKEN"] == "stale-token-test-value"
+
+
+def test_earthdata_token_failure_without_password_fallback_fails_safely(monkeypatch, tmp_path, capsys):
+    class TokenRejectingEarthaccess(FakeEarthaccess):
+        def login(self, **kwargs):
+            self.login_calls.append(kwargs)
+            raise ValueError("private auth response")
+
+    fake = TokenRejectingEarthaccess(results=[_cmr_result()])
+    monkeypatch.setenv("EARTHDATA_TOKEN", "stale-token-test-value")
+    monkeypatch.delenv("EARTHDATA_USERNAME", raising=False)
+    monkeypatch.delenv("EARTHDATA_PASSWORD", raising=False)
+    monkeypatch.setattr("download_gcov_product._load_earthaccess", lambda: fake)
+
+    with pytest.raises(RuntimeError, match="Earthdata authentication failed"):
+        download_product(_catalogue_row(), tmp_path)
+
+    assert fake.login_calls == [{"strategy": "environment"}]
+    assert "stale-token-test-value" not in capsys.readouterr().out
