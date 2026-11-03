@@ -53,12 +53,16 @@ def _write_product(root: Path, granule: str, observed_date: str, *, run_id: str,
         "observation_source": "A",
     }
     sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+    sidecar_digest = replay.sha256_file(sidecar_path)
     worker = {
         "status": "PASS",
         "granule_name": granule,
         "workflow_run_id": run_id,
         "raster_sha256": digest,
-        "files": [{"name": raster_path.name, "sha256": digest, "bytes": raster_path.stat().st_size}],
+        "files": [
+            {"name": raster_path.name, "sha256": digest, "bytes": raster_path.stat().st_size},
+            {"name": sidecar_path.name, "sha256": sidecar_digest, "bytes": sidecar_path.stat().st_size},
+        ],
     }
     (directory / "worker-result.json").write_text(json.dumps(worker), encoding="utf-8")
     return raster_path, sidecar_path
@@ -114,6 +118,7 @@ def test_prepare_source_observations_verifies_receipts_and_restores_local_sideca
         assert metadata["output_cog"] == str(raster.resolve())
         assert metadata["output_cog_sha256"] == replay.sha256_file(raster)
         assert receipt["cog_sha256"] == replay.sha256_file(raster)
+        assert receipt["sidecar_sha256_before_local_path_restore"]
 
 
 def test_prepare_source_observations_rejects_artifact_from_wrong_workflow_run(tmp_path):
