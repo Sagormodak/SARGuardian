@@ -4,6 +4,11 @@ channels:
 dependencies:
   - python=3.13
   - gdal>=3.13,<4
+  # GDAL splits optional raster drivers into separately installable packages.
+  # NISAR GCOV HDF5 inspection requires the HDF5 driver at runtime.
+  - libgdal-hdf5
+  # Keep the CF/netCDF driver available for NISAR's CF-compliant metadata path.
+  - libgdal-netcdf
   - rasterio>=1.4,<2
   - numpy>=2,<3
   - scipy>=1.13,<2
