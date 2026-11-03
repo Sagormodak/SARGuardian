@@ -14,6 +14,7 @@ from process_gcov_job import (
     select_date_window,
     select_event_compatible_group,
     require_worker_source_provenance,
+    build_source_granule_manifest,
 )
 
 
@@ -61,6 +62,64 @@ def test_event_window_does_not_use_pre_event_scene_as_event_observation():
         select_date_window(rows, date(2026, 5, 2))
 
 
+
+
+
+def test_source_granule_manifest_retains_download_and_hdf5_inventory_checksums(tmp_path):
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    name = "NISAR_L2_PR_GCOV_025_151_A_011_4005_DHDH_A_20260718T155041_20260718T155059_P05023_N_F_J_001"
+    receipt = {
+        "granule_name": name,
+        "product": "GCOV",
+        "maturity": "PROVISIONAL",
+        "source_host": "nisar.asf.earthdatacloud.nasa.gov",
+        "size_bytes": 123456,
+        "sha256": "a" * 64,
+        "downloaded": True,
+    }
+    inventory = {
+        "product_file": f"/runner/raw/{name}.h5",
+        "gdal_version": "3.13.0",
+        "available_diagonal_terms": [{"frequency": "frequencyA", "term": "HHHH"}],
+        "available_valid_sample_masks": [{"frequency": "frequencyA", "subdataset": "mask"}],
+    }
+    (raw_dir / f"{name}.download.json").write_text(json.dumps(receipt))
+    (raw_dir / f"{name}.gcov_inventory.json").write_text(json.dumps(inventory))
+
+    manifest = build_source_granule_manifest(
+        raw_dir, [name], maturity="PROVISIONAL", frequency="frequencyA", term="HHHH"
+    )
+
+    row = manifest["granules"][0]
+    assert row["granule_name"] == name
+    assert row["source_product_sha256"] == "a" * 64
+    assert row["download_receipt_sha256"] == sha256_file(raw_dir / f"{name}.download.json")
+    assert row["hdf5_inventory_sha256"] == sha256_file(raw_dir / f"{name}.gcov_inventory.json")
+    assert row["gdal_version"] == "3.13.0"
+
+
+def test_source_granule_manifest_rejects_missing_or_mismatched_receipt(tmp_path):
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    name = "NISAR_L2_PR_GCOV_025_151_A_011_4005_DHDH_A_20260718T155041_20260718T155059_P05023_N_F_J_001"
+    (raw_dir / f"{name}.download.json").write_text(json.dumps({
+        "granule_name": "another-granule",
+        "product": "GCOV",
+        "maturity": "PROVISIONAL",
+        "downloaded": True,
+        "size_bytes": 1,
+        "sha256": "a" * 64,
+    }))
+    (raw_dir / f"{name}.gcov_inventory.json").write_text(json.dumps({
+        "product_file": f"/runner/raw/{name}.h5",
+        "available_diagonal_terms": [{"frequency": "frequencyA", "term": "HHHH"}],
+    }))
+
+    with pytest.raises(WorkerFailure, match="does not match selected granule"):
+        build_source_granule_manifest(
+            raw_dir, [name], maturity="PROVISIONAL", frequency="frequencyA", term="HHHH"
+        )
 
 
 def test_live_worker_rejects_missing_source_sidecars(tmp_path):
