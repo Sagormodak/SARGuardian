@@ -317,6 +317,8 @@ def test_upload_validated_results_uses_one_fixed_root_then_job_specific_folders(
     class FakeDrive:
         config = type("Config", (), {"parent_folder_id": "parent-folder-123"})()
         def verify_authenticated_account(self): pass
+        def verify_parent_folder(self, folder_id):
+            assert folder_id == "parent-folder-123"
         def require_private_folder(self, folder_id): private_checks.append(folder_id)
         def find_or_create_folder(self, name, parent_id):
             folder_calls.append((name, parent_id))
