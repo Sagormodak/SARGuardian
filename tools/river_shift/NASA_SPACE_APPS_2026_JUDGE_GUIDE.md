@@ -82,8 +82,6 @@ These figures describe that particular AOI, selected products, threshold and com
 
 RiverShift includes two distinct comparison pathways. The rigorous reference-raster validator compares a NISAR-derived predicted mask to a separately prepared, independently reviewed reference mask on the exact same grid. The optional `validate_with_sentinel2.py` tool searches Copernicus Sentinel-2 L2A and compares the NISAR mask with two optical water classifications: SCL class 6 (using only SCL classes 4/5/6 as clear support) and MNDWI from B03/B11. It records scene date offset, cloud cover, STAC item identity, NISAR mask checksum, common spatial support, confusion metrics and area bias. The Sentinel-2 output is **cross-sensor agreement screening only**, not ground truth, field validation or an independent supervised accuracy assessment. Optical water indices and Sentinel SCL can themselves contain errors.
 
-The optional `validate_with_sentinel2.py` tool searches Copernicus Sentinel-2 L2A and compares the NISAR mask with SCL class 6 water (using only SCL 4/5/6 as clear support) and with MNDWI from B03/B11. It reports source scene ID, cloud cover, date offset, common support, confusion matrix, F1, IoU, kappa and area bias. This is a **cross-sensor agreement screen**, not ground truth or field validation. It is not automatically run in the primary worker and has not been run for the historical example run below.
-
 The standalone signed-bankline tool requires independently prepared dated banklines and oriented transects. A user must specify the positive transect direction. RiverShift must not infer a signed direction from the symmetric morphology metric.
 
 A stronger validation pack should include, for the same AOI and relevant dates:
