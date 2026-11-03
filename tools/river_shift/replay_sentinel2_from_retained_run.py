@@ -11,8 +11,10 @@ import argparse
 from datetime import date
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
+import shutil
 import sys
 from typing import Any
 
@@ -52,8 +54,18 @@ def prepare_source_observations(
     prepared_dir: Path,
     *,
     expected_source_run_id: str,
+    working_dir: Path | None = None,
 ) -> tuple[list[dict[str, str]], dict[str, Any], list[dict[str, Any]]]:
-    """Verify retained per-product COG receipts and restore exact local sidecar paths."""
+    """Verify immutable retained products and build local replay-only source copies.
+
+    Worker artifacts and their checksummed metadata sidecars are never modified.
+    Only the replay working copy receives the runner-local COG path required by
+    the provenance validator, so sequential per-date replays remain idempotent.
+    """
+    if working_dir is None:
+        working_dir = products_dir.parent / "verified-replay-source"
+    working_dir = working_dir.resolve()
+    working_dir.mkdir(parents=True, exist_ok=True)
     _, prepared = _load_single_json(prepared_dir, "prepared.json")
     selected_names = prepared.get("selected_product_names")
     date_by_name = prepared.get("date_by_name")
@@ -173,22 +185,40 @@ def prepare_source_observations(
         if metadata.get("covariance_term") != request.get("term"):
             raise ReplayError(f"COG covariance term does not match the prepared request for {name}.")
 
-        # The provenance validator requires a sidecar to bind the exact local
-        # raster path. Restore only that path; keep and re-check the original
-        # COG SHA-256 unchanged.
-        metadata["output_cog"] = str(raster_path.resolve())
-        sidecar_path.write_text(
+        # Keep the checksummed worker artifact immutable. The GCOV provenance
+        # validator requires the sidecar to name the exact local COG path, so
+        # construct a replay-only copy of the raster and sidecar instead.
+        replay_product_dir = working_dir / name
+        replay_product_dir.mkdir(parents=True, exist_ok=True)
+        replay_raster_path = replay_product_dir / raster_name
+        replay_sidecar_path = replay_raster_path.with_suffix(".metadata.json")
+
+        if not replay_raster_path.is_file() or sha256_file(replay_raster_path).lower() != raster_digest.lower():
+            replay_raster_path.unlink(missing_ok=True)
+            try:
+                os.link(raster_path, replay_raster_path)
+            except OSError:
+                shutil.copy2(raster_path, replay_raster_path)
+        if sha256_file(replay_raster_path).lower() != raster_digest.lower():
+            raise ReplayError(f"Replay working COG failed the original worker checksum for {name}.")
+
+        # Always refresh the small sidecar from the original retained bytes
+        # before rewriting only the replay-local output_cog path. This makes
+        # repeated calls safe even if a previous scratch sidecar was changed.
+        shutil.copy2(sidecar_path, replay_sidecar_path)
+        metadata["output_cog"] = str(replay_raster_path.resolve())
+        replay_sidecar_path.write_text(
             json.dumps(metadata, indent=2, allow_nan=False),
             encoding="utf-8",
         )
-        observations.append({"date": observed_date, "path": str(raster_path.resolve())})
+        observations.append({"date": observed_date, "path": str(replay_raster_path.resolve())})
         receipts.append({
             "date": observed_date,
             "granule_name": name,
             "cog_sha256": raster_digest,
-            "sidecar_sha256_before_local_path_restore": str(sidecar_receipt["sha256"]).lower(),
+            "sidecar_sha256_original_worker_receipt": str(sidecar_receipt["sha256"]).lower(),
             "source_product_sha256": metadata.get("source_product_sha256"),
-            "sidecar": sidecar_path.name,
+            "sidecar": replay_sidecar_path.name,
         })
 
     observations.sort(key=lambda row: row["date"])
@@ -215,10 +245,12 @@ def run_replay(
 ) -> dict[str, Any]:
     if not re.fullmatch(r"\d{6,20}", str(source_run_id)):
         raise ReplayError("source_run_id must be a numeric GitHub Actions run ID.")
+    output_dir.mkdir(parents=True, exist_ok=True)
     observations, prepared, receipts = prepare_source_observations(
         products_dir,
         prepared_dir,
         expected_source_run_id=str(source_run_id),
+        working_dir=output_dir / "verified-replay-source",
     )
     selected_dates = [row["date"] for row in observations]
     if observation_date.isoformat() not in selected_dates:
@@ -226,7 +258,6 @@ def run_replay(
             f"Requested observation date {observation_date.isoformat()} is not in the retained source run."
         )
     request = prepared["request"]
-    output_dir.mkdir(parents=True, exist_ok=True)
     timeseries_dir = output_dir / "nisar-time-series"
     threshold_method = str(request.get("threshold_method", "otsu"))
     threshold_db = request.get("threshold_db")

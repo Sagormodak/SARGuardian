@@ -91,34 +91,54 @@ def _prepared(root: Path, names: list[str], *, run_id: str = "41642281327"):
     return prepared_dir
 
 
-def test_prepare_source_observations_verifies_receipts_and_restores_local_sidecar_paths(tmp_path):
+def test_prepare_source_observations_keeps_worker_sidecars_immutable_and_builds_local_replay_copies(tmp_path):
     products = tmp_path / "products"
     products.mkdir()
     names = ["granule-one", "granule-two"]
-    raster_paths = []
-    sidecars = []
+    source_paths = []
+    original_sidecar_hashes = {}
     for index, (name, day) in enumerate(zip(names, ("2026-07-12", "2026-07-24"))):
         raster, sidecar = _write_product(products, name, day, run_id="41642281327", value=index + 1)
-        raster_paths.append(raster)
-        sidecars.append(sidecar)
+        source_paths.append((raster, sidecar))
+        original_sidecar_hashes[name] = replay.sha256_file(sidecar)
     prepared = _prepared(tmp_path, names)
+    working = tmp_path / "replay-working"
 
     observations, manifest, receipts = replay.prepare_source_observations(
-        products,
-        prepared,
-        expected_source_run_id="41642281327",
+        products, prepared, expected_source_run_id="41642281327", working_dir=working
     )
 
     assert [row["date"] for row in observations] == ["2026-07-12", "2026-07-24"]
-    assert [Path(row["path"]) for row in observations] == raster_paths
     assert manifest["job_id"] == "a7d34520-18c9-4ef0-b135-c902044338a4"
     assert len(receipts) == 2
-    for raster, sidecar, receipt in zip(raster_paths, sidecars, receipts):
-        metadata = json.loads(sidecar.read_text(encoding="utf-8"))
-        assert metadata["output_cog"] == str(raster.resolve())
-        assert metadata["output_cog_sha256"] == replay.sha256_file(raster)
-        assert receipt["cog_sha256"] == replay.sha256_file(raster)
-        assert receipt["sidecar_sha256_before_local_path_restore"]
+    for (source_raster, source_sidecar), observation, receipt in zip(source_paths, observations, receipts):
+        name = source_raster.parent.name
+        replay_raster = Path(observation["path"])
+        replay_sidecar = replay_raster.with_suffix(".metadata.json")
+        source_metadata = json.loads(source_sidecar.read_text(encoding="utf-8"))
+        replay_metadata = json.loads(replay_sidecar.read_text(encoding="utf-8"))
+        # Original worker receipt files must remain byte-for-byte unchanged.
+        assert replay.sha256_file(source_sidecar) == original_sidecar_hashes[name]
+        assert replay.sha256_file(source_sidecar) == receipt["sidecar_sha256_original_worker_receipt"]
+        assert source_metadata["output_cog"].startswith("/runner/old/path/")
+        assert replay.sha256_file(source_raster) == replay.sha256_file(replay_raster)
+        assert replay_metadata["output_cog"] == str(replay_raster.resolve())
+        assert replay_metadata["output_cog_sha256"] == replay.sha256_file(replay_raster)
+        assert receipt["cog_sha256"] == replay.sha256_file(source_raster)
+
+    # Re-running the preparation against the same retained artifacts is safe.
+    repeated, repeated_manifest, repeated_receipts = replay.prepare_source_observations(
+        products, prepared, expected_source_run_id="41642281327", working_dir=working
+    )
+    assert [row["path"] for row in repeated] == [row["path"] for row in observations]
+    assert repeated_manifest["job_id"] == manifest["job_id"]
+    assert [row["sidecar_sha256_original_worker_receipt"] for row in repeated_receipts] == [
+        row["sidecar_sha256_original_worker_receipt"] for row in receipts
+    ]
+    for source_raster, source_sidecar in source_paths:
+        replay_raster = working / source_raster.parent.name / source_raster.name
+        assert replay.sha256_file(source_sidecar) == original_sidecar_hashes[source_raster.parent.name]
+        assert json.loads(replay_raster.with_suffix(".metadata.json").read_text(encoding="utf-8"))["output_cog"] == str(replay_raster.resolve())
 
 
 def test_prepare_source_observations_rejects_artifact_from_wrong_workflow_run(tmp_path):
