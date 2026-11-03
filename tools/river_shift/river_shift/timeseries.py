@@ -15,6 +15,7 @@ from .raster_io import (
     save_json,
     sha256_file,
     validate_gcov_series,
+    gcov_source_provenance,
     write_mask,
     write_mask_geojson,
 )
@@ -60,6 +61,7 @@ def run_water_timeseries_analysis(
     sidecars, provenance_complete = validate_gcov_series(
         paths, maturity=maturity, frequency=frequency, term=polarization_term,
     )
+    source_provenance = gcov_source_provenance(sidecars or [])
     pixel_area_m2 = require_projected_metre_grid(profiles[ordered[0]["date"]])
     # Every date is compared on exactly the same spatial support. Using each
     # acquisition's independent valid mask would make area changes partly a
@@ -138,8 +140,9 @@ def run_water_timeseries_analysis(
             "maturity": maturity.upper(),
             "frequency": frequency,
             "covariance_term": polarization_term,
-            "granule_names": [row["source_granule_name"] for row in source_metadata],
-            "source_granule_sha256": [row["source_product_sha256"] for row in source_metadata],
+            "granule_names": source_provenance["granule_names"],
+            "source_granule_sha256": source_provenance["source_granule_sha256"],
+            "observation_sources": source_provenance["observation_sources"],
         },
         "inputs": {
             "input_units": units,
