@@ -145,9 +145,9 @@ function ReportPanel({ report }: { report: RiverShiftReport }) {
       </div>
       <div className="rs-warning-inline" role="status">
         Release status: <strong>{String(report.quality.release_status || 'PROVISIONAL')}</strong>
-        {!verified && <span> · Metrics and map are held until a complete review record is supplied.</span>}
+        {!verified && <span> · The metrics and map are provisional evidence, not independently validated findings.</span>}
       </div>
-      {verified && <div className="rs-metric-grid">
+      <div className="rs-metric-grid">
         {Object.entries(report.metrics).map(([key, value]) => (
           <article className="rs-metric" key={key}>
             <span>{metricLabel(key)}</span>
