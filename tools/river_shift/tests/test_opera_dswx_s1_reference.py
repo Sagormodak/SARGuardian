@@ -288,13 +288,18 @@ def test_direct_cmr_discovery_uses_concept_id_and_get_data_https_links(monkeypat
     assert call["headers"]["Accept"] == opera.CMR_UMM_ACCEPT
     params = dict(call["params"])
     assert params["collection_concept_id"] == opera.COLLECTION_CONCEPT_ID
-    assert params["temporal[]"] == "2026-08-14T00:00:00Z,2026-08-20T23:59:59Z"
+    assert "temporal[]" not in params
     assert params["bounding_box"] == "89.6,24,89.8,24.2"
     assert params["page_num"] == "1"
     assert params["page_size"] == str(opera.CMR_PAGE_SIZE)
     assert query["collection_query_method"].startswith("direct authenticated CMR UMM JSON")
     assert query["granules_returned_by_cmr"] == 1
     assert query["wtr_records_parsed"] == 1
+    assert query["cmr_temporal_filter_applied"] is False
+    assert query["local_temporal_filter_utc"] == [
+        "2026-08-14T00:00:00Z",
+        "2026-08-20T23:59:59Z",
+    ]
     assert records[0]["tile_id"] == "45RVM"
     assert records[0]["observation_date"] == "2026-08-18"
     assert records[0]["layer_name"] == "WTR"
@@ -329,7 +334,8 @@ def test_cmr_zero_result_probes_isolate_temporal_and_aoi_coverage(monkeypatch):
     assert records == []
     assert len(session.calls) == 4
     diagnostics = query["cmr_diagnostics"]
-    assert diagnostics["combined_query"]["hits"] == 0
+    assert diagnostics["aoi_inventory_query"]["hits"] == 0
+    assert diagnostics["aoi_inventory_query"]["server_side_temporal_filter_applied"] is False
     probes = diagnostics["zero_result_probes"]
     assert probes["collection_and_date"]["hits"] == 15
     assert probes["collection_and_aoi"]["hits"] == 0
@@ -470,7 +476,52 @@ def test_cmr_scene_discovery_window_can_be_wider_without_changing_strict_score_g
     )
 
     params = dict(session.calls[0]["params"])
-    assert params["temporal[]"] == "2026-08-03T00:00:00Z,2026-08-31T23:59:59Z"
+    assert "temporal[]" not in params
+    assert params["bounding_box"] == "89.6,24,89.8,24.2"
+    assert query["local_temporal_filter_utc"] == [
+        "2026-08-03T00:00:00Z",
+        "2026-08-31T23:59:59Z",
+    ]
+    assert query["cmr_temporal_filter_applied"] is False
     assert query["discovery_window_days"] == 14
     assert query["strict_score_maximum_date_offset_days"] == 3
     assert records[0]["observation_date"] == "2026-08-18"
+
+
+def test_aoi_inventory_is_filtered_locally_by_discovery_window(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    in_window = _cmr_item(sensing="20260818T120000Z", concept="G-IN-POCLOUD")
+    out_of_window = _cmr_item(
+        sensing="20260710T120000Z",
+        generated="20260711T010203Z",
+        concept="G-OUT-POCLOUD",
+    )
+    session = _FakeCMRSession([_FakeCMRResponse([in_window, out_of_window], 2)])
+    monkeypatch.setitem(
+        sys.modules,
+        "earthaccess",
+        SimpleNamespace(
+            login=lambda **kwargs: None,
+            get_requests_https_session=lambda: session,
+        ),
+    )
+
+    records, query = opera._discover_records(
+        aoi_wkt="POLYGON((89.6 24.0,89.8 24.0,89.8 24.2,89.6 24.2,89.6 24.0))",
+        requested_date=date.fromisoformat("2026-08-17"),
+        maximum_offset_days=3,
+        discovery_window_days=14,
+    )
+
+    assert len(session.calls) == 1
+    params = dict(session.calls[0]["params"])
+    assert "temporal[]" not in params
+    assert len(records) == 1
+    assert records[0]["concept_id"] == "G-IN-POCLOUD"
+    assert query["granules_returned_by_cmr"] == 2
+    assert query["wtr_records_parsed"] == 1
+    assert query["records_outside_local_discovery_window"] == 1
+    assert query["discovery_window_days"] == 14
+    assert query["strict_score_maximum_date_offset_days"] == 3

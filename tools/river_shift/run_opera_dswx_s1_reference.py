@@ -280,19 +280,25 @@ def _discover_records(
     )
     earthaccess.login(strategy="environment")
     session = earthaccess.get_requests_https_session()
+    # Retrieve the small spatial inventory for the AOI first, then apply the
+    # discovery date window locally from each WTR filename's sensing timestamp.
+    # CMR's server-side temporal+bounding-box intersection returned zero even
+    # though the independent AOI-only inventory contains 307 granules. Keeping
+    # the spatial inventory avoids losing nearby scenes to CMR intersection
+    # semantics while still restricting all candidate selection to this AOI.
     result = _cmr_umm_search(
         session,
         collection_concept_id=COLLECTION_CONCEPT_ID,
-        temporal=temporal,
         bounding_box=bbox,
     )
     items = result["items"]
     diagnostics: dict[str, Any] = {
-        "combined_query": {
+        "aoi_inventory_query": {
             "hits": result["hits"],
             "returned_items": len(items),
             "pages": result["pages"],
             "query": result["query"],
+            "server_side_temporal_filter_applied": False,
         }
     }
     # Zero intersection can be either temporal coverage or spatial coverage.
@@ -349,6 +355,7 @@ def _discover_records(
     seen: set[tuple[str, str]] = set()
     without_get_data = 0
     non_wtr = 0
+    outside_discovery_window = 0
     for item in items:
         umm = item.get("umm") or {}
         meta = item.get("meta") or {}
@@ -366,6 +373,10 @@ def _discover_records(
                 break
         if not wtr_meta:
             non_wtr += 1
+            continue
+        observation_date = date.fromisoformat(str(wtr_meta["observation_date"]))
+        if abs((observation_date - requested_date).days) > search_window_days:
+            outside_discovery_window += 1
             continue
         if not wtr_url:
             # Do not advertise a reference that cannot be fetched as an
@@ -398,7 +409,8 @@ def _discover_records(
         "cloud_hosted_filter_applied": False,
         "downloadable_filter_applied": False,
         "bounding_box_wgs84": [west, south, east, north],
-        "temporal_query_utc": list(temporal),
+        "local_temporal_filter_utc": list(temporal),
+        "cmr_temporal_filter_applied": False,
         "discovery_window_days": search_window_days,
         "strict_score_maximum_date_offset_days": maximum_offset_days,
         "requested_observation_date": requested_date.isoformat(),
@@ -406,6 +418,7 @@ def _discover_records(
         "umm_items_loaded": len(items),
         "wtr_records_parsed": len(rows),
         "non_wtr_records": non_wtr,
+        "records_outside_local_discovery_window": outside_discovery_window,
         "wtr_records_missing_https_get_data": without_get_data,
         "cmr_query": result["query"],
         "cmr_pages": result["pages"],
@@ -735,7 +748,7 @@ def run_pipeline(
     api_base_url: str,
     output_dir: Path,
     maximum_date_offset_days: int = 3,
-    discovery_window_days: int = 14,
+    discovery_window_days: int = 30,
     minimum_common_support_fraction: float = 0.80,
     block_size_pixels: int = 64,
     bootstrap_replicates: int = 500,
