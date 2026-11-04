@@ -75,12 +75,14 @@ export type RiverShiftCandidateVisibility = {
   erosion: boolean;
   deposition: boolean;
   newWater: boolean;
+  observedWater: boolean;
 };
 
 export type RiverShiftCandidateCounts = {
   erosion: number;
   deposition: number;
   newWater: number;
+  observedWater: number;
   unclassified: number;
 };
 
@@ -99,18 +101,33 @@ function riverShiftCandidateType(properties?: Record<string, unknown>): keyof Ri
   return null;
 }
 
-/** Count class-tagged candidate features without changing the source GeoJSON. */
+function isObservedOpenWaterFeature(properties?: Record<string, unknown>): boolean {
+  if (!properties) return false;
+  const labels = [
+    properties.river_shift_layer,
+    properties.class,
+    properties.change_type,
+    properties.candidate_type,
+  ].filter((value): value is string => typeof value === 'string');
+  const label = labels.map((value) => value.toLowerCase().replace(/[\\s-]+/g, '_')).join('_');
+  return label.includes('open_water') && !label.includes('new');
+}
+
+/** Count candidate classes, observed open-water context, and unknown features separately. */
 export function countRiverShiftCandidateLayers(data: RiverShiftGeoJSON): RiverShiftCandidateCounts {
-  const counts: RiverShiftCandidateCounts = { erosion: 0, deposition: 0, newWater: 0, unclassified: 0 };
+  const counts: RiverShiftCandidateCounts = {
+    erosion: 0, deposition: 0, newWater: 0, observedWater: 0, unclassified: 0,
+  };
   for (const feature of data.features) {
     const type = riverShiftCandidateType(feature.properties);
-    if (!type) counts.unclassified += 1;
-    else counts[type] += 1;
+    if (type) counts[type] += 1;
+    else if (isObservedOpenWaterFeature(feature.properties)) counts.observedWater += 1;
+    else counts.unclassified += 1;
   }
   return counts;
 }
 
-/** Filter only recognized candidate classes; preserve unknown/context features. */
+/** Filter each implemented candidate and observed-water context layer independently. */
 export function filterRiverShiftCandidateGeoJSON(
   data: RiverShiftGeoJSON,
   visibility: RiverShiftCandidateVisibility,
@@ -119,7 +136,11 @@ export function filterRiverShiftCandidateGeoJSON(
     ...data,
     features: data.features.filter((feature) => {
       const type = riverShiftCandidateType(feature.properties);
-      return type === null || visibility[type];
+      if (type) return visibility[type];
+      if (isObservedOpenWaterFeature(feature.properties)) return visibility.observedWater;
+      // Preserve genuinely unclassified/context features; never let them masquerade as a
+      // candidate class or as observed open water.
+      return true;
     }),
   };
 }
