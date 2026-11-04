@@ -70,7 +70,6 @@ describe('RiverShift candidate overlay filters', () => {
   });
 });
 
-
 describe('RiverShift audit and event-timing disclosure', () => {
   it('distinguishes missing spatial diagnostics from zero overlap', () => {
     expect(getRiverShiftOverlapAuditAvailability({})).toEqual({
