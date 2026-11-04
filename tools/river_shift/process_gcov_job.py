@@ -51,7 +51,7 @@ from drive_upload_adapter import (
     upload_validated_results,
 )  # noqa: E402
 from river_shift.raster_io import RasterContractError, validate_gcov_series  # noqa: E402
-from river_shift.overlap_audit import audit_scene_mosaic_overlap  # noqa: E402
+from river_shift.overlap_audit import audit_candidate_mask_overlap, audit_scene_mosaic_overlap  # noqa: E402
 
 
 class WorkerFailure(RuntimeError):
@@ -1657,6 +1657,33 @@ def _build_manifest(work_dir: Path, outputs: list[dict[str, str]], selection: di
     return manifest_path
 
 
+def run_candidate_mask_overlap_audit(
+    morphology_dir: Path,
+    flood_dir: Path,
+    output_path: Path,
+    *,
+    comparison_window: dict[str, str],
+) -> dict[str, Any]:
+    """Run the full-resolution overlap audit against the worker's three authoritative masks."""
+    mask_paths = {
+        "erosion": morphology_dir / "erosion_candidate_mask.tif",
+        "deposition": morphology_dir / "deposition_candidate_mask.tif",
+        "new_water": flood_dir / "newly_water_covered_mask.tif",
+    }
+    try:
+        return audit_candidate_mask_overlap(
+            mask_paths,
+            output_path,
+            comparison_window=comparison_window,
+        )
+    except (OSError, ValueError, rasterio.errors.RasterioError) as exc:
+        detail = str(exc).strip() or type(exc).__name__
+        raise WorkerFailure(
+            "CANDIDATE_MASK_OVERLAP_AUDIT_FAILED",
+            f"Could not complete full-resolution candidate mask overlap QA: {detail[:240]}",
+        ) from None
+
+
 def _callback_artifacts(manifest: dict[str, Any]) -> list[dict[str, Any]]:
     outputs = manifest.get("validated_outputs") or []
     receipts = {row.get("path"): row for row in outputs if isinstance(row, dict)}
@@ -1909,6 +1936,35 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
         "--input-units", "linear", "--maturity", request["maturity"],
         "--frequency", request["frequency"], "--term", request["term"], "--out-dir", str(morphology_dir),
     ])
+    overlap_dir = work_dir / "analysis" / "quality-assurance"
+    overlap_audit_path = overlap_dir / "candidate_mask_overlap_audit.json"
+    overlap_audit = run_candidate_mask_overlap_audit(
+        morphology_dir,
+        flood_dir,
+        overlap_audit_path,
+        comparison_window={
+            "baseline": event_window["before"],
+            "morphology_post_one": event_window["post_one"],
+            "morphology_post_two": event_window["post_two"],
+            "new_water_comparison": event_window["event_proximal_observation"],
+        },
+    )
+    selection["candidate_overlap_audit"] = {
+        "status": overlap_audit["status"],
+        "report_path": "outputs/quality-assurance/candidate_mask_overlap_audit.json",
+        "report_sha256": overlap_audit["report_sha256"],
+    }
+    selection_path.write_text(json.dumps(selection, indent=2, sort_keys=True), encoding="utf-8")
+    _log_worker_stage(
+        "full_resolution_candidate_mask_overlap_audit",
+        "PASS",
+        report_sha256=overlap_audit["report_sha256"],
+        per_class=overlap_audit["per_class"],
+        pairwise={key: {
+            "intersection_pixels": value["intersection_pixels"],
+            "jaccard": value["jaccard"],
+        } for key, value in overlap_audit["pairwise"].items()},
+    )
     if request["analysis_mode"] == "general_scan":
         generalize_morphology_result(morphology_dir / "river_shift_result.json", selection)
 
@@ -1916,7 +1972,7 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
     _log_worker_stage("result_package_assembly", "START")
     output_root = work_dir / "outputs"
     inventory = []
-    for label, directory in (("time-series", time_dir), ("flood", flood_dir), ("morphology", morphology_dir)):
+    for label, directory in (("time-series", time_dir), ("flood", flood_dir), ("morphology", morphology_dir), ("quality-assurance", overlap_dir)):
         inventory.extend(_copy_result_files([(label, directory)], output_root))
     provenance_dir = output_root / "provenance"
     provenance_dir.mkdir(parents=True, exist_ok=True)
@@ -1949,6 +2005,18 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
     inventory.append({"path": time_report_path.relative_to(work_dir).as_posix(), "sha256": sha256_file(time_report_path)})
     report_digest = sha256_file(time_report_path)
     report_payload = json.loads(time_report_path.read_text(encoding="utf-8"))
+    combined_preview_path = output_root / "map" / "river_change_candidates_preview.geojson"
+    try:
+        combined_preview = json.loads(combined_preview_path.read_text(encoding="utf-8"))
+        preview_metadata = combined_preview.get("river_shift_preview")
+        preview_overlap = preview_metadata.get("preview_geometry_overlap") if isinstance(preview_metadata, dict) else None
+    except (OSError, json.JSONDecodeError):
+        preview_overlap = None
+    if not isinstance(preview_overlap, dict):
+        raise WorkerFailure(
+            "PREVIEW_GENERATION_FAILED",
+            "The combined map preview is missing its display-only geometry overlap diagnostic.",
+        )
     summary = {
         "schema_version": 1,
         "processing_status": "PASS",
@@ -1963,6 +2031,8 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
         "comparison_window": selection.get("comparison_window"),
         "event_window": event_window if request["analysis_mode"] == "event_based" else None,
         "event_observation_timing": event_timing,
+        "candidate_overlap_audit": overlap_audit,
+        "preview_geometry_overlap": preview_overlap,
         "threshold_method": request["threshold_method"],
         "threshold_db": report_payload["method"].get("threshold_db"),
         "time_series_report_sha256": report_digest,

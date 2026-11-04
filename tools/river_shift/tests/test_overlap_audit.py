@@ -6,7 +6,7 @@ import pytest
 from pyproj import CRS
 from shapely.geometry import box, mapping
 
-from process_gcov_job import preview_geometry_overlap_metrics
+from process_gcov_job import WorkerFailure, preview_geometry_overlap_metrics, run_candidate_mask_overlap_audit
 from river_shift.overlap_audit import audit_candidate_mask_overlap, audit_scene_mosaic_overlap
 
 
@@ -109,3 +109,51 @@ def test_preview_geometry_overlap_is_reported_separately_from_source_masks():
     assert pair["intersection_fraction_of_smaller_class"] > 0
     assert result["pairwise"]["erosion__new_water"]["intersection_area_km2"] == 0
     assert "never use these areas for measurements" in result["warning"].lower()
+
+
+def test_worker_overlap_audit_reads_all_three_source_masks_and_retains_report(tmp_path, raster_writer):
+    morphology_dir = tmp_path / "morphology"
+    flood_dir = tmp_path / "flood"
+    morphology_dir.mkdir()
+    flood_dir.mkdir()
+
+    erosion = np.zeros((8, 8), dtype=np.uint8)
+    deposition = np.zeros((8, 8), dtype=np.uint8)
+    new_water = np.zeros((8, 8), dtype=np.uint8)
+    erosion[1:3, 1:3] = 1
+    deposition[5:7, 5:7] = 1
+    new_water[3:5, 3:5] = 1
+    raster_writer("morphology/erosion_candidate_mask.tif", erosion)
+    raster_writer("morphology/deposition_candidate_mask.tif", deposition)
+    raster_writer("flood/newly_water_covered_mask.tif", new_water)
+
+    output = tmp_path / "quality-assurance" / "candidate_mask_overlap_audit.json"
+    result = run_candidate_mask_overlap_audit(
+        morphology_dir,
+        flood_dir,
+        output,
+        comparison_window={
+            "baseline": "2026-07-24",
+            "morphology_post_one": "2026-08-29",
+            "morphology_post_two": "2026-09-10",
+            "new_water_comparison": "2026-08-17",
+        },
+    )
+
+    assert output.is_file()
+    assert result["status"] == "COMPUTED_DIAGNOSTIC_ONLY"
+    assert result["pairwise"]["erosion__deposition"]["intersection_pixels"] == 0
+    assert result["pairwise"]["erosion__new_water"]["intersection_pixels"] == 0
+    assert len(result["report_sha256"]) == 64
+    assert json.loads(output.read_text())["comparison_window"]["new_water_comparison"] == "2026-08-17"
+
+
+def test_worker_overlap_audit_fails_closed_when_required_source_mask_is_missing(tmp_path):
+    with pytest.raises(WorkerFailure) as error:
+        run_candidate_mask_overlap_audit(
+            tmp_path / "morphology",
+            tmp_path / "flood",
+            tmp_path / "audit.json",
+            comparison_window={"baseline": "2026-01-01"},
+        )
+    assert error.value.code == "CANDIDATE_MASK_OVERLAP_AUDIT_FAILED"
