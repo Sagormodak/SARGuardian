@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   countRiverShiftCandidateLayers,
   filterRiverShiftCandidateGeoJSON,
+  getRiverShiftEventObservationNote,
+  getRiverShiftOverlapAuditAvailability,
   type RiverShiftGeoJSON,
 } from './manifest';
 
@@ -68,11 +70,6 @@ describe('RiverShift candidate overlay filters', () => {
   });
 });
 
-
-import {
-  getRiverShiftEventObservationNote,
-  getRiverShiftOverlapAuditAvailability,
-} from './manifest';
 
 describe('RiverShift audit and event-timing disclosure', () => {
   it('distinguishes missing spatial diagnostics from zero overlap', () => {
