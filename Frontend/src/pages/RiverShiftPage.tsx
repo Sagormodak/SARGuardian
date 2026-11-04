@@ -730,7 +730,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       const name = String(feature.getProperty('marker_change_type') || feature.getProperty('river_shift_layer') || feature.getProperty('class') || feature.getProperty('change_type') || '').toLowerCase();
       const colour = name.includes('erosion') ? '#f07462'
         : name.includes('deposition') || name.includes('accretion') ? '#5fd7a5'
-          : name.includes('new_water') || name.includes('newly_water') || name.includes('water_covered') ? '#53b9f4'
+          : name.includes('new_water') || name.includes('newly_water') || name.includes('water_covered') || name.includes('open_water') ? '#53b9f4'
             : '#9aafbb';
       if (geometryType === 'Point' && feature.getProperty('general_change_marker') === true) {
         return {
