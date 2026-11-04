@@ -6,6 +6,9 @@ import os
 from pathlib import Path
 
 import pytest
+import requests
+
+import download_gcov_product as download_module
 
 from download_gcov_product import (
     HDF5_SIGNATURE,
@@ -49,6 +52,78 @@ class FakeEarthaccess:
         destination = Path(local_path) / f"{GRANULE}.h5"
         destination.write_bytes(self.payload)
         return [destination]
+
+
+class FakeRangeResponse:
+    def __init__(self, *, status_code, headers=None, payload=b""):
+        self.status_code = status_code
+        self.headers = dict(headers or {})
+        self.payload = payload
+        self.closed = False
+
+    def iter_content(self, chunk_size):
+        del chunk_size
+        if self.payload:
+            yield self.payload
+
+    def close(self):
+        self.closed = True
+
+
+class FakeRangeSession:
+    def __init__(self, owner):
+        self.owner = owner
+
+    def get(self, url, *, headers, stream, allow_redirects, timeout):
+        del url, stream, allow_redirects, timeout
+        value = headers["Range"]
+        start, end = (int(item) for item in value.removeprefix("bytes=").split("-", 1))
+        key = (start, end)
+        with self.owner.range_lock:
+            self.owner.range_calls.append(key)
+            self.owner.range_counts[key] = self.owner.range_counts.get(key, 0) + 1
+            call_number = self.owner.range_counts[key]
+
+        if not self.owner.range_supported:
+            return FakeRangeResponse(status_code=200, payload=b"")
+        if self.owner.fail_once_for == key and call_number == 1:
+            raise requests.exceptions.ConnectionError("simulated transient range connection drop")
+
+        payload = self.owner.payload[start:end + 1]
+        return FakeRangeResponse(
+            status_code=206,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{len(self.owner.payload)}",
+                "Content-Length": str(len(payload)),
+                "ETag": self.owner.etag,
+            },
+            payload=payload,
+        )
+
+
+class RangedFakeEarthaccess(FakeEarthaccess):
+    def __init__(self, *, range_supported=True, fail_once_for=None):
+        super().__init__(results=[_cmr_result()])
+        import threading
+        self.range_supported = range_supported
+        self.fail_once_for = fail_once_for
+        self.range_calls = []
+        self.range_counts = {}
+        self.range_lock = threading.Lock()
+        self.etag = '"fixture-etag"'
+
+    def get_requests_https_session(self):
+        return FakeRangeSession(self)
+
+
+def _exact_range_catalogue_row():
+    return {
+        **_catalogue_row(),
+        "download_url": (
+            "https://nisar.asf.earthdatacloud.nasa.gov/NISAR/"
+            f"{GRANULE}/{GRANULE}.h5"
+        ),
+    }
 
 
 def _catalogue_row():
@@ -309,3 +384,101 @@ def test_network_download_failure_does_not_trigger_username_password_fallback(mo
         download_product(_catalogue_row(), tmp_path)
 
     assert fake.download_count == 1
+
+def test_authenticated_range_download_uses_parallel_parts_and_verifies_final_hdf5(monkeypatch, tmp_path):
+    fake = RangedFakeEarthaccess()
+    monkeypatch.setattr("download_gcov_product._load_earthaccess", lambda: fake)
+    monkeypatch.setattr(download_module, "RANGE_PART_BYTES", 8)
+    monkeypatch.setattr(download_module, "RANGE_DOWNLOAD_WORKERS", 2)
+
+    result = download_product(_exact_range_catalogue_row(), tmp_path)
+
+    expected = fake.payload
+    product_path = tmp_path / f"{GRANULE}.h5"
+    assert product_path.read_bytes() == expected
+    assert is_hdf5_file(product_path)
+    assert result["download_method"] == "earthaccess_authenticated_http_range"
+    assert result["size_bytes"] == len(expected)
+    assert result["sha256"] == hashlib.sha256(expected).hexdigest()
+    assert fake.download_calls == []
+    assert (0, 0) in fake.range_calls
+    assert (0, 7) in fake.range_calls
+    assert (8, 15) in fake.range_calls
+    receipt = json.loads((tmp_path / f"{GRANULE}.download.json").read_text())
+    assert receipt["download_method"] == "earthaccess_authenticated_http_range"
+    assert receipt["sha256"] == result["sha256"]
+
+
+def test_authenticated_range_download_retries_only_the_failed_byte_range(monkeypatch, tmp_path):
+    fake = RangedFakeEarthaccess(fail_once_for=(0, 7))
+    monkeypatch.setattr("download_gcov_product._load_earthaccess", lambda: fake)
+    monkeypatch.setattr(download_module, "RANGE_PART_BYTES", 8)
+    monkeypatch.setattr(download_module.time, "sleep", lambda *_args: None)
+
+    result = download_product(_exact_range_catalogue_row(), tmp_path)
+
+    assert result["downloaded"] is True
+    assert fake.range_counts[(0, 0)] == 1
+    assert fake.range_counts[(0, 7)] == 2
+    assert fake.range_counts[(8, 15)] == 1
+    assert fake.download_calls == []
+
+
+def test_unsupported_http_range_falls_back_to_earthaccess_download(monkeypatch, tmp_path):
+    fake = RangedFakeEarthaccess(range_supported=False)
+    monkeypatch.setattr("download_gcov_product._load_earthaccess", lambda: fake)
+
+    result = download_product(_exact_range_catalogue_row(), tmp_path)
+
+    assert result["download_method"] == "earthaccess.download"
+    assert fake.download_calls and len(fake.download_calls) == 1
+    assert (tmp_path / f"{GRANULE}.h5").read_bytes() == fake.payload
+
+
+def test_transient_earthdata_login_connection_error_is_retried_once(monkeypatch, tmp_path):
+    class FlakyLogin(FakeEarthaccess):
+        def login(self, **kwargs):
+            self.login_calls.append(kwargs)
+            if len(self.login_calls) == 1:
+                raise requests.exceptions.ConnectionError("temporary EDL handshake failure")
+            return True
+
+    fake = FlakyLogin(results=[_cmr_result()])
+    monkeypatch.setattr("download_gcov_product._load_earthaccess", lambda: fake)
+    monkeypatch.setattr(download_module.time, "sleep", lambda *_args: None)
+
+    result = download_product(_catalogue_row(), tmp_path)
+
+    assert result["downloaded"] is True
+    assert fake.login_calls == [{"strategy": "environment"}, {"strategy": "environment"}]
+
+
+def test_http_range_response_with_wrong_content_range_is_rejected(monkeypatch, tmp_path):
+    class CorruptRangeSession(FakeRangeSession):
+        def get(self, url, *, headers, stream, allow_redirects, timeout):
+            response = super().get(
+                url,
+                headers=headers,
+                stream=stream,
+                allow_redirects=allow_redirects,
+                timeout=timeout,
+            )
+            if headers["Range"] == "bytes=0-7" and response.status_code == 206:
+                response.headers["Content-Range"] = "bytes 0-6/999"
+            return response
+
+    class CorruptRangeEarthaccess(RangedFakeEarthaccess):
+        def get_requests_https_session(self):
+            return CorruptRangeSession(self)
+
+    fake = CorruptRangeEarthaccess()
+    monkeypatch.setattr("download_gcov_product._load_earthaccess", lambda: fake)
+    monkeypatch.setattr(download_module, "RANGE_PART_BYTES", 8)
+
+    with pytest.raises(RuntimeError, match="inconsistent Content-Range"):
+        download_product(_exact_range_catalogue_row(), tmp_path)
+
+    assert not (tmp_path / f"{GRANULE}.h5").exists()
+    assert not (tmp_path / f"{GRANULE}.download.json").exists()
+    assert not list(tmp_path.glob(".*.earthaccess-download"))
+
