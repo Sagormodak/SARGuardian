@@ -63,7 +63,7 @@ RiverShift addresses the discovery and communication gap: the user identifies th
 
 **Third-party visual context:** Google Maps Satellite imagery provides geographic orientation in the result map. It is not used in the NISAR classification and is not an independent validation dataset.
 
-Do not add Copernicus DEM, GPM IMERG, gauge values, field survey, or population/exposure data to claims unless the submitted build actually processed the source and retained its identity, timestamp and method. The OSM panel is a mapped building/facility context screen, not a complete asset inventory, census, damage assessment, or independent validation dataset. Gauge readings must not be described as spatial water-mask validation.
+Do not add Copernicus DEM, GPM IMERG, gauge values, field survey, or population/exposure data to claims unless the submitted build actually processed the source and retained its identity, timestamp and method. The OSM panel is a mapped building/facility context screen, not a complete asset inventory, census, damage assessment, or independent validation dataset. Its separate gold map markers are sampled for display only (up to 2,000); the local intersection counts use the full loaded point layer. Gauge readings must not be described as spatial water-mask validation.
 
 ## How the science works
 
