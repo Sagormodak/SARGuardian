@@ -16,9 +16,11 @@ or event causality. Those require independent bankline or geomorphic reference e
 Prepare a GeoTIFF with:
 
 - One binary band: 1 = water, 0 = non-water.
-- The exact same dimensions, CRS, affine transform and pixel grid as the NISAR
-  during_water_mask.tif selected from the source job.
-- A projected CRS using metres.
+- Any valid georeferenced CRS and affine transform; the runner aligns categorical
+  labels to the NISAR mask grid with nearest-neighbour resampling.
+- Exactly one band with binary values 0/1 and NoData for genuinely unlabelled pixels.
+- Do not resample labels yourself to match the NISAR pixel grid; the workflow records
+  the reference source grid and performs the reproducible alignment internally.
 - NoData only for genuinely unlabelled / invalid reference pixels.
 - A source, acquisition/observation date, and reproducible classification/QA method.
 
@@ -51,8 +53,11 @@ reusing the NISAR prediction being evaluated.
 
 The workflow resolves the NISAR mask and its adjacent river_shift_result.json through
 a signed, read-only Dynamic API endpoint. It verifies both retained Drive receipts
-against their SHA-256 checksums before validation. The original processing job and its
-immutable record are never modified.
+against their SHA-256 checksums before validation. The reference is independently
+checksum-recorded, checked for binary labels, aligned onto the NISAR projected-metre
+grid with nearest-neighbour resampling, and then tested for common valid support.
+NoData is preserved rather than filled. The original processing job and its immutable
+record are never modified.
 
 ## Interpret the result
 
