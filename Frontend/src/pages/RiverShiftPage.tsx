@@ -170,8 +170,9 @@ function OverlapAuditPanel({ summary }: { summary: Record<string, unknown> }) {
         <span className="rs-chip">DIAGNOSTIC · NOT ACCURACY</span>
       </div>
       <p className="rs-muted">
-        Full-resolution source masks are compared separately from lower-resolution map-preview footprints.
-        Preview overlap can be introduced by downsampling and must not be used as a measurement.
+        Full-resolution source masks are compared separately from majority-occupancy preview polygons.
+        Sparse sub-cell candidates are rendered as small MultiPoint markers and excluded from preview area/Jaccard.
+        Neither preview geometry type is a measurement; source masks remain authoritative.
       </p>
       <div className="rs-overlap-table-wrap">
         <table className="rs-table rs-overlap-table">
@@ -179,9 +180,9 @@ function OverlapAuditPanel({ summary }: { summary: Record<string, unknown> }) {
             <tr>
               <th>Class pair</th>
               <th>Source-mask intersection</th>
-              <th>Preview intersection</th>
+              <th>Preview polygon intersection</th>
               <th>Source Jaccard</th>
-              <th>Preview Jaccard</th>
+              <th>Preview polygon Jaccard</th>
             </tr>
           </thead>
           <tbody>
@@ -829,6 +830,20 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
         : name.includes('deposition') || name.includes('accretion') ? '#5fd7a5'
           : name.includes('new_water') || name.includes('newly_water') || name.includes('water_covered') ? '#53b9f4'
             : isObservedOpenWater ? '#73b3df' : '#9aafbb';
+      if ((geometryType === 'Point' || geometryType === 'MultiPoint')
+        && feature.getProperty('preview_sparse_marker') === true) {
+        return {
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 3.5,
+            fillColor: colour,
+            fillOpacity: 0.95,
+            strokeColor: '#ffffff',
+            strokeWeight: 0.8,
+          },
+          zIndex: 900,
+        };
+      }
       if (geometryType === 'Point' && feature.getProperty('general_change_marker') === true) {
         return {
           icon: {
@@ -1281,7 +1296,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
                   <span><strong>Observed-date open-water extent</strong><small>{candidateOverlayCounts.observedWater > 0 ? `${candidateOverlayCounts.observedWater} feature(s) in the result layer; ` : ''}Current acquired-date water layer; separate from date-window change candidates.</small></span>
                 </label>
               )}
-              <p className="rs-overlay-note">Visibility controls affect the map only. Full-resolution masks and scientific metrics are unchanged. Preview geometry is display-only and may generalise or visually overlap separate classes.</p>
+              <p className="rs-overlay-note">Visibility controls affect the map only. Full-resolution masks and scientific metrics are unchanged. Preview polygons require more than 50% sub-cell occupancy; sparser candidates are approximate point markers, not area fills. Different classes may share a coarse preview cell.</p>
             </div>
           )}
           <div className="rs-data-sources" aria-label="RiverShift data sources and roles">
@@ -1291,7 +1306,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
             <div><strong>Optional independent agency comparison</strong><span>Copernicus Sentinel-2 L2A can be compared with a supplied NISAR water mask using clear-sky SCL and B03/B11 MNDWI. This optional screen is not run for this result unless a comparison report is attached, and it is not ground truth.</span></div>
           </div>
           {hasVerifiedOverlay && <p className="rs-muted">Verified layer(s) are drawn; each GeoJSON SHA-256 matches the loaded report. Candidate classes require scientific interpretation and are not field-confirmed land change.</p>}
-          {hasJobPreviewOverlay && !hasVerifiedOverlay && <p className="rs-warning-inline">Provisional map preview is derived from checksum-bound full-resolution masks using lower-resolution occupancy footprints. Different classes can appear to overlap at preview scale even when their full-resolution masks do not. The map is for visual orientation only; full-resolution masks and measurements remain authoritative and PROVISIONAL.</p>}
+          {hasJobPreviewOverlay && !hasVerifiedOverlay && <p className="rs-warning-inline">Provisional map preview uses majority-occupancy polygons plus small markers for sparse sub-cell candidates. Sparse marker centres are approximate and may coincide when different classes occupy separate parts of one coarse cell. The map is for visual orientation only; full-resolution masks and measurements remain authoritative and PROVISIONAL.</p>}
           {report && geoJSONFiles.length > 0 && !hasVerifiedOverlay && <p className="rs-warning-inline" role="status">Loaded GeoJSON is not drawn: the report is not VERIFIED, the checksum does not match, or the complete time-series layer set is missing.</p>}
         </section>
         {!report && !hasLiveJobResult && <div className="rs-empty-state">
