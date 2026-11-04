@@ -103,6 +103,7 @@ def _cmr_umm_search(
     temporal: tuple[str, str] | None = None,
     bounding_box: tuple[float, float, float, float] | None = None,
     page_size: int = CMR_PAGE_SIZE,
+    fetch_all: bool = True,
 ) -> dict[str, Any]:
     """Query CMR's UMM JSON API directly, bypassing Earthaccess GranuleQuery defaults."""
     from math import ceil
@@ -144,6 +145,10 @@ def _cmr_umm_search(
             raise OperaReferenceError("CMR response returned an invalid hit count.") from exc
         if hits < 0:
             raise OperaReferenceError("CMR returned a negative hit count.")
+        if str(response.headers.get("CMR-Time-Out", "")).lower() == "true":
+            raise OperaReferenceError(
+                "CMR timed out and marked its result set incomplete; refusing partial granule inventory."
+            )
         if any(not isinstance(item, dict) for item in items):
             raise OperaReferenceError("CMR UMM JSON contains a non-object granule item.")
         return items, hits, {
@@ -159,7 +164,7 @@ def _cmr_umm_search(
     first_items, hits, first_audit = fetch_page(1)
     all_items = list(first_items)
     audit_pages = [first_audit]
-    if hits > page_size:
+    if fetch_all and hits > page_size:
         total_pages = min(ceil(hits / page_size), 20)
         for page_num in range(2, total_pages + 1):
             page_items, page_hits, page_audit = fetch_page(page_num)
@@ -291,17 +296,20 @@ def _discover_records(
             collection_concept_id=COLLECTION_CONCEPT_ID,
             temporal=temporal,
             page_size=1,
+            fetch_all=False,
         )
         aoi_probe = _cmr_umm_search(
             session,
             collection_concept_id=COLLECTION_CONCEPT_ID,
             bounding_box=bbox,
             page_size=1,
+            fetch_all=False,
         )
         collection_probe = _cmr_umm_search(
             session,
             collection_concept_id=COLLECTION_CONCEPT_ID,
             page_size=1,
+            fetch_all=False,
         )
         diagnostics["zero_result_probes"] = {
             "collection_and_date": {
