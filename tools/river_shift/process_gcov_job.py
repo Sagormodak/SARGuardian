@@ -1341,6 +1341,7 @@ def create_web_previews(
     # spatial cell in every other class.
     common_preview_dimension = 384
     common_preview_grid: tuple[int, int] | None = None
+    common_preview_pixel_size_m: float | None = None
     for source_path, destination, layer_type in sources:
         if not source_path.is_file():
             raise WorkerFailure(
@@ -1366,13 +1367,24 @@ def create_web_previews(
             int(preview["river_shift_preview"]["preview_width"]),
             int(preview["river_shift_preview"]["preview_height"]),
         )
+        current_preview_pixel_size_m = float(preview["river_shift_preview"]["display_pixel_size_m"])
         if common_preview_grid is None:
             common_preview_grid = current_preview_grid
-        elif current_preview_grid != common_preview_grid:
+            common_preview_pixel_size_m = current_preview_pixel_size_m
+        elif (
+            current_preview_grid != common_preview_grid
+            or not math.isclose(
+                current_preview_pixel_size_m,
+                float(common_preview_pixel_size_m),
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            )
+        ):
             raise WorkerFailure(
                 "PREVIEW_GRID_MISMATCH",
-                "All RiverShift change-class previews must share one reduced grid; "
-                f"expected={common_preview_grid}, current={current_preview_grid}.",
+                "All RiverShift change-class previews must share one reduced grid and cell size; "
+                f"expected={common_preview_grid}/{common_preview_pixel_size_m}, "
+                f"current={current_preview_grid}/{current_preview_pixel_size_m}.",
             )
         digest = sha256_file(destination)
         layers.append({
@@ -1437,15 +1449,9 @@ def create_web_previews(
             "preview_grid": {
                 "width": common_preview_grid[0] if common_preview_grid else None,
                 "height": common_preview_grid[1] if common_preview_grid else None,
-                "display_pixel_size_m": round(
-                    max(
-                        math.hypot(
-                            (preview_analysis_crs and 10.0) / max(1, common_preview_grid[0] if common_preview_grid else 1),
-                            0.0,
-                        ),
-                        0.0,
-                    ), 3
-                ) if common_preview_grid else None,
+                "display_pixel_size_m": round(common_preview_pixel_size_m, 3)
+                if common_preview_pixel_size_m is not None else None,
+                "fixed_max_dimension": common_preview_dimension,
                 "shared_across_change_classes": True,
             },
             "warning": (
