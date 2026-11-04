@@ -132,7 +132,10 @@ def _discover_records(
     print(
         "RIVERSHIFT_OPERA_CMR_QUERY="
         + json.dumps({
-            "short_name": COLLECTION_SHORT_NAME,
+            "collection_doi": COLLECTION_DOI,
+            "collection_concept_id": COLLECTION_CONCEPT_ID,
+            "collection_short_name": COLLECTION_SHORT_NAME,
+            "query_method": "earthaccess DOI lookup",
             "temporal_start": start.isoformat(),
             "temporal_end": end.isoformat(),
             "bounding_box": [west, south, east, north],
