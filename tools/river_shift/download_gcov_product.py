@@ -242,6 +242,7 @@ def _probe_http_range_support(earthaccess, url: str, expected_name: str) -> dict
         return None
 
     response = None
+    session = None
     started = time.monotonic()
     try:
         session = factory()
@@ -301,6 +302,8 @@ def _probe_http_range_support(earthaccess, url: str, expected_name: str) -> dict
     finally:
         if response is not None and callable(getattr(response, "close", None)):
             response.close()
+        if session is not None and callable(getattr(session, "close", None)):
+            session.close()
 
 
 def _download_one_http_range(
@@ -317,6 +320,7 @@ def _download_one_http_range(
     expected_bytes = end - start + 1
     for attempt in range(1, RANGE_MAX_ATTEMPTS + 1):
         response = None
+        session = None
         try:
             headers = {"Range": f"bytes={start}-{end}", "Accept-Encoding": "identity"}
             if etag:
@@ -386,6 +390,8 @@ def _download_one_http_range(
         finally:
             if response is not None and callable(getattr(response, "close", None)):
                 response.close()
+            if session is not None and callable(getattr(session, "close", None)):
+                session.close()
     raise RuntimeError(f"HTTP range {start}-{end} for {granule_name} exhausted its retry budget.")
 
 
