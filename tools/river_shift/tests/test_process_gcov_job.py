@@ -8,6 +8,7 @@ from shapely.geometry import Polygon, mapping
 
 from process_gcov_job import (
     WorkerFailure,
+    event_observation_timing,
     _configure_earthdata_credentials,
     _ensure_credentials,
     _product_date,
@@ -451,3 +452,25 @@ def test_drive_preflight_uses_list_and_create_for_the_parent(monkeypatch, tmp_pa
     assert "parent-folder-123" not in output
     assert "test-refresh-token" not in output
 
+
+
+def test_event_observation_timing_reports_actual_gap_without_claiming_peak_stage():
+    timing = event_observation_timing(
+        date(2026, 7, 28), {"event_proximal_observation": "2026-08-17"}
+    )
+    assert timing["event_date"] == "2026-07-28"
+    assert timing["first_post_event_observation"] == "2026-08-17"
+    assert timing["offset_days"] == 20
+    assert "not a measured event-peak" in timing["interpretation"]
+
+
+def test_event_observation_timing_is_absent_for_general_scan():
+    assert event_observation_timing(None, None) is None
+
+
+def test_event_observation_timing_rejects_same_day_or_pre_event_acquisition():
+    with pytest.raises(WorkerFailure) as error:
+        event_observation_timing(
+            date(2026, 7, 28), {"event_proximal_observation": "2026-07-28"}
+        )
+    assert error.value.code == "EVENT_WINDOW_INVALID"

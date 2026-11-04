@@ -14,7 +14,7 @@ on:
         description: Deployed SARGuardian Dynamic API base URL
         required: true
         type: string
-        default: https://sar-guardian-dynamic-lilac.vercel.app
+        default: https://sarguardian-backend-api.vercel.app
       reference_drive_file_id:
         description: Google Drive file ID of an independently prepared binary reference GeoTIFF
         required: true
