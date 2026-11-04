@@ -49,10 +49,8 @@ describe('General River Change Scan map markers', () => {
     }]));
 
     expect(result).toHaveLength(2);
-    expect(result.map((marker) => marker.longitude)).toEqual(expect.arrayContaining([
-      expect.closeTo(89.65, 5),
-      expect.closeTo(89.85, 5),
-    ]));
+    expect(result[0].longitude).toBeCloseTo(89.65, 5);
+    expect(result[1].longitude).toBeCloseTo(89.85, 5);
   });
 
   it('does not mark per-acquisition open-water masks as detected change classes', () => {
