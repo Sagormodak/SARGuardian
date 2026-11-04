@@ -165,3 +165,28 @@ jobs:
           with summary.open("a", encoding="utf-8") as stream:
               stream.write("\n".join(lines) + "\n")
           PY
+
+      - name: Enforce independent-reference metrics gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f opera-output/opera_dswx_s1_validation_status.json ]; then
+            echo "::error::No OPERA validation status report was produced."
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path("opera-output/opera_dswx_s1_validation_status.json").read_text(encoding="utf-8"))
+          status = payload.get("status")
+          print(f"RIVERSHIFT_OPERA_FINAL_STATUS={status}")
+          if status != "METRICS_COMPUTED_REVIEW_REQUIRED":
+              raise SystemExit(
+                  "No eligible OPERA independent-reference metrics were produced; "
+                  "the run is deliberately marked failed rather than green."
+              )
+          print("RIVERSHIFT_OPERA_METRICS_GATE=PASS")
+          print("RIVERSHIFT_OPERA_RELEASE_STATUS=PROVISIONAL_REVIEW_REQUIRED")
+          PY
