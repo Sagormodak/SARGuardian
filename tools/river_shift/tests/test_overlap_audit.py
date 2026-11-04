@@ -3,6 +3,10 @@ import json
 import numpy as np
 import pytest
 
+from pyproj import CRS
+from shapely.geometry import box, mapping
+
+from process_gcov_job import preview_geometry_overlap_metrics
 from river_shift.overlap_audit import audit_candidate_mask_overlap, audit_scene_mosaic_overlap
 
 
@@ -75,3 +79,33 @@ def test_scene_mosaic_overlap_reports_backscatter_difference(tmp_path, raster_wr
     assert result["pairwise"][0]["shared_valid_pixels"] == 36
     assert result["pairwise"][0]["absolute_delta_db_median"] == pytest.approx(10 * np.log10(2), abs=1e-5)
     assert len(result["scenes"][0]["sha256"]) == 64
+
+
+def test_preview_geometry_overlap_is_reported_separately_from_source_masks():
+    features = [
+        {
+            "type": "Feature",
+            "properties": {"river_shift_layer": "erosion"},
+            "geometry": mapping(box(89.50, 24.50, 89.70, 24.70)),
+        },
+        {
+            "type": "Feature",
+            "properties": {"river_shift_layer": "deposition"},
+            "geometry": mapping(box(89.60, 24.50, 89.80, 24.70)),
+        },
+        {
+            "type": "Feature",
+            "properties": {"river_shift_layer": "new_water"},
+            "geometry": mapping(box(89.90, 24.50, 90.00, 24.60)),
+        },
+    ]
+
+    result = preview_geometry_overlap_metrics(features, CRS.from_epsg(32646))
+
+    pair = result["pairwise"]["erosion__deposition"]
+    assert result["status"] == "DISPLAY_ONLY_DIAGNOSTIC"
+    assert pair["intersection_area_km2"] > 0
+    assert 0 < pair["jaccard"] < 1
+    assert pair["intersection_fraction_of_smaller_class"] > 0
+    assert result["pairwise"]["erosion__new_water"]["intersection_area_km2"] == 0
+    assert "never use these areas for measurements" in result["warning"]
