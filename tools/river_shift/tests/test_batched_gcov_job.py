@@ -456,7 +456,10 @@ def test_workflow_does_not_mask_product_worker_failures_and_validates_retry_hand
     assert "retry_dispatch:" in workflow
     assert "RIVERSHIFT_RETRY_MATRIX_JSON:" in workflow
     assert "matrix_include_count=" in workflow
-    assert "fromJSON(needs.retry_dispatch.outputs.retry_matrix)" in workflow
+    assert "needs: [retry_prepare, retry_dispatch]" in workflow
+    assert "needs.retry_prepare.outputs.retry_count != '0'" in workflow
+    assert "fromJSON(needs.retry_prepare.outputs.retry_matrix)" in workflow
+    assert "fromJSON(needs.retry_dispatch.outputs.retry_matrix)" not in workflow
     expected_status_env = "RIVERSHIFT_RETRY_DISPATCH_STATUS: $" + "{{ needs.retry_dispatch.result }}"
     assert expected_status_env in workflow
 
