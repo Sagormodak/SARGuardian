@@ -349,7 +349,7 @@ def _build_reference_on_nisar_grid(
             raw = src.read(1)
             valid = src.read_masks(1) > 0
             classes = set(int(value) for value in np.unique(raw))
-            if not classes.issubset({0, 1, 3, 120, 250, 251, 252, 253, 254, 255}):
+            if not classes.issubset({0, 1, 3, 250, 251, 255}):
                 raise OperaReferenceError(
                     f"Unexpected OPERA WTR classes in {path.name}: {sorted(classes)}"
                 )
@@ -382,17 +382,14 @@ def _build_reference_on_nisar_grid(
                 "tile_id": metadata["tile_id"],
                 "source_crs": src.crs.to_string(),
                 "source_geometry": geometry_fields,
-                "absolute_orbit_number": (
-                    source_tags.get("ABSOLUTE_ORBIT_NUMBER")
-                    or source_tags.get("RTC_ABSOLUTE_ORBIT_NUMBER")
-                ),
+                "absolute_orbit_number": geometry_fields["ABSOLUTE_ORBIT_NUMBER"],
                 "sensing_start_time": (
-                    source_tags.get("SENSING_START")
-                    or source_tags.get("RTC_SENSING_START_TIME")
+                    source_tags.get("RTC_SENSING_START_TIME")
+                    or source_tags.get("SENSING_START")
                 ),
                 "sensing_end_time": (
-                    source_tags.get("SENSING_END")
-                    or source_tags.get("RTC_SENSING_END_TIME")
+                    source_tags.get("RTC_SENSING_END_TIME")
+                    or source_tags.get("SENSING_END")
                 ),
                 "polarization": source_tags.get("POLARIZATION"),
                 "source_width": src.width,
@@ -431,7 +428,7 @@ def _build_reference_on_nisar_grid(
             SOURCE_LAYER="WTR",
             CLASS_1="open water (OPERA WTR class 1)",
             CLASS_0="not water (OPERA WTR class 0)",
-            NODATA_CLASSES="2=moderate-confidence open water;3=inundated vegetation;5,6,7,30,31,32,35,36,37=other wetland/ambiguous WTR classes;250=HAND mask;251=layover/shadow;255=fill/no data;all other classes excluded",
+            NODATA_CLASSES="3=inundated vegetation;250=HAND masked;251=layover/shadow;255=fill/no data;all other classes excluded",
             ALIGNMENT="Nearest-neighbour categorical reprojection to the retained NISAR prediction grid",
             OVERLAP_POLICY="Conflicting overlapping-tile class labels are marked NoData",
             INTERPRETATION="Independent SAR-derived cross-sensor screening only; not field truth",
