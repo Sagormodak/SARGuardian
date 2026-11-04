@@ -1780,6 +1780,7 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
         "event_date": request["event_date"].isoformat() if request["event_date"] else None,
         "event_date_basis": "user supplied; no independent gauge feed is attached" if request["analysis_mode"] == "event_based" else None,
         "event_window": event_window if request["analysis_mode"] == "event_based" else None,
+        "event_observation_timing": event_timing,
         "event_proximal_observation_offset_days": (
             (date.fromisoformat(event_window["event_proximal_observation"]) - request["event_date"]).days
             if request["analysis_mode"] == "event_based" else None
@@ -1945,6 +1946,9 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
     inventory.append({"path": time_report_path.relative_to(work_dir).as_posix(), "sha256": sha256_file(time_report_path)})
     report_digest = sha256_file(time_report_path)
     report_payload = json.loads(time_report_path.read_text(encoding="utf-8"))
+    event_timing = event_observation_timing(
+        request["event_date"], event_window if request["analysis_mode"] == "event_based" else None
+    )
     summary = {
         "schema_version": 1,
         "processing_status": "PASS",
@@ -1971,6 +1975,7 @@ def run_job(request: dict[str, Any], callbacks: JobCallbacks) -> tuple[dict[str,
                     "New water and persistent land/water transitions are provisional candidates, not confirmed flood or geomorphic causes.",
                 ] if request["analysis_mode"] == "general_scan" else [
                     "The flood comparison uses the first qualifying NISAR acquisition strictly after the user-supplied event date; it is not a measured peak-stage observation.",
+                    f"The first post-event NISAR acquisition was {event_timing[\"offset_days\"]} days after the supplied event date ({event_timing[\"first_post_event_observation\"]}); check a same-stage gauge or independent reference before event attribution.",
                     "The event date was supplied by the user and was not verified against an authoritative gauge feed.",
                 ]
             ),
