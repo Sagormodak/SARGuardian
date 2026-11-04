@@ -146,13 +146,40 @@ def test_raster_first_job_previews_keep_each_change_class_and_each_observed_date
     assert combined["river_shift_preview"]["features_omitted_for_size"] == 0
     assert combined_path.stat().st_size <= MAX_WEB_PREVIEW_BYTES
 
+    class_previews = {
+        "erosion": morphology_dir / "erosion_candidates_preview.geojson",
+        "deposition": morphology_dir / "deposition_candidates_preview.geojson",
+        "new_water": flood_dir / "newly_water_covered_preview.geojson",
+    }
+    expected_class_pixels = {
+        "erosion": int(erosion.sum()),
+        "deposition": int(deposition.sum()),
+        "new_water": int(new_water.sum()),
+    }
+    observed_class_pixels = {}
+    for class_name, preview_path in class_previews.items():
+        class_preview = json.loads(preview_path.read_text(encoding="utf-8"))
+        diagnostics = class_preview["river_shift_preview"]
+        observed_class_pixels[class_name] = diagnostics["source_candidate_pixels"]
+        assert diagnostics["source_candidate_pixels"] == expected_class_pixels[class_name]
+        # These fixtures fit without downsampling, so preview cells must be an
+        # exact one-to-one count of the class-specific source mask positives.
+        assert diagnostics["preview_candidate_cells"] == expected_class_pixels[class_name]
+    assert len(set(observed_class_pixels.values())) == 3
+
     updated_report = json.loads(report_path.read_text(encoding="utf-8"))
     assert len(updated_report["time_series"]) == 2
     for frame in updated_report["time_series"]:
         frame_path = work_dir / "outputs" / "map" / frame["water_geojson"]
         frame_preview = json.loads(frame_path.read_text(encoding="utf-8"))
         assert len(frame_preview["features"]) == 1
-        assert frame_preview["river_shift_preview"]["preview_candidate_cells"] > 0
+        expected_frame_pixels = {
+            "2026-06-30": int(water_one.sum()),
+            "2026-07-12": int(water_two.sum()),
+        }[frame["date"]]
+        assert frame_preview["river_shift_preview"]["source_candidate_pixels"] == expected_frame_pixels
+        assert frame_preview["river_shift_preview"]["preview_candidate_cells"] == expected_frame_pixels
+        assert frame["water_preview_source_candidate_pixels"] == expected_frame_pixels
         assert frame["water_preview_feature_count"] == 1
         assert frame["water_geojson_sha256"] == sha256_file(frame_path)
 
