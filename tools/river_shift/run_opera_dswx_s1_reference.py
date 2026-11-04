@@ -514,10 +514,12 @@ def run_pipeline(
             score_block_reason = "REFERENCE_TEMPORAL_OFFSET_EXCEEDS_GATE"
         elif support < minimum_common_support_fraction:
             score_block_reason = "INSUFFICIENT_REFERENCE_SUPPORT"
-        if score_block_reason is None:
-            # Upload the independently sourced candidate to the private Drive
-            # folder first; then reuse the established checksum/date/support validator.
-            pass
+        # Retain the source-derived candidate privately even when the common
+        # support gate blocks metrics. A no-score reference is still useful QA evidence.
+        drive, job_folder, upload_folder = _folder_layout(source_job_id, selected_date.isoformat())
+        reference_upload = _upload_checked(
+            drive, reference_path, upload_folder, "upload_opera_reference_geotiff"
+        )
         report = {
             "schema_version": 1,
             "status": "CANDIDATE_REFERENCE_READY" if score_block_reason is None else "BLOCKED_NO_SCORE",
@@ -527,6 +529,8 @@ def run_pipeline(
             "query": query,
             "selected_observation_date": selected_date.isoformat(),
             "date_offset_days": offset,
+            "product_specification": PRODUCT_SPEC,
+            "dataset_url": DATASET_URL,
             "selected_granules": [
                 {key: value for key, value in row.items() if key not in {"granule", "direct_links"}}
                 for row in selected
@@ -552,12 +556,7 @@ def run_pipeline(
                 "NISAR and Sentinel-1 acquisitions can differ in time, orbit, incidence angle, and hydrological stage despite passing the date gate.",
             ],
         }
-        if score_block_reason is None:
-            drive, job_folder, upload_folder = _folder_layout(source_job_id, selected_date.isoformat())
-            reference_upload = _upload_checked(
-                drive, reference_path, upload_folder, "upload_opera_reference_geotiff"
-            )
-            report["private_storage"] = {
+        report["private_storage"] = {
                 "status": "PASS",
                 "provider": "Google Drive",
                 "folder_path": "RiverShift/<job-id>/opera-dswx-s1-reference/<observation-date>/run-<workflow-run>-attempt-<attempt>",
@@ -571,6 +570,7 @@ def run_pipeline(
                     "status": reference_upload.get("status"),
                 },
             }
+        if score_block_reason is None:
             args = argparse.Namespace(
                 source_job_id=source_job_id,
                 api_base_url=api_base_url,
