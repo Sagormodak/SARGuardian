@@ -118,6 +118,81 @@ function metricText(key: string, value: number | null): string {
   return value.toFixed(digits);
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function overlapNumber(record: Record<string, unknown> | null, key: string): number | null {
+  const value = record?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function overlapText(value: number | null, digits = 3): string {
+  return value === null ? 'Not available' : value.toFixed(digits);
+}
+
+function OverlapAuditPanel({ summary }: { summary: Record<string, unknown> }) {
+  const sourceAudit = asRecord(summary.candidate_overlap_audit);
+  const sourcePairs = asRecord(sourceAudit?.pairwise);
+  const previewAudit = asRecord(summary.preview_geometry_overlap);
+  const previewPairs = asRecord(previewAudit?.pairwise);
+  if (!sourcePairs || !previewPairs) return null;
+
+  const rows = [
+    { key: 'erosion__deposition', label: 'Erosion ↔ Deposition' },
+    { key: 'erosion__new_water', label: 'Erosion ↔ New water' },
+    { key: 'deposition__new_water', label: 'Deposition ↔ New water' },
+  ];
+
+  return (
+    <section className="rs-overlap-audit" aria-label="RiverShift candidate overlap audit">
+      <div className="rs-section-heading">
+        <div><p className="rs-kicker">SPATIAL QA</p><h3>Candidate overlap audit</h3></div>
+        <span className="rs-chip">DIAGNOSTIC · NOT ACCURACY</span>
+      </div>
+      <p className="rs-muted">
+        Full-resolution source masks are compared separately from lower-resolution map-preview footprints.
+        Preview overlap can be introduced by downsampling and must not be used as a measurement.
+      </p>
+      <div className="rs-overlap-table-wrap">
+        <table className="rs-table rs-overlap-table">
+          <thead>
+            <tr>
+              <th>Class pair</th>
+              <th>Source-mask intersection</th>
+              <th>Preview intersection</th>
+              <th>Source Jaccard</th>
+              <th>Preview Jaccard</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const source = asRecord(sourcePairs[row.key]);
+              const preview = asRecord(previewPairs[row.key]);
+              return (
+                <tr key={row.key}>
+                  <td>{row.label}</td>
+                  <td>{overlapNumber(source, 'intersection_pixels')?.toLocaleString() ?? 'Not available'} px</td>
+                  <td>{overlapText(overlapNumber(preview, 'intersection_area_km2'))} km²</td>
+                  <td>{overlapText(overlapNumber(source, 'jaccard'))}</td>
+                  <td>{overlapText(overlapNumber(preview, 'jaccard'))}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="rs-overlay-note">
+        Erosion and deposition source masks must be disjoint on common valid pixels. New-water may legitimately
+        intersect a morphology class because it is derived from a different date comparison. Review the selected
+        dates before interpreting any intersection as a physical contradiction.
+      </p>
+    </section>
+  );
+}
+
 function ReportPanel({ report }: { report: RiverShiftReport }) {
   const verified = isRiverShiftReportVerified(report);
   const verification = report.quality.verification;
@@ -1029,6 +1104,9 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
           ? 'No event date was supplied or inferred. Independent scientific validation is still pending.'
           : 'The event date was user supplied and has not been independently confirmed; independent scientific validation is still pending.'}
           {' '}The map below can show a checksum-checked display preview; its measurements are not verified.</div>}
+        {riverJob.state === 'succeeded' && riverJob.result_summary && (
+          <OverlapAuditPanel summary={riverJob.result_summary} />
+        )}
         {jobPreview?.jobId === riverJob.id && jobPreview.report && jobTimeSeriesFrames.length > 0 && (
           <section className="rs-timeseries" aria-label="Provisional observed acquisition playback">
             <div className="rs-section-heading"><div><p className="rs-kicker">OBSERVED ACQUISITIONS</p><h3>River change playback</h3></div>
