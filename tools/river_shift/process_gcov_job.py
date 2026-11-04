@@ -558,26 +558,58 @@ class JobCallbacks:
         }
         body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         signature = hmac.new(self.secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-        try:
-            response = requests.post(
-                self.endpoint,
-                data=body,
-                headers={"Content-Type": "application/json", "X-SARGuardian-Signature": f"sha256={signature}"},
-                timeout=(15, 45),
-            )
-            response.raise_for_status()
-        except requests.RequestException as exc:
+        retryable_status_codes = {408, 425, 429, 500, 502, 503, 504, 522, 524}
+        retry_delays = (1.0, 2.0, 4.0)
+        max_attempts = len(retry_delays) + 1
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = requests.post(
+                    self.endpoint,
+                    data=body,
+                    headers={"Content-Type": "application/json", "X-SARGuardian-Signature": f"sha256={signature}"},
+                    timeout=(15, 45),
+                )
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                error_response = getattr(exc, "response", None)
+                status_code = getattr(error_response, "status_code", None)
+                transient_transport_error = isinstance(exc, (requests.ConnectionError, requests.Timeout))
+                retryable = transient_transport_error or status_code in retryable_status_codes
+                if retryable and attempt < max_attempts:
+                    delay = retry_delays[attempt - 1]
+                    _log_worker_stage(
+                        "signed_api_callback",
+                        "RETRY",
+                        state=state,
+                        callback_stage=stage,
+                        sequence=sequence,
+                        attempt=attempt,
+                        next_attempt=attempt + 1,
+                        status_code=status_code,
+                        error_type=type(exc).__name__,
+                        retry_delay_seconds=delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                _log_worker_stage(
+                    "signed_api_callback",
+                    "FAIL",
+                    state=state,
+                    callback_stage=stage,
+                    sequence=sequence,
+                    attempts=attempt,
+                    status_code=status_code,
+                    error_type=type(exc).__name__,
+                    retryable=retryable,
+                )
+                raise WorkerFailure("CALLBACK_REJECTED", "SARGuardian did not accept a signed processing update.") from None
+            self.sequence = sequence
             _log_worker_stage(
-                "signed_api_callback",
-                "FAIL",
-                state=state,
-                callback_stage=stage,
-                sequence=sequence,
-                error_type=type(exc).__name__,
+                "signed_api_callback", "PASS", state=state, callback_stage=stage,
+                sequence=sequence, attempts=attempt,
             )
-            raise WorkerFailure("CALLBACK_REJECTED", "SARGuardian did not accept a signed processing update.") from None
-        self.sequence = sequence
-        _log_worker_stage("signed_api_callback", "PASS", state=state, callback_stage=stage, sequence=sequence)
+            return
+        raise WorkerFailure("CALLBACK_REJECTED", "SARGuardian did not accept a signed processing update.")
 
 
 def run_step(stage: str, command: list[str], *, context: dict[str, Any] | None = None) -> None:
