@@ -247,7 +247,7 @@ def _probe_http_range_support(earthaccess, url: str, expected_name: str) -> dict
         session = factory()
         response = session.get(
             url,
-            headers={"Range": "bytes=0-0"},
+            headers={"Range": "bytes=0-0", "Accept-Encoding": "identity"},
             stream=True,
             allow_redirects=True,
             timeout=(20, 60),
@@ -255,6 +255,8 @@ def _probe_http_range_support(earthaccess, url: str, expected_name: str) -> dict
         status = int(getattr(response, "status_code", 0) or 0)
         if status in {401, 403}:
             raise RuntimeError(f"Earthdata rejected the exact NISAR range probe with HTTP status: {status}")
+        if status in {408, 425, 429} or status >= 500:
+            raise RuntimeError(f"Transient ASF range-probe response: HTTP {status}.")
         if status != 206:
             print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
                 "stage": "http_range_probe",
@@ -265,7 +267,7 @@ def _probe_http_range_support(earthaccess, url: str, expected_name: str) -> dict
             }), flush=True)
             return None
         parsed = _parse_content_range(getattr(response, "headers", {}).get("Content-Range"))
-        if parsed != (0, 0, parsed[2] if parsed else -1):
+        if parsed is None or parsed[0] != 0 or parsed[1] != 0:
             raise RuntimeError("The ASF range probe returned a malformed Content-Range header.")
         content_length = getattr(response, "headers", {}).get("Content-Length")
         if content_length not in (None, "", "1"):
@@ -316,7 +318,7 @@ def _download_one_http_range(
     for attempt in range(1, RANGE_MAX_ATTEMPTS + 1):
         response = None
         try:
-            headers = {"Range": f"bytes={start}-{end}"}
+            headers = {"Range": f"bytes={start}-{end}", "Accept-Encoding": "identity"}
             if etag:
                 headers["If-Range"] = etag
             session = session_factory()
@@ -680,19 +682,13 @@ def download_product(product: dict, output_dir: Path) -> dict:
         "product": "GCOV",
         "maturity": maturity,
         "collection_short_name": collection,
-        "download_method": (
-            "earthaccess_authenticated_http_range"
-            if _is_trusted_nisar_url(source_url, expected_name)
-            and callable(_authenticated_requests_session_factory(earthaccess))
-            else "earthaccess.download"
-        ),
+        "download_method": download_method,
         "source_host": source_host,
         "file_path": str(final_path.resolve()),
         "size_bytes": final_path.stat().st_size,
         "sha256": sha256_file(final_path),
         "downloaded": True,
     }
-    result["download_method"] = download_method
     receipt_path = output_dir / f"{expected_name}.download.json"
     receipt_path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
     return result
