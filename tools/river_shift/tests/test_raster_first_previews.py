@@ -311,6 +311,11 @@ def test_downsampled_disjoint_class_masks_share_one_preview_grid_and_do_not_over
     erosion_path = _write_mask(morphology_dir / "erosion_candidate_mask.tif", erosion)
     deposition_path = _write_mask(morphology_dir / "deposition_candidate_mask.tif", deposition)
     new_water_path = _write_mask(flood_dir / "newly_water_covered_mask.tif", new_water)
+    source_digests = {
+        erosion_path: sha256_file(erosion_path),
+        deposition_path: sha256_file(deposition_path),
+        new_water_path: sha256_file(new_water_path),
+    }
     reference = _write_mask(tmp_path / "reference.tif", np.zeros((512, 512), dtype=np.uint8))
     report_path = time_dir / "river_shift_timeseries.json"
     report_path.write_text(json.dumps({"time_series": [], "quality": {"warnings": []}}), encoding="utf-8")
@@ -339,6 +344,5 @@ def test_downsampled_disjoint_class_masks_share_one_preview_grid_and_do_not_over
     # The exact source masks are still disjoint; the preview uses point cues
     # for sub-cell candidates rather than expanding them into large polygons.
     assert not np.any((erosion == 1) & (deposition == 1))
-    assert sha256_file(erosion_path) == sha256_file(erosion_path)
-    assert sha256_file(deposition_path) == sha256_file(deposition_path)
-    assert sha256_file(new_water_path) == sha256_file(new_water_path)
+    for source_path, original_digest in source_digests.items():
+        assert sha256_file(source_path) == original_digest
