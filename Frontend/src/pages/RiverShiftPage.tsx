@@ -1254,7 +1254,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
                 <label className="rs-overlay-toggle rs-overlay-observed">
                   <input type="checkbox" checked={showObservedWaterExtent}
                     onChange={(event) => setShowObservedWaterExtent(event.target.checked)} />
-                  <span><strong>Observed-date open-water extent</strong><small>Current acquired-date water layer; separate from date-window change candidates.</small></span>
+                  <span><strong>Observed-date open-water extent</strong><small>{candidateOverlayCounts.observedWater > 0 ? `${candidateOverlayCounts.observedWater} feature(s) in the result layer; ` : ''}Current acquired-date water layer; separate from date-window change candidates.</small></span>
                 </label>
               )}
               <p className="rs-overlay-note">Visibility controls affect the map only. Full-resolution masks and scientific metrics are unchanged. Preview geometry is display-only and may generalise or visually overlap separate classes.</p>
