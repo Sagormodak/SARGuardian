@@ -137,7 +137,9 @@ jobs:
             replay-output/sentinel2-cross-sensor/reference-scl-water.tif
             replay-output/sentinel2-cross-sensor/reference-mndwi-water.tif
             replay-output/cross_sensor_replay_manifest.json
-            replay-output/independent-validation/
+            replay-output/independent-validation/independent_reference_validation_scl.json
+            replay-output/independent-validation/independent_reference_validation_mndwi.json
+            replay-output/independent-validation/sentinel2_reference_validation_status.json
           if-no-files-found: warn
           retention-days: 30
           compression-level: 1
