@@ -2,3 +2,4 @@ Run retained RiverShift job 4e6e4071-fb9d-4e20-a331-867f3f2bd88f against NASA/JP
 Replay trigger committed after the workflow was installed on main; source run 41803576163, NISAR date 2026-08-17, ±3-day and 80% common-support gates unchanged.
 Retry OPERA CMR discovery after removing the restrictive cloud_hosted filter. Source run 41803576163; exact NISAR date 2026-08-17; preserve the ±3-day and 80% common-support gates.
 Replay attempt 2: run retained-source OPERA search after query-filter fix; do not rerun NISAR GCOV processing or relax the temporal/support gates.
+Re-arm retained Run 36 OPERA reference replay through PR merge push event. Exact source date 2026-08-17; temporal ±3 days; common support >=0.80; NISAR processing must not rerun.
