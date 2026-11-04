@@ -87,7 +87,7 @@ The worker reported these provisional screening candidates:
 
 These values describe that specific AOI, selected products, threshold and comparison window. They are **not independently field-validated**, and they do not establish sediment volume, signed bankline movement, flood causality or exposed-population counts. An older draft contained different values from an earlier run; those older values must not be attributed to Run #36.
 
-The retained processing log records successful source provenance checks, the six-date time series, candidate-mask generation, preview generation and 51 validated output files at package assembly. Private Drive upload receipts and remote checksum checks passed. The result remained **PROVISIONAL**.
+The retained processing log records successful source provenance checks, the six-date time series, candidate-mask generation, preview generation and 51 validated output files at package assembly. Private Drive upload receipts and remote checksum checks passed. The result remained **PROVISIONAL**. **Historical-run limitation:** Run #36 predates backend PR #151, which integrated the full-resolution candidate-mask overlap audit into the live worker. Its retained artifact manifest does not contain `candidate_mask_overlap_audit.json`, and its summary has no source-mask pairwise overlap metrics. We have not retroactively computed those values from its private masks; do not claim that Run #36 passed the full-resolution overlap audit. New jobs on main now retain `outputs/quality-assurance/candidate_mask_overlap_audit.json` and return both source-mask and preview-overlap diagnostics. A fresh RiverShift run is still required to populate the dashboard overlap panel.
 
 ### Independent reference outcome for Run #36
 
