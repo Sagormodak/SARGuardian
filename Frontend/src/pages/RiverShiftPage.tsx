@@ -7,7 +7,7 @@ import type { RiverShiftGeoJSON, RiverShiftReport, RiverShiftTimeSeriesFrame } f
 import { countRiverShiftCandidateLayers, filterRiverShiftCandidateGeoJSON, getRiverShiftEventObservationNote, getRiverShiftOverlapAuditAvailability, isRiverShiftGeoJSONApproved, isRiverShiftReportVerified, isRiverShiftTimeSeriesGeoJSONApproved, parseRiverShiftGeoJSON, parseRiverShiftReport } from '../riverShift/manifest';
 import { formatWktPolygon, parseWktPolygon, type Wgs84Point } from '../riverShift/aoi';
 import { deriveGeneralChangeMarkers } from '../riverShift/generalChangeMarkers';
-import { parseImpactExposureGeoJSON, summarizeImpactExposure, type ImpactExposurePointCollection } from '../riverShift/impactContext';
+import { parseImpactExposureGeoJSON, parseOpenStreetMapImpactResponse, summarizeImpactExposure, type ImpactExposurePointCollection } from '../riverShift/impactContext';
 import './river-shift.css';
 
 type Props = {
@@ -404,6 +404,9 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
   const [showObservedWaterExtent, setShowObservedWaterExtent] = useState(true);
   const [impactExposure, setImpactExposure] = useState<{ fileName: string; data: ImpactExposurePointCollection } | null>(null);
   const [impactExposureError, setImpactExposureError] = useState('');
+  const [impactFetchBusy, setImpactFetchBusy] = useState(false);
+  const [impactFetchError, setImpactFetchError] = useState('');
+  const [impactFetchNotice, setImpactFetchNotice] = useState('');
   const [impactSourceName, setImpactSourceName] = useState('');
   const [impactSourceUrl, setImpactSourceUrl] = useState('');
   const [impactSourceVintage, setImpactSourceVintage] = useState('');
@@ -788,6 +791,69 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     } catch (error) {
       setImpactExposure(null);
       setImpactExposureError(error instanceof Error ? error.message : 'Could not read the exposure GeoJSON.');
+    }
+  };
+
+  const fetchOpenStreetMapImpactContext = async () => {
+    setImpactFetchError('');
+    setImpactFetchNotice('');
+    const studyArea = riverJob?.aoi_wkt || aoiWkt;
+    if (!studyArea.trim() || !impactCandidateLayers.length) {
+      setImpactFetchError('A completed result and its study-area polygon are required before exposure screening.');
+      return;
+    }
+    let coordinates: Wgs84Point[];
+    try {
+      coordinates = parseWktPolygon(studyArea);
+    } catch (error) {
+      setImpactFetchError(error instanceof Error ? error.message : 'The stored AOI could not be read.');
+      return;
+    }
+    if (coordinates.length > 121) {
+      setImpactFetchError('This one-off OpenStreetMap query is limited to AOIs with 120 or fewer boundary vertices. Use a simplified study-area polygon.');
+      return;
+    }
+    const polygon = coordinates.slice(0, -1)
+      .map(([longitude, latitude]) => latitude + ' ' + longitude)
+      .join(' ');
+    const query = '[out:json][timeout:25];(nwr["building"](poly:"' + polygon + '");'
+      + 'nwr["amenity"~"school|hospital|clinic|university|college|fire_station|police|shelter|place_of_worship"](poly:"'
+      + polygon + '"););out center tags 5000;';
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 35000);
+    setImpactFetchBusy(true);
+    try {
+      const response = await fetch('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        body: new URLSearchParams({ data: query }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(response.status === 429 || response.status === 504
+          ? 'The shared OpenStreetMap query service is busy or rate-limited. Wait before trying again, or import an attributed GeoJSON instead.'
+          : 'OpenStreetMap query failed (' + response.status + ').');
+      }
+      const result = parseOpenStreetMapImpactResponse(await response.json() as unknown);
+      setImpactExposure({ fileName: 'OpenStreetMap · ' + result.data.features.length + ' features', data: result.data });
+      setImpactSourceName('OpenStreetMap buildings and public facilities · Overpass API');
+      setImpactSourceUrl('https://www.openstreetmap.org/copyright');
+      setImpactSourceVintage(result.snapshotTimestamp
+        ? 'OSM snapshot ' + result.snapshotTimestamp
+        : 'retrieved ' + new Date().toISOString());
+      setImpactValueField('');
+      setImpactFetchNotice(result.cappedAtFeatureLimit
+        ? 'The query reached its 5,000-element cap. This is a partial OSM context screen and may omit additional mapped features.'
+        : 'One AOI-bounded read-only query completed. OpenStreetMap coverage varies; unmapped buildings and facilities are not counted.');
+    } catch (error) {
+      setImpactFetchError(error instanceof Error
+        ? error.name === 'AbortError'
+          ? 'OpenStreetMap did not respond within 35 seconds. No exposure count was generated.'
+          : error.message
+        : 'Could not retrieve OpenStreetMap impact context.');
+    } finally {
+      window.clearTimeout(timeoutId);
+      setImpactFetchBusy(false);
     }
   };
 
@@ -1450,6 +1516,12 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
             <span className="rs-chip">OPTIONAL · SOURCE-ATTRIBUTED</span>
           </div>
           <p className="rs-muted">Import a point/centroid GeoJSON layer for buildings, settlements, public facilities or population-grid cells. RiverShift will count representative points inside the retained candidate preview polygons and can sum one numeric attribute such as population. The file is analysed locally in this browser and is not uploaded.</p>
+          <div className="rs-impact-osm-action">
+            <button className="rs-secondary-button" type="button" disabled={impactFetchBusy || !impactCandidateLayers.length || !(riverJob?.aoi_wkt || aoiWkt.trim())} onClick={() => void fetchOpenStreetMapImpactContext()}>
+              {impactFetchBusy ? 'Querying one AOI-bounded OSM extract…' : 'Fetch OSM buildings & public facilities for this AOI'}
+            </button>
+            <small>One read-only query for mapped building and selected public-facility points inside the study polygon. The shared service may be busy; an attributed GeoJSON import remains available.</small>
+          </div>
           <div className="rs-impact-upload-grid">
             <label className="rs-upload"><span>Exposure points GeoJSON</span><small>Point or MultiPoint features · maximum 20 MB</small>
               <input type="file" accept=".geojson,.json,application/geo+json,application/json" onChange={(event) => void loadImpactExposure(event.target.files?.[0])} />
@@ -1460,6 +1532,8 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
             <label className="rs-field"><span>Optional numeric property to sum</span><input value={impactValueField} onChange={(event) => setImpactValueField(event.target.value)} placeholder="e.g. population" /></label>
           </div>
           {impactExposure && <p className="rs-info-banner">Loaded {impactExposure.fileName} · {impactExposure.data.features.length.toLocaleString()} point feature(s). The source attribution fields must contain a dataset name and HTTPS URL before results are calculated.</p>}
+          {impactFetchError && <p className="rs-error" role="alert">{impactFetchError}</p>}
+          {impactFetchNotice && <p className="rs-info-banner" role="status">{impactFetchNotice}</p>}
           {impactExposureError && <p className="rs-error" role="alert">{impactExposureError}</p>}
           {impactExposure && (!impactSourceName.trim() || !safeImpactSourceUrl) && <p className="rs-warning-inline">Add a dataset name and a valid HTTPS source URL to make this exposure context attributable.</p>}
           {impactSummary && (
@@ -1482,6 +1556,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
             </>
           )}
           {!impactExposure && <p className="rs-impact-help">Useful inputs: building or facility centroids, settlement points, or population-grid centroids with a numeric population property. Record the provider and data vintage. No source data is bundled or assumed.</p>}
+          {impactSourceName.startsWith('OpenStreetMap') && <p className="rs-impact-caveat">Open data attribution: © OpenStreetMap contributors · ODbL. This is a mapped-feature inventory, not an authoritative building census or damage assessment.</p>}
           {impactExposure && impactSummary && <p className="rs-impact-caveat">{impactSummary.sparseMarkerFeaturesExcluded.toLocaleString()} sparse marker feature(s) excluded from the polygon intersection. Multi-class matches: {impactSummary.featuresMatchingMultipleClasses.toLocaleString()} point feature(s).</p>}
         </section>
         {!report && !hasLiveJobResult && <div className="rs-empty-state">

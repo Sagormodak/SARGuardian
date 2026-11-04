@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RiverShiftGeoJSON } from './manifest';
-import { parseImpactExposureGeoJSON, summarizeImpactExposure } from './impactContext';
+import { parseImpactExposureGeoJSON, parseOpenStreetMapImpactResponse, summarizeImpactExposure } from './impactContext';
 
 const candidateLayer = {
   type: 'FeatureCollection',
@@ -108,5 +108,46 @@ describe('RiverShift impact-context point screening', () => {
     expect(summary.uniqueFeaturesInsideAnyCandidate).toBe(0);
     expect(summary.populationValueSum).toBeNull();
     expect(summary.candidatePolygonCount).toBe(0);
+  });
+});
+
+
+describe('RiverShift OpenStreetMap impact context', () => {
+  it('parses building nodes and way centres with OSM snapshot provenance', () => {
+    const result = parseOpenStreetMapImpactResponse({
+      osm3s: { timestamp_osm_base: '2026-11-04T23:00:00Z' },
+      elements: [
+        { type: 'node', id: 1, lat: 24.5, lon: 89.7, tags: { building: 'yes', name: 'House' } },
+        { type: 'way', id: 2, center: { lat: 24.6, lon: 89.8 }, tags: { building: 'school', amenity: 'school' } },
+        { type: 'node', id: 3, lat: 24.5, lon: 89.7, tags: { highway: 'residential' } },
+      ],
+    });
+    expect(result.data.features).toHaveLength(2);
+    expect(result.snapshotTimestamp).toBe('2026-11-04T23:00:00Z');
+    expect(result.cappedAtFeatureLimit).toBe(false);
+    expect(result.data.features[0].properties.osm_type).toBe('node');
+    expect(result.data.features[1].properties.public_facility).toBe(true);
+  });
+
+  it('deduplicates OSM elements and rejects empty or invalid responses', () => {
+    const response = {
+      elements: [
+        { type: 'node', id: 7, lat: 24.5, lon: 89.7, tags: { building: 'yes' } },
+        { type: 'node', id: 7, lat: 24.5, lon: 89.7, tags: { building: 'yes' } },
+        { type: 'node', id: 8, lat: 95, lon: 89.7, tags: { building: 'yes' } },
+      ],
+    };
+    expect(parseOpenStreetMapImpactResponse(response).data.features).toHaveLength(1);
+    expect(() => parseOpenStreetMapImpactResponse({ elements: [] })).toThrow('no mapped buildings');
+    expect(() => parseOpenStreetMapImpactResponse({})).toThrow('invalid Overpass response');
+  });
+
+  it('marks an Overpass response at the 5,000-element cap as potentially incomplete', () => {
+    const elements = Array.from({ length: 5000 }, (_, index) => ({
+      type: 'node', id: index + 1, lat: 24.5, lon: 89.7, tags: { building: 'yes' },
+    }));
+    const result = parseOpenStreetMapImpactResponse({ elements });
+    expect(result.data.features).toHaveLength(5000);
+    expect(result.cappedAtFeatureLimit).toBe(true);
   });
 });

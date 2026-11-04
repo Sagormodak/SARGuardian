@@ -301,3 +301,71 @@ export function summarizeImpactExposure(
     },
   };
 }
+
+
+export type OpenStreetMapImpactResult = {
+  data: ImpactExposurePointCollection;
+  snapshotTimestamp: string | null;
+  cappedAtFeatureLimit: boolean;
+};
+
+/** Convert one AOI-bounded Overpass response into deduplicated OSM feature points. */
+export function parseOpenStreetMapImpactResponse(value: unknown): OpenStreetMapImpactResult {
+  if (!isRecord(value) || !Array.isArray(value.elements)) {
+    throw new Error('OpenStreetMap returned an invalid Overpass response.');
+  }
+  const elements = value.elements;
+  const snapshotTimestamp = isRecord(value.osm3s)
+    && typeof value.osm3s.timestamp_osm_base === 'string'
+    ? value.osm3s.timestamp_osm_base
+    : null;
+  const supportedAmenities = new Set([
+    'school', 'hospital', 'clinic', 'university', 'college',
+    'fire_station', 'police', 'shelter', 'place_of_worship',
+  ]);
+  const selected = new Map<string, ImpactExposurePointFeature>();
+
+  elements.forEach((raw) => {
+    if (!isRecord(raw) || !['node', 'way', 'relation'].includes(String(raw.type))
+      || (typeof raw.id !== 'number' && typeof raw.id !== 'string')) return;
+    const tags = isRecord(raw.tags) ? raw.tags : {};
+    const building = typeof tags.building === 'string' ? tags.building : null;
+    const amenity = typeof tags.amenity === 'string' ? tags.amenity : null;
+    if (!building && !(amenity && supportedAmenities.has(amenity))) return;
+
+    let latitude: unknown = raw.lat;
+    let longitude: unknown = raw.lon;
+    if ((typeof latitude !== 'number' || typeof longitude !== 'number') && isRecord(raw.center)) {
+      latitude = raw.center.lat;
+      longitude = raw.center.lon;
+    }
+    if (typeof latitude !== 'number' || typeof longitude !== 'number'
+      || !Number.isFinite(latitude) || !Number.isFinite(longitude)
+      || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return;
+
+    const key = String(raw.type) + '/' + String(raw.id);
+    if (selected.has(key)) return;
+    selected.set(key, {
+      type: 'Feature',
+      id: key,
+      properties: {
+        osm_type: raw.type,
+        osm_id: raw.id,
+        name: typeof tags.name === 'string' ? tags.name : null,
+        building,
+        amenity,
+        public_facility: Boolean(amenity && supportedAmenities.has(amenity)),
+      },
+      geometry: { type: 'Point', coordinates: [longitude, latitude] },
+    });
+  });
+
+  if (!selected.size) {
+    throw new Error('OpenStreetMap returned no mapped buildings or supported public facilities inside this AOI.');
+  }
+  return {
+    data: { type: 'FeatureCollection', features: [...selected.values()] },
+    snapshotTimestamp,
+    cappedAtFeatureLimit: elements.length >= 5000,
+  };
+}
