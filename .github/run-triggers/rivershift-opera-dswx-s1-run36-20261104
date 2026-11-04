@@ -5,3 +5,4 @@ Replay attempt 2: run retained-source OPERA search after query-filter fix; do no
 Re-arm retained Run 36 OPERA reference replay through PR merge push event. Exact source date 2026-08-17; temporal ±3 days; common support >=0.80; NISAR processing must not rerun.
 Replay attempt 3: exact collection DOI search; same event-proximal NISAR date 2026-08-17, same AOI, ±3-day window, and >=0.80 labelled support. Reuse retained artifacts only; do not rerun GCOV processing.
 Replay attempt 4: direct authenticated CMR UMM query by exact collection concept ID, with date-only/AOI-only diagnostics; reuse retained source run 41803576163 and keep ±3-day / >=80% gates unchanged.
+Search nearest OPERA WTR scene within ±14 days of 2026-08-17, but retain strict ±3-day scoring gate and 80% common-support gate. Out-of-gate scene is candidate-only, NO_SCORE.
