@@ -208,8 +208,8 @@ def test_workflow_hdf5_checks_are_safe_with_pipefail():
 def test_retry_job_consumes_only_the_validated_cross_job_matrix():
     repository_root = Path(__file__).resolve().parents[3]
     workflow = (repository_root / ".github" / "workflows" / "river-shift-gcov-process.yml").read_text(encoding="utf-8")
-    retry_dispatch = workflow.split("\\n  retry_dispatch:\\n", 1)[1].split("\\n  retry:\\n", 1)[0]
-    retry_job = workflow.split("\\n  retry:\\n", 1)[1].split("\\n  retry_prepare_2:\\n", 1)[0]
+    retry_dispatch = workflow.split("\n  retry_dispatch:\n", 1)[1].split("\n  retry:\n", 1)[0]
+    retry_job = workflow.split("\n  retry:\n", 1)[1].split("\n  retry_prepare_2:\n", 1)[0]
 
     assert "validate_retry_matrix.py" in retry_dispatch
     assert "RIVERSHIFT_EXPECTED_RETRY_ATTEMPT: \"1\"" in retry_dispatch
