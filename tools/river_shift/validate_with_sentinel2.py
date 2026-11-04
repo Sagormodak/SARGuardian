@@ -440,7 +440,7 @@ def _write_binary_reference_geotiff(
         "height": int(raster_meta["sentinel2_height"]),
         "transform": [float(value) for value in transform_values[:6]],
         "pixel_area_m2": float(raster_meta["pixel_area_m2"]),
-        "path": str(output_path),
+        "path": output_path.name,
     }
 
 
