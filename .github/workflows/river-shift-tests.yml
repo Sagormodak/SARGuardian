@@ -7,6 +7,7 @@ on:
       - "tools/river_shift/**"
       - ".github/workflows/river-shift-gcov-process.yml"
       - ".github/workflows/river-shift-tests.yml"
+      - ".github/workflows/river-shift-run36-retrospective-replay.yml"
   push:
     branches:
       - main
@@ -78,6 +79,9 @@ jobs:
           grep -q 'max-parallel: 15' .github/workflows/river-shift-gcov-process.yml
           grep -q 'needs.retry_prepare.outputs.retry_matrix' .github/workflows/river-shift-gcov-process.yml
           grep -q 'RIVERSHIFT_RETRY_ATTEMPT: "1"' .github/workflows/river-shift-gcov-process.yml
+          ruby -e 'require "yaml"; YAML.load_file(".github/workflows/river-shift-run36-retrospective-replay.yml"); puts "RIVERSHIFT_RUN36_REPLAY_WORKFLOW_YAML=PASS"'
+          grep -q '41803576163' .github/workflows/river-shift-run36-retrospective-replay.yml
+          grep -q 'replay_retained_run36.py' .github/workflows/river-shift-run36-retrospective-replay.yml
 
       - name: Validate standalone processing tests
         shell: micromamba-shell {0}
