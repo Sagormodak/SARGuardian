@@ -1,20 +1,25 @@
 name: RiverShift retained-run Sentinel-2 cross-sensor replay
 
-run-name: RiverShift Sentinel-2 replay · run ${{ inputs.source_run_id }} · ${{ inputs.observation_date }}
+run-name: RiverShift Sentinel-2 replay · run ${{ inputs.source_run_id || '41803576163' }} · ${{ inputs.observation_date || '2026-08-17' }}
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/run-triggers/rivershift-sentinel2-reference-run36-20261104"
   workflow_dispatch:
     inputs:
       source_run_id:
         description: Completed RiverShift run containing retained per-product COG artifacts
         required: true
         type: string
-        default: "41642281327"
+        default: "41803576163"
       observation_date:
         description: Exact NISAR acquisition date (YYYY-MM-DD)
         required: true
         type: string
-        default: "2026-07-12"
+        default: "2026-08-17"
       max_day_offset:
         description: Maximum acquisition-date difference
         required: true
@@ -24,7 +29,7 @@ on:
         description: Maximum Sentinel-2 scene cloud cover percentage
         required: true
         type: number
-        default: 40
+        default: 100
       mndwi_threshold:
         description: MNDWI threshold using B03 and B11
         required: true
@@ -41,7 +46,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: river-shift-sentinel2-replay-${{ inputs.source_run_id }}-${{ inputs.observation_date }}
+  group: river-shift-sentinel2-replay-${{ inputs.source_run_id || '41803576163' }}-${{ inputs.observation_date || '2026-08-17' }}
   cancel-in-progress: false
 
 jobs:
@@ -62,7 +67,7 @@ jobs:
         with:
           pattern: rivershift-product-b01-*
           path: source-products/
-          run-id: ${{ inputs.source_run_id }}
+          run-id: ${{ inputs.source_run_id || '41803576163' }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           merge-multiple: false
 
@@ -71,7 +76,7 @@ jobs:
         with:
           pattern: rivershift-prepared-*
           path: prepared/
-          run-id: ${{ inputs.source_run_id }}
+          run-id: ${{ inputs.source_run_id || '41803576163' }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           merge-multiple: false
 
@@ -93,14 +98,28 @@ jobs:
           python -u tools/river_shift/replay_sentinel2_from_retained_run.py \
             --products-dir source-products \
             --prepared-dir prepared \
-            --source-run-id "${{ inputs.source_run_id }}" \
-            --observation-date "${{ inputs.observation_date }}" \
+            --source-run-id "${{ inputs.source_run_id || '41803576163' }}" \
+            --observation-date "${{ inputs.observation_date || '2026-08-17' }}" \
             --output-dir replay-output \
-            --max-day-offset "${{ inputs.max_day_offset }}" \
-            --max-cloud-cover "${{ inputs.max_cloud_cover }}" \
-            --mndwi-threshold "${{ inputs.mndwi_threshold }}" \
-            --minimum-common-support "${{ inputs.minimum_common_support }}"
+            --max-day-offset "${{ inputs.max_day_offset || 3 }}" \
+            --max-cloud-cover "${{ inputs.max_cloud_cover || 100 }}" \
+            --mndwi-threshold "${{ inputs.mndwi_threshold || '0.0' }}" \
+            --minimum-common-support "${{ inputs.minimum_common_support || '0.80' }}"
           echo "::endgroup::"
+
+      - name: Retain Sentinel-2 reference GeoTIFFs and provenance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: river-shift-sentinel2-reference-${{ inputs.source_run_id || '41803576163' }}-${{ inputs.observation_date || '2026-08-17' }}
+          path: |
+            replay-output/sentinel2-cross-sensor/sentinel2_cross_sensor_agreement.json
+            replay-output/sentinel2-cross-sensor/reference-scl-water.tif
+            replay-output/sentinel2-cross-sensor/reference-mndwi-water.tif
+            replay-output/cross_sensor_replay_manifest.json
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 1
 
       - name: Publish a privacy-safe summary
         if: always()
@@ -108,6 +127,8 @@ jobs:
         env:
           SUMMARY_REPORT: replay-output/sentinel2-cross-sensor/sentinel2_cross_sensor_agreement.json
           REPLAY_MANIFEST: replay-output/cross_sensor_replay_manifest.json
+          SOURCE_RUN_ID: ${{ inputs.source_run_id || '41803576163' }}
+          OBSERVATION_DATE: ${{ inputs.observation_date || '2026-08-17' }}
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -131,7 +152,8 @@ jobs:
               "## RiverShift Sentinel-2 cross-sensor replay",
               "",
               f"- Status: **{report.get('status')}**",
-              f"- Source RiverShift run: {manifest.get('source_workflow_run_id')}",
+              f"- Source RiverShift run: {manifest.get('source_workflow_run_id') or os.environ['SOURCE_RUN_ID']}",
+              f"- Requested NISAR date: {manifest.get('requested_observation_date') or os.environ['OBSERVATION_DATE']}",
               f"- NISAR acquisition date: {manifest.get('requested_observation_date')}",
               f"- NISAR dates in replay: {', '.join(manifest.get('actual_nisar_observation_dates') or [])}",
               f"- Sentinel-2 item(s): {', '.join(observation.get('sentinel2_item_ids') or []) or 'not found'}",
@@ -158,9 +180,9 @@ jobs:
               lines.extend(["No agreement metrics were published because no eligible scene or enough clear common support was available.", ""])
           lines.extend([
               "",
-              "**Interpretation:** cross-sensor agreement screening only. Sentinel-2 SCL/MNDWI is not ground truth or field validation. The source NISAR run remains PROVISIONAL.",
+              "**Interpretation:** cross-sensor agreement screening only. Sentinel-2 SCL/MNDWI GeoTIFFs are candidate labels, not ground truth or field validation. Confirm hydrological stage and reference quality before formal scoring. The source NISAR run remains PROVISIONAL.",
               "",
-              "The detailed report and masks remain in the ephemeral runner workspace; no AOI coordinates, asset URLs, NISAR masks or full report are uploaded as a public workflow artifact.",
+              "The GeoTIFF candidates, detailed report and replay manifest are retained in a private GitHub Actions artifact for 30 days. No AOI coordinates or NISAR prediction mask are published as a public artifact.",
           ])
           with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
               stream.write("\n".join(lines) + "\n")
