@@ -1534,7 +1534,7 @@ def _assemble_job(
     })
     _log_worker_stage(
         "candidate_overlap_audit", "PASS",
-        status=candidate_overlap_audit["status"],
+        audit_status=candidate_overlap_audit["status"],
         pairwise=candidate_overlap_audit["pairwise"],
         triple_overlap_pixels=candidate_overlap_audit["triple_overlap_pixels_on_common_support"],
         output_sha256=sha256_file(overlap_audit_path),
