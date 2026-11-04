@@ -893,9 +893,12 @@ def write_mask_web_preview(
     """Build a compact display-only GeoJSON layer from a binary science mask.
 
     The full-resolution mask remains the scientific source of record. The map
-    preview uses max aggregation so isolated positive mask cells survive
-    downsampling, then polygonizes the reduced grid and dissolves it to one
-    feature per class. No source GeoJSON polygon is reprojected or simplified.
+    preview uses average occupancy and marks a reduced cell when any positive
+    occupancy is present, then polygonizes the reduced grid and dissolves it to
+    one feature per class. This preserves sparse patches but can expand
+    footprints and create apparent cross-class overlap at preview scale.
+    Preview geometry is display-only, never a measurement or a substitute
+    for the source mask.
     """
     if not isinstance(class_name, str) or not class_name.strip():
         raise WorkerFailure("PREVIEW_GENERATION_FAILED", "A display layer must have a non-empty class name.")
