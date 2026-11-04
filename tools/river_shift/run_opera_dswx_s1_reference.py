@@ -807,7 +807,9 @@ def _build_reference_on_nisar_grid(
             raw = src.read(1)
             valid = src.read_masks(1) > 0
             classes = set(int(value) for value in np.unique(raw))
-            if not classes.issubset({0, 1, 3, 250, 251, 255}):
+            # OPERA DSWx-S1 V1 WTR includes 254=Ocean Masked in addition
+            # to 250=HAND, 251=layover/shadow and 255=fill. All remain NoData.
+            if not classes.issubset({0, 1, 3, 250, 251, 254, 255}):
                 raise OperaReferenceError(
                     f"Unexpected OPERA WTR classes in {path.name}: {sorted(classes)}"
                 )
@@ -889,7 +891,7 @@ def _build_reference_on_nisar_grid(
             SOURCE_LAYER="WTR",
             CLASS_1="open water (OPERA WTR class 1)",
             CLASS_0="not water (OPERA WTR class 0)",
-            NODATA_CLASSES="3=inundated vegetation;250=HAND masked;251=layover/shadow;255=fill/no data;all other classes excluded",
+            NODATA_CLASSES="3=inundated vegetation;250=HAND masked;251=layover/shadow;254=ocean masked;255=fill/no data;all other classes excluded",
             ALIGNMENT="Nearest-neighbour categorical reprojection to the retained NISAR prediction grid",
             OVERLAP_POLICY="Conflicting overlapping-tile class labels are marked NoData",
             INTERPRETATION="Independent SAR-derived cross-sensor screening only; not field truth",
@@ -1154,7 +1156,7 @@ def run_pipeline(
             },
             "limitations": [
                 "NISAR GCOV L-band is the primary measurement; OPERA DSWx-S1 is derived from Sentinel-1 C-band and is an independent sensor/product cross-check, not field truth.",
-                "Only OPERA WTR class 0 (not water) and class 1 (open water) are labelled. Class 3 inundated vegetation and masked/ambiguous/fill classes remain NoData.",
+                "Only OPERA WTR class 0 (not water) and class 1 (open water) are labelled. Class 3 inundated vegetation, 250 HAND, 251 layover/shadow, 254 ocean mask and 255 fill remain NoData.",
                 "The 30 m OPERA DSWx-S1 product is not suitable for validating narrow channels or small bankline displacement; its mapping capability has a minimum detectable feature scale.",
                 "Agreement on water/non-water does not validate erosion/deposition cause, signed bankline migration, sediment volume, water depth or flood causality.",
                 "The WTR layer includes ancillary land-cover/HAND masking; class 0 may reflect mapped non-water within those masks. Reference suitability requires a reviewer.",
@@ -1187,7 +1189,7 @@ def run_pipeline(
                 reference_date=selected_date.isoformat(),
                 reference_method=(
                     "OPERA DSWx-S1 V1 WTR class 1=open water and class 0=not water; "
-                    "classes 3=inundated vegetation, 250=HAND masked, 251=layover/shadow and 255=fill are NoData; "
+                    "classes 3=inundated vegetation, 250=HAND masked, 251=layover/shadow, 254=ocean mask and 255=fill are NoData; "
                     "undocumented source classes are rejected instead of being re-labelled; "
                     "same-date tile revisions deduplicated by highest product version "
                     "then latest generation timestamp; nearest-neighbour categorical alignment"
