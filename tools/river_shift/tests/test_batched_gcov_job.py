@@ -765,7 +765,30 @@ def test_assembly_finalization_builds_manifest_before_private_drive_upload(
     def fake_create_web_previews(work_dir, *_args):
         preview = work_dir / "outputs" / "map" / "river_change_candidates_preview.geojson"
         preview.parent.mkdir(parents=True, exist_ok=True)
-        preview.write_text(json.dumps({"type": "FeatureCollection", "features": []}), encoding="utf-8")
+        preview.write_text(json.dumps({
+            "type": "FeatureCollection",
+            "features": [],
+            "river_shift_preview": {
+                "preview_geometry_overlap": {
+                    "status": "DISPLAY_ONLY_DIAGNOSTIC",
+                    "analysis_crs": "EPSG:32646",
+                    "pairwise": {
+                        "erosion__deposition": {
+                            "intersection_area_km2": 0.0,
+                            "jaccard": 0.0,
+                        },
+                        "erosion__new_water": {
+                            "intersection_area_km2": 0.0,
+                            "jaccard": 0.0,
+                        },
+                        "deposition__new_water": {
+                            "intersection_area_km2": 0.0,
+                            "jaccard": 0.0,
+                        },
+                    },
+                },
+            },
+        }), encoding="utf-8")
         return [{
             "path": preview.relative_to(work_dir).as_posix(),
             "sha256": hashlib.sha256(preview.read_bytes()).hexdigest(),
@@ -838,6 +861,8 @@ def test_assembly_finalization_builds_manifest_before_private_drive_upload(
     upload_start = events.index(("upload", "START"))
     assert package_pass < publication_callback < publication_start < upload_start
     assert ("callback", "running", "result_package_assembly") in events
+    assert summary["preview_geometry_overlap"]["status"] == "DISPLAY_ONLY_DIAGNOSTIC"
+    assert summary["candidate_overlap_audit"]["status"] == "COMPUTED_DIAGNOSTIC_ONLY"
 
 
 
