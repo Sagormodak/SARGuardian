@@ -558,26 +558,58 @@ class JobCallbacks:
         }
         body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         signature = hmac.new(self.secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-        try:
-            response = requests.post(
-                self.endpoint,
-                data=body,
-                headers={"Content-Type": "application/json", "X-SARGuardian-Signature": f"sha256={signature}"},
-                timeout=(15, 45),
-            )
-            response.raise_for_status()
-        except requests.RequestException as exc:
+        retryable_status_codes = {408, 425, 429, 500, 502, 503, 504, 522, 524}
+        retry_delays = (1.0, 2.0, 4.0)
+        max_attempts = len(retry_delays) + 1
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = requests.post(
+                    self.endpoint,
+                    data=body,
+                    headers={"Content-Type": "application/json", "X-SARGuardian-Signature": f"sha256={signature}"},
+                    timeout=(15, 45),
+                )
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                error_response = getattr(exc, "response", None)
+                status_code = getattr(error_response, "status_code", None)
+                transient_transport_error = isinstance(exc, (requests.ConnectionError, requests.Timeout))
+                retryable = transient_transport_error or status_code in retryable_status_codes
+                if retryable and attempt < max_attempts:
+                    delay = retry_delays[attempt - 1]
+                    _log_worker_stage(
+                        "signed_api_callback",
+                        "RETRY",
+                        state=state,
+                        callback_stage=stage,
+                        sequence=sequence,
+                        attempt=attempt,
+                        next_attempt=attempt + 1,
+                        status_code=status_code,
+                        error_type=type(exc).__name__,
+                        retry_delay_seconds=delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                _log_worker_stage(
+                    "signed_api_callback",
+                    "FAIL",
+                    state=state,
+                    callback_stage=stage,
+                    sequence=sequence,
+                    attempts=attempt,
+                    status_code=status_code,
+                    error_type=type(exc).__name__,
+                    retryable=retryable,
+                )
+                raise WorkerFailure("CALLBACK_REJECTED", "SARGuardian did not accept a signed processing update.") from None
+            self.sequence = sequence
             _log_worker_stage(
-                "signed_api_callback",
-                "FAIL",
-                state=state,
-                callback_stage=stage,
-                sequence=sequence,
-                error_type=type(exc).__name__,
+                "signed_api_callback", "PASS", state=state, callback_stage=stage,
+                sequence=sequence, attempts=attempt,
             )
-            raise WorkerFailure("CALLBACK_REJECTED", "SARGuardian did not accept a signed processing update.") from None
-        self.sequence = sequence
-        _log_worker_stage("signed_api_callback", "PASS", state=state, callback_stage=stage, sequence=sequence)
+            return
+        raise WorkerFailure("CALLBACK_REJECTED", "SARGuardian did not accept a signed processing update.")
 
 
 def run_step(stage: str, command: list[str], *, context: dict[str, Any] | None = None) -> None:
@@ -900,7 +932,12 @@ def write_mask_web_preview(
                 # out_shape average can sample away isolated positives; a
                 # coarser same-CRS warp computes fractional occupancy for each
                 # target cell, so any positive source pixel remains > 0.
-                sampled_values = np.zeros((preview_height, preview_width), dtype=np.float32)
+                # Zero is a valid background class in these binary masks.
+                # Use a separate destination NoData sentinel so GDAL does not
+                # replace valid zeros with tiny positive floats during warp.
+                sampled_values = np.full(
+                    (preview_height, preview_width), -1.0, dtype=np.float32
+                )
                 reproject(
                     source=rasterio.band(source, 1),
                     destination=sampled_values,
@@ -909,7 +946,7 @@ def write_mask_web_preview(
                     src_nodata=source_nodata,
                     dst_transform=preview_transform,
                     dst_crs=source_crs_value,
-                    dst_nodata=0.0,
+                    dst_nodata=-1.0,
                     resampling=Resampling.average,
                     init_dest_nodata=True,
                 )
@@ -1101,7 +1138,18 @@ def create_web_previews(
             "web_map_preview", "PASS",
             layer_type=layer_type,
             feature_count=len(preview.get("features", [])),
+            source_candidate_pixels=preview["river_shift_preview"]["source_candidate_pixels"],
+            source_candidate_fraction=round(
+                preview["river_shift_preview"]["source_candidate_pixels"]
+                / max(1, preview["river_shift_preview"]["source_width"] * preview["river_shift_preview"]["source_height"]),
+                6,
+            ),
             preview_candidate_cells=preview["river_shift_preview"]["preview_candidate_cells"],
+            preview_candidate_fraction=round(
+                preview["river_shift_preview"]["preview_candidate_cells"]
+                / max(1, preview["river_shift_preview"]["preview_width"] * preview["river_shift_preview"]["preview_height"]),
+                6,
+            ),
             preview_width=preview["river_shift_preview"]["preview_width"],
             preview_height=preview["river_shift_preview"]["preview_height"],
             features_omitted_for_size=0,
@@ -1196,12 +1244,24 @@ def create_web_previews(
         frame["water_geojson"] = preview_path.name
         frame["water_geojson_sha256"] = frame_digest
         frame["water_preview_feature_count"] = len(frame_preview["features"])
+        frame["water_preview_source_candidate_pixels"] = frame_preview["river_shift_preview"]["source_candidate_pixels"]
         frame["water_preview_candidate_cells"] = frame_preview["river_shift_preview"]["preview_candidate_cells"]
         _log_worker_stage(
             "time_series_frame_preview", "PASS",
             acquisition_date=observed_date,
             feature_count=len(frame_preview["features"]),
+            source_candidate_pixels=frame_preview["river_shift_preview"]["source_candidate_pixels"],
+            source_candidate_fraction=round(
+                frame_preview["river_shift_preview"]["source_candidate_pixels"]
+                / max(1, frame_preview["river_shift_preview"]["source_width"] * frame_preview["river_shift_preview"]["source_height"]),
+                6,
+            ),
             preview_candidate_cells=frame_preview["river_shift_preview"]["preview_candidate_cells"],
+            preview_candidate_fraction=round(
+                frame_preview["river_shift_preview"]["preview_candidate_cells"]
+                / max(1, frame_preview["river_shift_preview"]["preview_width"] * frame_preview["river_shift_preview"]["preview_height"]),
+                6,
+            ),
             preview_width=frame_preview["river_shift_preview"]["preview_width"],
             preview_height=frame_preview["river_shift_preview"]["preview_height"],
             output_bytes=preview_path.stat().st_size,
