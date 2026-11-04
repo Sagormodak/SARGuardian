@@ -328,8 +328,9 @@ def test_cmr_zero_result_probes_isolate_temporal_and_aoi_coverage(monkeypatch):
 
     assert records == []
     assert len(session.calls) == 4
-    probes = query["cmr_diagnostics"]
-    assert probes["combined_query"]["hits"] == 0
+    diagnostics = query["cmr_diagnostics"]
+    assert diagnostics["combined_query"]["hits"] == 0
+    probes = diagnostics["zero_result_probes"]
     assert probes["collection_and_date"]["hits"] == 15
     assert probes["collection_and_aoi"]["hits"] == 0
     assert probes["collection_only"]["hits"] == 3015
