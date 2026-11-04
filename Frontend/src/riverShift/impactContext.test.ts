@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RiverShiftGeoJSON } from './manifest';
-import { parseImpactExposureGeoJSON, parseOpenStreetMapImpactResponse, summarizeImpactExposure } from './impactContext';
+import { deriveImpactMapPoints, parseImpactExposureGeoJSON, parseOpenStreetMapImpactResponse, summarizeImpactExposure } from './impactContext';
 
 const candidateLayer = {
   type: 'FeatureCollection',
@@ -149,5 +149,33 @@ describe('RiverShift OpenStreetMap impact context', () => {
     const result = parseOpenStreetMapImpactResponse({ elements });
     expect(result.data.features).toHaveLength(5000);
     expect(result.cappedAtFeatureLimit).toBe(true);
+  });
+});
+
+
+describe('RiverShift impact-context map markers', () => {
+  it('flattens Point and MultiPoint features with a bounded display sample', () => {
+    const exposure = parseImpactExposureGeoJSON({
+      type: 'FeatureCollection',
+      features: [
+        { type: 'Feature', id: 'building-1', properties: { building: 'yes' }, geometry: { type: 'Point', coordinates: [89.7, 24.5] } },
+        { type: 'Feature', id: 'school-2', properties: { public_facility: true }, geometry: { type: 'MultiPoint', coordinates: [[89.8, 24.6], [89.81, 24.61]] } },
+      ],
+    });
+    expect(deriveImpactMapPoints(exposure, 2)).toEqual([
+      { id: 'building-1-point-0', longitude: 89.7, latitude: 24.5, kind: 'building' },
+      { id: 'school-2-point-0', longitude: 89.8, latitude: 24.6, kind: 'public_facility' },
+    ]);
+    expect(deriveImpactMapPoints(exposure, 20)).toHaveLength(3);
+  });
+
+  it('rejects negative or non-integer display limits', () => {
+    const exposure = parseImpactExposureGeoJSON({
+      type: 'FeatureCollection',
+      features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [89.7, 24.5] } }],
+    });
+    expect(() => deriveImpactMapPoints(exposure, -1)).toThrow('non-negative integer');
+    expect(() => deriveImpactMapPoints(exposure, 1.2)).toThrow('non-negative integer');
+    expect(deriveImpactMapPoints(exposure, 0)).toEqual([]);
   });
 });

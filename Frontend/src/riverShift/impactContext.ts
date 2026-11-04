@@ -327,6 +327,44 @@ export function summarizeImpactExposure(
 }
 
 
+export type ImpactMapPoint = {
+  id: string;
+  longitude: number;
+  latitude: number;
+  kind: 'building' | 'public_facility' | 'other';
+};
+
+/** Return a bounded marker sample for display; the underlying exposure data is unchanged. */
+export function deriveImpactMapPoints(
+  exposure: ImpactExposurePointCollection,
+  maximumPoints = 2000,
+): ImpactMapPoint[] {
+  if (!Number.isInteger(maximumPoints) || maximumPoints < 0) {
+    throw new Error('Maximum impact-map point count must be a non-negative integer.');
+  }
+  const result: ImpactMapPoint[] = [];
+  for (let featureIndex = 0; featureIndex < exposure.features.length; featureIndex += 1) {
+    const feature = exposure.features[featureIndex];
+    const positions = feature.geometry.type === 'Point'
+      ? [feature.geometry.coordinates]
+      : feature.geometry.coordinates;
+    const kind: ImpactMapPoint['kind'] = feature.properties.public_facility === true
+      ? 'public_facility'
+      : typeof feature.properties.building === 'string' ? 'building' : 'other';
+    for (let pointIndex = 0; pointIndex < positions.length; pointIndex += 1) {
+      if (result.length >= maximumPoints) return result;
+      const [longitude, latitude] = positions[pointIndex];
+      result.push({
+        id: String(feature.id ?? 'feature-' + featureIndex) + '-point-' + pointIndex,
+        longitude,
+        latitude,
+        kind,
+      });
+    }
+  }
+  return result;
+}
+
 export type OpenStreetMapImpactResult = {
   data: ImpactExposurePointCollection;
   snapshotTimestamp: string | null;
