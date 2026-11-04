@@ -24,7 +24,8 @@ RANGE_PART_BYTES = 256 * 1024 * 1024
 RANGE_DOWNLOAD_WORKERS = 2
 RANGE_MAX_ATTEMPTS = 3
 DOWNLOAD_STREAM_CHUNK_BYTES = 8 * 1024 * 1024
-EARTHDATA_LOGIN_MAX_ATTEMPTS = 2
+EARTHDATA_LOGIN_MAX_ATTEMPTS = 3
+TRANSIENT_HTTP_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504, 522, 524})
 
 
 def _load_earthaccess():
@@ -50,8 +51,8 @@ def _earthaccess_granule_name(granule: Any) -> str | None:
     return None
 
 
-def _earthdata_http_auth_rejection(error: BaseException) -> int | None:
-    """Return 401/403 only when earthaccess exposes an explicit auth-denial status."""
+def _http_status_code(error: BaseException) -> int | None:
+    """Extract an HTTP status from an exception or its chained causes."""
     pending = [error]
     seen: set[int] = set()
     while pending:
@@ -61,15 +62,29 @@ def _earthdata_http_auth_rejection(error: BaseException) -> int | None:
         seen.add(id(current))
         response = getattr(current, "response", None)
         status = getattr(response, "status_code", None)
-        if status in {401, 403}:
-            return int(status)
-        match = re.search(r"(?:Status code|HTTP(?: status)?)\s*[:=]?\s*(401|403)\b", str(current), re.IGNORECASE)
+        try:
+            numeric_status = int(status)
+        except (TypeError, ValueError):
+            numeric_status = None
+        if numeric_status is not None and 100 <= numeric_status <= 599:
+            return numeric_status
+        match = re.search(
+            r"(?:Status code|HTTP(?: status)?)\\s*[:=]?\\s*(\\d{3})\\b",
+            str(current),
+            re.IGNORECASE,
+        )
         if match:
             return int(match.group(1))
         for nested in (getattr(current, "__cause__", None), getattr(current, "__context__", None)):
             if isinstance(nested, BaseException):
                 pending.append(nested)
     return None
+
+
+def _earthdata_http_auth_rejection(error: BaseException) -> int | None:
+    """Return only explicit HTTP 401/403 authentication denials."""
+    status = _http_status_code(error)
+    return status if status in {401, 403} else None
 
 
 def _reauthenticate_with_username_password(earthaccess) -> bool:
@@ -106,7 +121,9 @@ def _reauthenticate_with_username_password(earthaccess) -> bool:
 
 
 def _transient_network_error(error: BaseException) -> bool:
-    """Identify transport failures without retrying rejected credentials or bad URLs."""
+    """Identify retryable transport/HTTP failures, never credential denials."""
+    if _http_status_code(error) in TRANSIENT_HTTP_STATUS_CODES:
+        return True
     pending = [error]
     seen: set[int] = set()
     while pending:
@@ -139,7 +156,7 @@ def _safe_error_message(error: BaseException) -> str:
 
 
 def _login_with_bounded_retry(earthaccess, *, retry_wave: bool) -> str:
-    """Retry transient EDL login transport errors once; never loop on bad credentials."""
+    """Retry transient EDL failures up to three times; fail fast on bad credentials."""
     token = os.environ.get("EARTHDATA_TOKEN", "").strip()
     username = os.environ.get("EARTHDATA_USERNAME", "").strip()
     password = os.environ.get("EARTHDATA_PASSWORD", "")
@@ -162,25 +179,28 @@ def _login_with_bounded_retry(earthaccess, *, retry_wave: bool) -> str:
                 earthaccess.login(strategy="environment")
             return auth_mode
         except Exception as exc:
-            http_status = _earthdata_http_auth_rejection(exc)
+            http_status = _http_status_code(exc)
             transient = _transient_network_error(exc)
+            retrying = transient and attempt < EARTHDATA_LOGIN_MAX_ATTEMPTS
+            retry_delay_seconds = min(2 ** attempt, 8) if retrying else 0
             print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
                 "stage": "earthdata_login",
-                "status": "RETRY" if transient and attempt < EARTHDATA_LOGIN_MAX_ATTEMPTS else "FAIL",
+                "status": "RETRY" if retrying else "FAIL",
                 "attempt_number": attempt,
                 "max_attempts": EARTHDATA_LOGIN_MAX_ATTEMPTS,
+                "retry_delay_seconds": retry_delay_seconds,
                 "auth_mode": auth_mode,
                 "error_type": type(exc).__name__,
                 "http_status": http_status,
                 "transient_network_error": transient,
                 "error_message": _safe_error_message(exc),
             }), flush=True)
-            if not transient or attempt >= EARTHDATA_LOGIN_MAX_ATTEMPTS:
+            if not retrying:
                 raise
-            time.sleep(min(2 ** attempt, 4))
+            time.sleep(retry_delay_seconds)
             # Clear a possibly half-initialized earthaccess module cache before
-            # the bounded second login attempt. The configured environment remains
-            # unchanged, so this does not convert a transport error into a credential retry.
+            # the next bounded login attempt. The configured environment remains
+            # unchanged; this is transport recovery, not a credential retry.
             if hasattr(earthaccess, "Auth") and hasattr(earthaccess, "_auth"):
                 try:
                     earthaccess._auth = earthaccess.Auth()
@@ -188,7 +208,7 @@ def _login_with_bounded_retry(earthaccess, *, retry_wave: bool) -> str:
                         earthaccess._store = None
                 except Exception:
                     pass
-    raise RuntimeError("Earthdata login did not complete.")
+    raise RuntimeError("Earthdata login exhausted its bounded transient retry budget.")
 
 
 def _authenticated_requests_session_factory(earthaccess):
@@ -519,7 +539,8 @@ def download_product(product: dict, output_dir: Path) -> dict:
         "stage": "earthdata_login",
         "status": "START",
         "auth_mode": auth_mode,
-        "attempt_number": 2 if retry_wave else 1,
+        "workflow_attempt_number": 2 if retry_wave else 1,
+        "login_attempt_number": 1,
         "delayed_retry_wave": retry_wave,
         "max_transient_attempts": EARTHDATA_LOGIN_MAX_ATTEMPTS,
     }), flush=True)
@@ -531,7 +552,7 @@ def download_product(product: dict, output_dir: Path) -> dict:
             "status": "FAIL",
             "auth_mode": auth_mode,
             "error_type": type(exc).__name__,
-            "http_status": _earthdata_http_auth_rejection(exc),
+            "http_status": _http_status_code(exc),
             "transient_network_error": _transient_network_error(exc),
             "error_message": _safe_error_message(exc),
         }), flush=True)
