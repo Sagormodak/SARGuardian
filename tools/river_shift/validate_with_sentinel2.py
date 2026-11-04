@@ -361,6 +361,90 @@ def _mndwi(green: np.ndarray, swir1: np.ndarray) -> tuple[np.ndarray, np.ndarray
     return index, valid
 
 
+def _write_binary_reference_geotiff(
+    path: Path,
+    water: np.ndarray,
+    valid: np.ndarray,
+    *,
+    raster_meta: dict[str, Any],
+    classification_method: str,
+    observation_date: str,
+    item_ids: list[str],
+) -> dict[str, Any]:
+    """Write a standalone optical water/non-water raster with explicit NoData."""
+    water_values = np.asarray(water, dtype=bool)
+    valid_values = np.asarray(valid, dtype=bool)
+    if water_values.ndim != 2 or water_values.shape != valid_values.shape:
+        raise CrosscheckError("Reference water and validity arrays must share one 2-D grid.")
+    if (
+        water_values.shape[1] != int(raster_meta.get("sentinel2_width", -1))
+        or water_values.shape[0] != int(raster_meta.get("sentinel2_height", -1))
+    ):
+        raise CrosscheckError("Reference arrays do not match the Sentinel-2 target grid metadata.")
+
+    transform_values = raster_meta.get("sentinel2_transform")
+    if not isinstance(transform_values, list) or len(transform_values) < 6:
+        raise CrosscheckError("Sentinel-2 target grid transform is missing from reference metadata.")
+    crs_value = raster_meta.get("sentinel2_crs")
+    if not isinstance(crs_value, str) or not crs_value:
+        raise CrosscheckError("Sentinel-2 target grid CRS is missing from reference metadata.")
+
+    encoded = np.full(water_values.shape, 255, dtype=np.uint8)
+    encoded[valid_values] = 0
+    encoded[valid_values & water_values] = 1
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    profile = {
+        "driver": "GTiff",
+        "width": int(raster_meta["sentinel2_width"]),
+        "height": int(raster_meta["sentinel2_height"]),
+        "count": 1,
+        "dtype": "uint8",
+        "crs": CRS.from_user_input(crs_value),
+        "transform": Affine(*[float(value) for value in transform_values[:6]]),
+        "nodata": 255,
+        "compress": "deflate",
+        "tiled": False,
+    }
+    with rasterio.open(output_path, "w", **profile) as destination:
+        destination.write(encoded, 1)
+        destination.write_mask(valid_values.astype(np.uint8) * 255)
+        destination.update_tags(
+            AREA_OR_POINT="Area",
+            ENGINE="RiverShift",
+            REFERENCE_PROVIDER="Copernicus Sentinel-2",
+            REFERENCE_COLLECTION=COLLECTION,
+            OBSERVATION_DATE=observation_date,
+            CLASSIFICATION_METHOD=classification_method,
+            CLASS_1="water",
+            CLASS_0="non-water",
+            NODATA_255="unlabelled, cloud, shadow, invalid or unsupported pixels",
+            ITEM_IDS=",".join(item_ids),
+            INTERPRETATION="cross-sensor reference candidate; not ground truth or field validation",
+        )
+
+    valid_count = int(np.count_nonzero(valid_values))
+    water_count = int(np.count_nonzero(valid_values & water_values))
+    return {
+        "file": output_path.name,
+        "sha256": sha256_file(output_path),
+        "classification_method": classification_method,
+        "observation_date": observation_date,
+        "source_item_ids": item_ids,
+        "encoding": {"water": 1, "non_water": 0, "nodata": 255},
+        "valid_pixels": valid_count,
+        "water_pixels": water_count,
+        "non_water_pixels": valid_count - water_count,
+        "nodata_pixels": int(encoded.size - valid_count),
+        "crs": crs_value,
+        "width": int(raster_meta["sentinel2_width"]),
+        "height": int(raster_meta["sentinel2_height"]),
+        "transform": [float(value) for value in transform_values[:6]],
+        "pixel_area_m2": float(raster_meta["pixel_area_m2"]),
+        "path": str(output_path),
+    }
+
+
 def _signed_asset_url(href: str, *, timeout: int = 60) -> str:
     try:
         response = requests.get(
@@ -636,6 +720,7 @@ def _read_cross_sensor_arrays(
             "sentinel2_crs": target_crs.to_string(),
             "sentinel2_width": width,
             "sentinel2_height": height,
+            "sentinel2_transform": list(target_transform)[:6],
             "sentinel2_pixel_area_m2": float(pixel_area),
             "sentinel2_tile_count": len(items),
             "sentinel2_mgrs_tiles": tile_ids,
@@ -751,6 +836,26 @@ def run_crosscheck(
         item=selected_items,
     )
     common_valid = common_valid & np.isfinite(mndwi_index)
+    optical_reference_valid = np.isfinite(mndwi_index)
+    selected_item_ids = [str(row.get("id") or "") for row in selected_items]
+    scl_reference = _write_binary_reference_geotiff(
+        output_dir / "reference-scl-water.tif",
+        scl_water,
+        optical_reference_valid,
+        raster_meta=raster_meta,
+        classification_method="Sentinel-2 L2A Scene Classification Layer: SCL class 6 water; classes 4, 5 and 6 are labelled support",
+        observation_date=acquisition_date.isoformat(),
+        item_ids=selected_item_ids,
+    )
+    mndwi_reference = _write_binary_reference_geotiff(
+        output_dir / "reference-mndwi-water.tif",
+        mndwi_index > mndwi_threshold,
+        optical_reference_valid,
+        raster_meta=raster_meta,
+        classification_method=f"Sentinel-2 L2A MNDWI (B03-B11)/(B03+B11) > {mndwi_threshold}",
+        observation_date=acquisition_date.isoformat(),
+        item_ids=selected_item_ids,
+    )
     common_count = int(np.count_nonzero(common_valid))
     nisar_count = int(np.count_nonzero(nisar_support))
     support_fraction = float(common_count / nisar_count) if nisar_count else 0.0
@@ -762,6 +867,7 @@ def run_crosscheck(
         "SCL classes 4, 5 and 6 are treated as clear vegetation, bare soil and water. Cloud, shadow, snow, unclassified and invalid classes are excluded.",
         "MNDWI uses Sentinel-2 B03 green and B11 SWIR1 on the B11 20 m grid; threshold sensitivity should be reviewed for the local river and season.",
         "Do not treat the map basemap as a measurement or validation input.",
+        "Exported SCL and MNDWI GeoTIFFs are independent-sensor comparison candidates, not error-free ground truth; verify hydrological stage, positional accuracy and labels before formal validation.",
     ]
     if coverage_fraction < minimum_common_support or support_fraction < minimum_common_support:
         status = "INSUFFICIENT_OPTICAL_SPATIAL_SUPPORT"
@@ -839,6 +945,12 @@ def run_crosscheck(
             },
         },
         "metrics": metrics,
+        "reference_artifacts": {
+            "status": "EXPORTED_CROSS_SENSOR_REFERENCE_CANDIDATES_NOT_GROUND_TRUTH",
+            "validity_rule": "Only Sentinel-2 pixels with valid B03, B11 and SCL class 4, 5 or 6 are labelled; all other pixels are NoData.",
+            "scl_water": scl_reference,
+            "mndwi_water": mndwi_reference,
+        },
         "source": {
             "provider": "Copernicus Sentinel-2",
             "catalogue": "Microsoft Planetary Computer STAC",
