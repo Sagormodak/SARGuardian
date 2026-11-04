@@ -46,7 +46,12 @@ Scene selection first groups eligible STAC items by the same Sentinel-2 platform
 
 ## Outputs
 
-The script writes `sentinel2_cross_sensor_agreement.json` containing:
+The script writes `sentinel2_cross_sensor_agreement.json` and two standalone one-band GeoTIFF reference candidates:
+- `reference-scl-water.tif`: Sentinel-2 L2A SCL class 6 is water; clear vegetation (class 4) and bare soil (class 5) are labelled non-water.
+- `reference-mndwi-water.tif`: MNDWI > the configured threshold is water; the remaining valid SCL 4/5/6 support is labelled non-water.
+- Both GeoTIFFs use 1=water, 0=non-water, 255=NoData; include the selected Sentinel-2 date, source item IDs, CRS/grid transform, classification method and SHA-256 in their report receipt. Cloud, cloud-shadow, cirrus, snow, invalid and unclassified pixels remain NoData.
+
+These exports are **cross-sensor reference candidates**, not field truth or an independently reviewed ground-truth label set. The 80% common-support gate still controls whether comparison metrics are published.
 - exact STAC collection, all selected item IDs, datatake ID, processing baseline, MGRS tiles, per-tile generation time, platform, acquisition date/time and cloud cover;
 - unsigned source B03/B11/SCL asset hrefs (temporary signed URLs are not retained);
 - NISAR input filename and SHA-256;
