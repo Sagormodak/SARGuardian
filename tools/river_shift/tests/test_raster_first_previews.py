@@ -47,7 +47,9 @@ def test_mask_preview_preserves_an_isolated_source_candidate_after_downsampling(
     )
 
     assert len(preview["features"]) == 1
-    assert preview["river_shift_preview"]["preview_candidate_cells"] >= 1
+    assert preview["river_shift_preview"]["source_candidate_pixels"] == 1
+    assert preview["river_shift_preview"]["preview_candidate_cells"] == 1
+    assert preview["river_shift_preview"]["preview_candidate_fraction"] < 0.01
     assert preview["river_shift_preview"]["features_omitted_for_size"] == 0
     assert preview["river_shift_preview"]["method"] == "average_occupancy_gt_zero_then_polygonize"
     assert preview_path.stat().st_size <= 50_000
@@ -68,6 +70,8 @@ def test_empty_mask_is_explicitly_distinguished_from_a_lost_preview(tmp_path):
 
     assert preview["features"] == []
     assert preview["river_shift_preview"]["feature_count"] == 0
+    assert preview["river_shift_preview"]["source_candidate_pixels"] == 0
+    assert preview["river_shift_preview"]["preview_candidate_cells"] == 0
     assert "no candidate pixels" in preview["river_shift_preview"]["empty_reason"]
 
 
@@ -146,10 +150,11 @@ def test_raster_first_job_previews_keep_each_change_class_and_each_observed_date
     assert combined["river_shift_preview"]["features_omitted_for_size"] == 0
     assert combined_path.stat().st_size <= MAX_WEB_PREVIEW_BYTES
 
+    map_dir = work_dir / "outputs" / "map"
     class_previews = {
-        "erosion": morphology_dir / "erosion_candidates_preview.geojson",
-        "deposition": morphology_dir / "deposition_candidates_preview.geojson",
-        "new_water": flood_dir / "newly_water_covered_preview.geojson",
+        "erosion": map_dir / "erosion_candidates_preview.geojson",
+        "deposition": map_dir / "deposition_candidates_preview.geojson",
+        "new_water": map_dir / "newly_water_covered_preview.geojson",
     }
     expected_class_pixels = {
         "erosion": int(erosion.sum()),
