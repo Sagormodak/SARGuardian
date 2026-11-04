@@ -7,9 +7,13 @@ from rasterio.transform import from_origin
 from process_gcov_job import (
     MAX_WEB_PREVIEW_BYTES,
     create_web_previews,
+    preview_geometry_overlap_metrics,
     sha256_file,
     write_mask_web_preview,
 )
+from pyproj import CRS, Transformer
+from shapely.geometry import MultiPoint, Polygon, mapping, Point
+from shapely.ops import transform as transform_geometry
 
 
 def _write_mask(path, values):
@@ -225,3 +229,39 @@ def test_raster_first_job_previews_keep_each_change_class_and_each_observed_date
     for layer in layers:
         layer_path = work_dir / layer["path"]
         assert sha256_file(layer_path) == layer["sha256"]
+
+
+def test_preview_overlap_area_excludes_sparse_point_markers_and_reports_them_separately():
+    to_wgs84 = Transformer.from_crs("EPSG:32646", "EPSG:4326", always_xy=True).transform
+    erosion_polygon = Polygon([(0, 0), (100, 0), (100, 100), (0, 100)])
+    deposition_polygon = Polygon([(50, 0), (150, 0), (150, 100), (50, 100)])
+    sparse_points = MultiPoint([(75, 50), (125, 50)])
+
+    features = [
+        {
+            "type": "Feature",
+            "properties": {"river_shift_layer": "erosion"},
+            "geometry": mapping(transform_geometry(to_wgs84, erosion_polygon)),
+        },
+        {
+            "type": "Feature",
+            "properties": {
+                "river_shift_layer": "erosion",
+                "preview_sparse_marker": True,
+            },
+            "geometry": mapping(transform_geometry(to_wgs84, sparse_points)),
+        },
+        {
+            "type": "Feature",
+            "properties": {"river_shift_layer": "deposition"},
+            "geometry": mapping(transform_geometry(to_wgs84, deposition_polygon)),
+        },
+    ]
+
+    result = preview_geometry_overlap_metrics(features, CRS.from_epsg(32646))
+
+    assert result["per_class_polygon_area_km2"]["erosion"] == pytest.approx(0.01, rel=1e-6)
+    assert result["per_class_polygon_area_km2"]["deposition"] == pytest.approx(0.01, rel=1e-6)
+    assert result["per_class_sparse_marker_points"]["erosion"] == 2
+    assert result["pairwise"]["erosion__deposition"]["intersection_area_km2"] == pytest.approx(0.005, rel=1e-5)
+    assert result["pairwise_polygon_footprints"] == result["pairwise"]
