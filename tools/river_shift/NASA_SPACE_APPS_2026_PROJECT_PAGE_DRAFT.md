@@ -112,6 +112,8 @@ An appropriate next validation is a date-matched, independently reviewed water r
 
 **Live application:** https://sar-guardian-dynamic-lilac.vercel.app
 
+**Suggested on-screen demo sequence:** draw the AOI; check the distinct-acquisition preflight; run the actual NISAR workflow; review observed dates and independent candidate toggles; run the one-shot OSM building/facility context query; show its snapshot date and the explicit “mapped exposure context, not damage” caveat; finish with the NO_SCORE validation status.
+
 **Two-minute demo video:** [PASTE VIDEO URL]
 
 **Backend science repository:** https://github.com/moshiour0/SARGuardian-backend

@@ -11,18 +11,11 @@ RiverShift lets a user draw an area of interest (AOI), choose an event/date wind
 
 The product is designed to answer five questions:
 
-- Where did observed radar water classification change?
-- Which persistent land/water transitions are screening candidates?
-- Which mapped buildings and selected public facilities coincide with those candidate preview zones?
-- Which actual NISAR acquisition dates and source products support each map frame?
-- What independent evidence is still missing before a result can be VERIFIED?
-
-The product is designed to answer four questions:
-
 1. Where did the observed radar water classification change?
 2. Which persistent land-to-water transitions are erosion candidates?
 3. Which persistent water-to-land transitions are deposition candidates?
-4. Which actual NISAR acquisition dates and source products support each map frame?
+4. Which mapped buildings and selected public facilities coincide with those candidate preview zones?
+5. Which actual NISAR acquisition dates, source products and independent-validation gaps support interpretation?
 
 RiverShift is an evidence-screening and communication tool, not an operational flood-warning service or a substitute for field surveying.
 
@@ -194,7 +187,7 @@ The legacy `validate_with_sentinel2.py` tool and retained-run workflow remain av
 |---|---|---|
 | Impact | Riverbank/flood-change use case, AOI-specific candidate maps and bounded area metrics; the Dynamic PR #81 adds an optional AOI-bounded OpenStreetMap buildings/public-facilities context screen and accepts source-attributed point GeoJSON. It reports unique and per-class point matches against candidate preview polygons. | Execute the optional OSM query for the exact demo AOI and retain its snapshot timestamp; describe counts only as mapped-feature exposure context, never damaged assets, affected population, or a complete inventory. OSM coverage and the preview geometry are incomplete/approximate. |
 | Creativity | User-drawn AOI, target-free change discovery, discrete radar time series, explainable classes and private provenance. | A polished end-to-end demo is still needed. |
-| Validity | Current backend main `bf8f8e16`: 259 RiverShift tests passed; retained Run #36 replay reproduced all three reported areas after six source-COG checksums matched; full-resolution source-mask overlap and shared-grid preview QA are recorded separately. New worker jobs fail closed when required overlap QA is missing. | These prove software contracts and reproducibility, not physical accuracy. Run #36 has no eligible OPERA WTR reference; Sentinel-2 common support was 0.1554%. F1/IoU and field/bankline accuracy remain NO_SCORE. Signed transect tools require independently digitised dated banklines. |
+| Validity | Current backend main `bf8f8e16`: 259 RiverShift tests passed; retained Run #36 replay reproduced all three reported areas after six source-COG checksums matched; full-resolution source-mask overlap and shared-grid preview QA are recorded separately. Dynamic feature PR #81 build/type-check/lint and 151 frontend tests passed; backend tests passed. New worker jobs fail closed when required overlap QA is missing. | These prove software contracts and reproducibility, not physical accuracy. Run #36 has no eligible OPERA WTR reference; Sentinel-2 common support was 0.1554%. F1/IoU and field/bankline accuracy remain NO_SCORE. Signed transect tools require independently digitised dated banklines. |
 | Relevance | NISAR Level-2 GCOV is the primary measurement input; challenge name is explicit. | Explain what radar contributes and why NISAR observations are central. |
 | Presentation | Google Satellite result map, independently toggled candidate layers, actual-date playback, source/preview overlap panel, explicit scientific-readiness panel, source-attributed OSM exposure context, judge guide and project-page draft. | Complete and rehearse the two-minute demo; use one actual AOI and explain what each number means and does not mean. Do not claim the OSM counts or map previews are damage estimates. |
 | Teamwork | Actual commits, issue/PR history and documented roles. | Team must supply truthful member names, roles and evidence of collaboration. |
