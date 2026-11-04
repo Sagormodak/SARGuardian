@@ -333,7 +333,7 @@ def _discover_records(
         + json.dumps({
             "granules_returned": result["hits"],
             "items_loaded": len(items),
-            "zero_result_probes": diagnostics.get("zero_result_probes"),
+            "cmr_diagnostics": diagnostics,
         }, sort_keys=True),
         flush=True,
     )
@@ -400,7 +400,7 @@ def _discover_records(
         "wtr_records_missing_https_get_data": without_get_data,
         "cmr_query": result["query"],
         "cmr_pages": result["pages"],
-        "zero_result_probes": diagnostics.get("zero_result_probes"),
+        "cmr_diagnostics": diagnostics,
     }
     return rows, query
 
