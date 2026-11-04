@@ -31,7 +31,7 @@ def _write_mask(path, values):
     return path
 
 
-def test_mask_preview_preserves_an_isolated_source_candidate_after_downsampling(tmp_path):
+def test_isolated_source_candidate_is_a_sparse_marker_not_a_coarse_polygon(tmp_path):
     source = np.zeros((512, 512), dtype=np.uint8)
     source[257, 251] = 1
     source_path = _write_mask(tmp_path / "isolated_mask.tif", source)
@@ -46,17 +46,43 @@ def test_mask_preview_preserves_an_isolated_source_candidate_after_downsampling(
         max_dimension=64,
     )
 
+    diagnostics = preview["river_shift_preview"]
     assert len(preview["features"]) == 1
-    assert preview["river_shift_preview"]["source_candidate_pixels"] == 1
-    assert preview["river_shift_preview"]["preview_candidate_cells"] == 1
-    assert preview["river_shift_preview"]["preview_candidate_cells"] < (
-        preview["river_shift_preview"]["preview_width"] * preview["river_shift_preview"]["preview_height"]
-    )
-    assert preview["river_shift_preview"]["features_omitted_for_size"] == 0
-    assert preview["river_shift_preview"]["method"] == "average_occupancy_gt_zero_then_polygonize"
+    assert preview["features"][0]["geometry"]["type"] == "MultiPoint"
+    assert preview["features"][0]["properties"]["preview_sparse_marker"] is True
+    assert diagnostics["source_candidate_pixels"] == 1
+    assert diagnostics["preview_candidate_cells"] == 1
+    assert diagnostics["preview_polygon_cells"] == 0
+    assert diagnostics["preview_sparse_marker_cells"] == 1
+    assert diagnostics["minimum_polygon_occupancy_fraction"] == 0.5
+    assert diagnostics["features_omitted_for_size"] == 0
+    assert diagnostics["method"] == "average_occupancy_gt_0_5_polygonize_plus_sparse_cell_centres"
     assert preview_path.stat().st_size <= 50_000
     assert sha256_file(source_path) == original_digest
-    assert preview["features"][0]["properties"]["class"] == "erosion"
+
+
+def test_preview_uses_majority_occupancy_for_polygons_and_sparse_markers_for_ties(tmp_path):
+    source = np.zeros((128, 128), dtype=np.uint8)
+    # At 64x64, each preview cell represents an exact 2x2 source block.
+    source[0:2, 0:2] = [[1, 1], [1, 0]]  # 75% occupancy -> polygon cell
+    source[0:2, 2:4] = [[1, 0], [0, 1]]  # 50% occupancy -> sparse marker
+    source_path = _write_mask(tmp_path / "mixed_occupancy_mask.tif", source)
+
+    preview = write_mask_web_preview(
+        source_path,
+        tmp_path / "mixed_occupancy_preview.geojson",
+        class_name="deposition",
+        max_bytes=50_000,
+        max_dimension=64,
+    )
+
+    diagnostics = preview["river_shift_preview"]
+    by_geometry = {feature["geometry"]["type"]: feature for feature in preview["features"]}
+    assert set(by_geometry) == {"Polygon", "MultiPoint"}
+    assert diagnostics["source_candidate_pixels"] == 5
+    assert diagnostics["preview_candidate_cells"] == 2
+    assert diagnostics["preview_polygon_cells"] == 1
+    assert diagnostics["preview_sparse_marker_cells"] == 1
 
 
 def test_empty_mask_is_explicitly_distinguished_from_a_lost_preview(tmp_path):
@@ -172,6 +198,8 @@ def test_raster_first_job_previews_keep_each_change_class_and_each_observed_date
         # These fixtures fit without downsampling, so preview cells must be an
         # exact one-to-one count of the class-specific source mask positives.
         assert diagnostics["preview_candidate_cells"] == expected_class_pixels[class_name]
+        assert diagnostics["preview_polygon_cells"] == expected_class_pixels[class_name]
+        assert diagnostics["preview_sparse_marker_cells"] == 0
     assert len(set(observed_class_pixels.values())) == 3
 
     updated_report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -186,6 +214,8 @@ def test_raster_first_job_previews_keep_each_change_class_and_each_observed_date
         }[frame["date"]]
         assert frame_preview["river_shift_preview"]["source_candidate_pixels"] == expected_frame_pixels
         assert frame_preview["river_shift_preview"]["preview_candidate_cells"] == expected_frame_pixels
+        assert frame_preview["river_shift_preview"]["preview_polygon_cells"] == expected_frame_pixels
+        assert frame_preview["river_shift_preview"]["preview_sparse_marker_cells"] == 0
         assert frame["water_preview_source_candidate_pixels"] == expected_frame_pixels
         assert frame["water_preview_feature_count"] == 1
         assert frame["water_geojson_sha256"] == sha256_file(frame_path)
