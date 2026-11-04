@@ -82,13 +82,13 @@ def test_filename_metadata_accepts_live_catalog_sentinel1c_granule():
 
 def test_wtr_reference_labels_only_open_water_and_not_water():
     source = np.array(
-        [[0, 1, 3, 250], [251, 255, 0, 1]],
+        [[0, 1, 3, 250, 254], [251, 255, 0, 1, 254]],
         dtype=np.uint8,
     )
     result = opera._classify_wtr(source)
     assert result.tolist() == [
-        [0, 1, 255, 255],
-        [255, 255, 0, 1],
+        [0, 1, 255, 255, 255],
+        [255, 255, 0, 1, 255],
     ]
     assert set(np.unique(result)).issubset({0, 1, 255})
 
@@ -141,11 +141,11 @@ def test_scene_selection_uses_closest_date_and_latest_generation_per_tile():
 def test_reference_grid_alignment_keeps_opera_masked_classes_as_nodata(tmp_path):
     prediction = _write_wtr(
         tmp_path / "prediction.tif",
-        [[1, 0, 1, 0], [1, 0, 1, 0]],
+        [[1, 0, 1, 0, 1], [1, 0, 1, 0, 1]],
     )
     source = _write_wtr(
         tmp_path / "tile.tif",
-        [[1, 0, 3, 250], [0, 1, 251, 255]],
+        [[1, 0, 3, 250, 254], [0, 1, 251, 255, 254]],
     )
     output = tmp_path / "reference.tif"
     row = {"tile_id": "45RVM", "observation_date": "2026-08-18", "filename": source.name}
@@ -157,13 +157,13 @@ def test_reference_grid_alignment_keeps_opera_masked_classes_as_nodata(tmp_path)
     )
     with rasterio.open(output) as dataset:
         values = dataset.read(1)
-        assert values.tolist() == [[1, 0, 255, 255], [0, 1, 255, 255]]
+        assert values.tolist() == [[1, 0, 255, 255, 255], [0, 1, 255, 255, 255]]
         assert dataset.nodata == 255
         assert dataset.crs.to_epsg() == 32645
         assert dataset.tags()["CLASS_1"] == "open water (OPERA WTR class 1)"
     assert summary["water_pixels"] == 2
     assert summary["non_water_pixels"] == 2
-    assert summary["nodata_pixels"] == 4
+    assert summary["nodata_pixels"] == 6
     assert len(summary["sha256"]) == 64
     tile_audit = summary["tile_audits"][0]
     assert tile_audit["source_file_bytes"] == source.stat().st_size
