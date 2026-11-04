@@ -2,7 +2,7 @@
 
 **Audit date:** 2026-11-05  
 **Scope:** RiverShift only. No Landslide / Find Displacements / Known Place Analysis changes are included.  
-**Overall status:** Engineering and reproducibility have materially improved. Independent scientific validation is **not complete**. Latest frontend code is built and verified on a preview URL, but the production aliases have not advanced to the latest main commit.
+**Overall status:** RiverShift's current code is merged to both main branches, post-merge CI is green, the retained Run #36 COGs have been replayed successfully through the current worker, and the latest Dynamic frontend is live on the production alias. Independent scientific validation is **not complete**; the release remains **PROVISIONAL / NO_SCORE** for Run #36 because no eligible independent water reference or stage-matched bankline truth was available.
 
 ## Executive decision
 
@@ -16,7 +16,7 @@ Do not claim field validation, VERIFIED status, or a full accuracy score. CI suc
 
 ### Backend — `moshiour0/SARGuardian-backend`
 
-Latest audited main commit: `9425d0eefa7b74b40d77867dfe9234ce689d0d77`.
+Latest backend main documentation commit: `07d460780aa54b14e26bdef9ccf001842cb89c86`. Latest RiverShift worker/code merge: `3ce722233f2177d36762b62127df527d1351ddc8`.
 
 | PR | Merge commit | Effect |
 |---|---|---|
@@ -24,19 +24,25 @@ Latest audited main commit: `9425d0eefa7b74b40d77867dfe9234ce689d0d77`.
 | #150 | `6c4e1139e54af62931f374142450dbe84ae64145` | Independent-reference workflow now defaults to the FastAPI origin, not the frontend host; result summary records the first post-event acquisition and day gap. |
 | #151 | `f6b919e33e612fdeea2641d9ee771c9257e11c4b` | Real GCOV worker invokes full-resolution candidate mask overlap audit, retains report, includes source + preview overlap in summary, and fails closed on invalid masks/grid or erosion/deposition conflict. |
 | #152 | `9425d0eefa7b74b40d77867dfe9234ce689d0d77` | Corrects report path and documents why Run #36 has no retroactive full-resolution audit. |
+| #154 | `831ac7c8b3e3119062bc3bde12ef8687e55d6a65` | Adds a retained Run #36 replay workflow using exact retained COG artefacts; first iterations exposed workflow bootstrap/path issues, subsequently corrected. |
+| #155 | `782f3660dcd564613cac62f66acf572c4c7a8074` | Recognises OPERA DSWx-S1 WTR class 254 (ocean mask) and retains it as NoData; extends the class semantics and integration tests. |
+| #156 | `c8e33b94531686f55cec75254ff325e58532387f` | Replaces any-positive coarse polygonisation with >50% occupancy polygons plus bounded sparse MultiPoint markers; excludes markers from preview area/Jaccard. |
+| #157 | `3ce722233f2177d36762b62127df527d1351ddc8` | Forces all change classes onto one shared grid, disables polygon simplification and verifies zero polygon overlap for disjoint masks. |
 
-Latest main checks: RiverShift worker Run #281 **255 passed** (170 warnings); repository retention/streaming regression Run #905 success; AOI/static validation Run #684 success.
+Latest main checks: RiverShift worker Run [41926825076](https://github.com/moshiour0/SARGuardian-backend/actions/runs/41926825076) success; repository retention/streaming regression Run [41926824877](https://github.com/moshiour0/SARGuardian-backend/actions/runs/41926824877) success; AOI/static validation Run [41926824752](https://github.com/moshiour0/SARGuardian-backend/actions/runs/41926824752) success. Retained Run #36 retrospective replay [41926490047](https://github.com/moshiour0/SARGuardian-backend/actions/runs/41926490047) also completed successfully and uploaded the full mask + preview QA artifact.
 
 ### Dynamic — `moshiour0/SARGuardian_Dynamic`
 
-Latest audited main commit: `d52f47893266cde11116ab18a04c96ab2dfa4d2b`.
+Latest Dynamic main commit: `a038596fac1ed0c1a661053488a283a4ca62260e`.
 
 | PR | Merge commit | Effect |
 |---|---|---|
 | #77 | `8f3ac1d7579d824e5bc8003d450f1dfb857457f9` | Separates observed-date open-water features from new-water candidates; candidate and observed-water visibility switches now operate independently. |
 | #78 | `d52f47893266cde11116ab18a04c96ab2dfa4d2b` | Missing overlap report displays **NOT MEASURED · NOT ZERO**; event result displays actual first post-event NISAR observation and day gap. |
+| #79 | `ce99732937fb79fe48326937879439f85a66ac6b` | Fixes API-origin fallback: local development keeps localhost; preview/production without an explicit override uses the deployed FastAPI host. |
+| #80 | `a038596fac1ed0c1a661053488a283a4ca62260e` | Displays sparse preview MultiPoint candidates as class markers and labels overlap columns as polygon-only. |
 
-Latest main Run #309: frontend type-check/build, lint and unit tests all success. PR #78 backend tests also passed.
+Latest main frontend Run [41925071451](https://github.com/moshiour0/SARGuardian_Dynamic/actions/runs/41925071451): frontend type-check/build, lint and unit tests all success. PR #80 backend contract tests also passed.
 
 ## Current implemented output classes
 
@@ -66,9 +72,29 @@ The report is retained as:
 
 The job summary exposes `candidate_overlap_audit` and `preview_geometry_overlap`. The preview is lower-resolution display geometry: aggregation can expand sparse patches and create apparent overlap. Compare it with the source-mask report; never calculate area or accuracy from preview GeoJSON.
 
-### Historical Run #36 limitation
+### Historical Run #36 limitation and retrospective replay
 
-Run #36 predates PR #151. Its artifact manifest does not contain `candidate_mask_overlap_audit.json`, and its summary has no full-resolution pairwise overlap metrics. No retroactive audit of its private masks was performed. The UI therefore shows **NOT MEASURED · NOT ZERO** for missing historical metrics. A fresh job on the post-PR #151 worker is needed to populate the overlap panel.
+The **original** Run #36 artifact manifest predates PR #151 and still does not contain candidate_mask_overlap_audit.json. Do not say the original 2026 worker emitted a source-mask overlap report.
+
+A separate checksum-bound replay, [backend Action Run 41926490047](https://github.com/moshiour0/SARGuardian-backend/actions/runs/41926490047), downloaded the six retained source COGs and ran the current worker's analysis/QA functions. It completed **successfully** with all six retained COG checksums matching their sidecars. Its report explicitly labels itself RETROSPECTIVE_RECOMPUTED_NOT_ORIGINAL_WORKER_ARTIFACT. It reproduced the three original areas exactly and generated source-mask plus current preview QA artefacts. This is valid retrospective evidence, but it does not rewrite the original Run #36 bundle or automatically populate its original dashboard record. New jobs on main create the overlap reports natively.
+
+## Retrospective Run #36 audit — exact retained COG replay
+
+Evidence: [Backend Action Run 41926490047](https://github.com/moshiour0/SARGuardian-backend/actions/runs/41926490047). The workflow downloaded the same six retained GCOV COGs and verified every downloaded file SHA-256 against its retained sidecar before using it. The report status is RETROSPECTIVE_RECOMPUTED_NOT_ORIGINAL_WORKER_ARTIFACT.
+
+**Exact metric reproduction:** all three Run #36 areas matched at the precision retained in the original run summary:
+
+| Metric | Original Run #36 | Retrospective replay | Match |
+|---|---:|---:|---|
+| Newly water-covered candidate | 17.6721 km² | 17.6721 km² | Exact |
+| Persistent erosion candidate | 1,244.230 ha | 1,244.230 ha | Exact |
+| Persistent deposition candidate | 5,078.140 ha | 5,078.140 ha | Exact |
+
+**Full-resolution source-mask overlap:** common valid support was 5,581,042 pixels (62.0125% of the full raster grid). Erosion/deposition intersection was **0 pixels** (Jaccard 0); deposition/new-water intersection was **0 pixels**; erosion/new-water intersection was **61,518 pixels** (Jaccard 0.256725). The latter pair is based on different three-date Otsu thresholds/date windows (flood threshold −11.75165 dB; morphology threshold −12.01393 dB) and is not an erosion/deposition exclusivity violation. It must nevertheless remain visible for reviewer interpretation; no automatic accuracy conclusion follows.
+
+**Current preview QA:** all three classes used one 293×384 grid with 89.557 m display cells. Erosion/deposition polygon intersection was **0 km²** (Jaccard 0). Erosion/new-water preview polygons intersect by 0.48794 km²; this is display-only and reflects the separate temporal/threshold basis. Deposition/new-water polygon intersection is numerical round-off (~4.2×10⁻¹⁴ km², effectively zero). Each class rendered 8,000 sparse marker points; the remaining sparse cells were counted as omitted from display (erosion 23,176; deposition 36,262; new-water 28,751). The full-resolution masks and pixel counts were not reduced or changed.
+
+Downloadable evidence: [Retrospective Run #36 source-mask and preview QA ZIP](sandbox:/mnt/data/run36-retrospective-common-grid-final.zip).
 
 ## Retained real-data example — Run #36
 
@@ -153,10 +179,11 @@ FFWC historical gauge levels can provide hydrological stage context when the exa
 
 ## Deployment status
 
-- Dynamic main `d52f47893266cde11116ab18a04c96ab2dfa4d2b`: GitHub frontend build/type-check, lint and tests success (Run #309).
-- Backend main `9425d0eefa7b74b40d77867dfe9234ce689d0d77`: worker, repository regression and AOI checks success (Runs #281, #905, #684).
-- The updated Dynamic branch was built as a READY Vercel preview. Preview JS contains the missing-audit disclosure and event-gap note; preview page returned HTTP 200.
-- Production aliases remain on earlier READY deployment commit `8f3ac1d7579d824e5bc8003d450f1dfb857457f9`. Further deployment attempts were blocked by the Vercel Hobby daily API deployment quota: `api-deployments-free-per-day`, HTTP 402, retry-after 24 hours. No production alias promotion was attempted. Existing public app and API health remain reachable.
+- Dynamic production commit `a038596fac1ed0c1a661053488a283a4ca62260e` is READY and assigned to the public alias `sar-guardian-dynamic-lilac.vercel.app`. The production /river-shift page returned HTTP 200.
+- The live production JavaScript bundle was fetched and inspected: it contains the sparse MultiPoint marker style, polygon-only overlap labels, and `VITE_SARGUARDIAN_API_URL=https://sarguardian-backend-api.vercel.app`. The preview API-origin fix is therefore present in the current production bundle; the explicit production URL remains the selected origin.
+- The public FastAPI health endpoint `https://sarguardian-backend-api.vercel.app/health` returned HTTP 200 with service status `ok`.
+- Dynamic frontend post-merge Run `41925071451` and backend post-merge Runs `41926825076`, `41926824877`, `41926824752` passed. Backend engine changes are deployed through the backend GitHub Actions worker; the FastAPI hosting commit was not changed by this UI/worker QA set.
+- No Vercel production promotion was needed after the Git-linked main deployment became READY. No Landslide, Find Displacements or Known Place workflow was modified.
 
 ## Score-sheet readiness (20 points each)
 
@@ -190,4 +217,4 @@ The score sheet in the project Library allocates 20 points each to Validity, Rel
 - [OPERA retained replay / NO_MATCH_NO_SCORE](https://github.com/moshiour0/SARGuardian-backend/actions/runs/41900559056)
 - [Updated RiverShift preview](https://sar-guardi-git-589be8-moshiour-rahman-sarkers-projects-2cebe363.vercel.app/river-shift)
 
-**Final statement:** RiverShift is now in a stronger, reproducible engineering state. The overlay-class bug and missing worker overlap-audit integration are fixed in main. It is not yet independently scientifically validated; historical Run #36 has no full-resolution overlap report; and the latest main UI is not on the production alias because of the Vercel daily deployment quota. These are the remaining evidence gates, not silently passed checks.
+**Final statement:** RiverShift's current main code, CI and production UI have been verified; a checksum-bound replay of Run #36 reproduced every reported area exactly and computed the full-resolution and preview overlap diagnostics without modifying the original result bundle. Erosion/deposition masks and their shared-grid preview polygons are disjoint. Cross-class erosion/new-water overlap remains visible because those screens use distinct thresholds/date comparisons and requires interpretation. The project remains **PROVISIONAL / NO_SCORE** until an eligible independent water reference and stage-matched bankline/field evidence are available.
