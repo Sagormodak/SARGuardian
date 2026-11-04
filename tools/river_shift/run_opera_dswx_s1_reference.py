@@ -47,8 +47,8 @@ FILENAME_RE = re.compile(
     r"(?P<sensing>[0-9]{8}T[0-9]{6}Z)_"
     r"(?P<generated>[0-9]{8}T[0-9]{6}Z)_"
     r"(?P<platform>S1[AB])_(?P<pixel_spacing>[0-9]+)_"
-    r"v(?P<version>[0-9]+\\.[0-9]+)_B(?P<layer>[0-9]{2})_"
-    r"(?P<layer_name>[A-Z0-9]+)\\.tif$",
+    r"v(?P<version>[0-9]+\.[0-9]+)_B(?P<layer>[0-9]{2})_"
+    r"(?P<layer_name>[A-Z0-9]+)\.tif$",
     re.IGNORECASE,
 )
 
