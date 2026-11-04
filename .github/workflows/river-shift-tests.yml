@@ -63,8 +63,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ruby -e 'require "yaml"; YAML.load_file(".github/workflows/river-shift-gcov-process.yml"); puts "RIVERSHIFT_WORKFLOW_YAML=PASS"'
+          ruby -e 'require "yaml"; YAML.load_file(".github/workflows/river-shift-gcov-process.yml"); YAML.load_file(".github/workflows/river-shift-opera-dswx-s1-retained-replay.yml"); puts "RIVERSHIFT_WORKFLOW_YAML=PASS"'
           grep -Fq 'run-name: RiverShift ${{ inputs.job_id }}' .github/workflows/river-shift-gcov-process.yml
+          grep -q 'OPERA_L3_DSWX-S1_V1' tools/river_shift/run_opera_dswx_s1_reference.py
+          grep -q 'minimum-common-support-fraction' .github/workflows/river-shift-opera-dswx-s1-retained-replay.yml
+          grep -q 'GOOGLE_DRIVE_PARENT_FOLDER_ID:' .github/workflows/river-shift-opera-dswx-s1-retained-replay.yml
           grep -q 'RIVERSHIFT_CALLBACK_SECRET:' .github/workflows/river-shift-gcov-process.yml
           grep -q 'RIVERSHIFT_REQUEST_FINGERPRINT:' .github/workflows/river-shift-gcov-process.yml
           grep -Eq 'python (-u )?tools/river_shift/batched_gcov_job.py' .github/workflows/river-shift-gcov-process.yml
