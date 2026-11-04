@@ -216,36 +216,62 @@ def test_granule_link_discovery_uses_external_https_access():
     assert links[0].startswith("https://")
 
 
-def test_discovery_uses_exact_opera_doi_and_parses_wtr(monkeypatch):
+def _cmr_item(tile="45RVM", sensing="20260818T120000Z", generated="20260819T010203Z", concept="G123456-PODAAC"):
+    filename = (
+        f"OPERA_L3_DSWx-S1_T{tile}_{sensing}_{generated}_"
+        f"S1A_30_v1.0_B01_WTR.tif"
+    )
+    return {
+        "meta": {"concept-id": concept},
+        "umm": {
+            "GranuleUR": filename,
+            "RelatedUrls": [
+                {"Type": "GET DATA", "URL": f"https://archive.example.test/{filename}"},
+                {"Type": "GET DATA VIA DIRECT ACCESS", "URL": f"s3://example/{filename}"},
+            ],
+        },
+    }
+
+
+class _FakeCMRResponse:
+    def __init__(self, items, hits):
+        self.status_code = 200
+        self.headers = {"CMR-Hits": str(hits), "Content-Type": "application/vnd.nasa.cmr.umm_results+json"}
+        self._payload = {"hits": hits, "items": items}
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _FakeCMRSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def get(self, url, *, params, headers, timeout):
+        self.calls.append({"url": url, "params": list(params), "headers": dict(headers), "timeout": timeout})
+        if not self.responses:
+            raise AssertionError("Unexpected additional CMR request")
+        return self.responses.pop(0)
+
+
+def test_direct_cmr_discovery_uses_concept_id_and_get_data_https_links(monkeypatch):
     import sys
     from types import SimpleNamespace
 
-    class FakeGranule:
-        def get(self, key, default=None):
-            if key == "umm":
-                return {"GranuleUR": "OPERA test granule"}
-            if key == "meta":
-                return {"concept-id": "G123456-PODAAC"}
-            return default
-
-        def data_links(self, *, access=None):
-            assert access == "external"
-            return [
-                "https://archive.example.test/OPERA_L3_DSWx-S1_T45RVM_"
-                "20260818T120000Z_20260819T010203Z_S1A_30_v1.0_B01_WTR.tif"
-            ]
-
-    captured = {}
-
-    def fake_search_data(**kwargs):
-        captured.update(kwargs)
-        return [FakeGranule()]
-
+    item = _cmr_item()
+    session = _FakeCMRSession([_FakeCMRResponse([item], 1)])
+    captured_login = {}
     monkeypatch.setitem(
         sys.modules,
         "earthaccess",
-        SimpleNamespace(login=lambda **kwargs: captured.setdefault("login", kwargs),
-                         search_data=fake_search_data),
+        SimpleNamespace(
+            login=lambda **kwargs: captured_login.update(kwargs),
+            get_requests_https_session=lambda: session,
+        ),
     )
 
     records, query = opera._discover_records(
@@ -254,21 +280,92 @@ def test_discovery_uses_exact_opera_doi_and_parses_wtr(monkeypatch):
         maximum_offset_days=3,
     )
 
-    assert captured["doi"] == opera.COLLECTION_DOI
-    assert "cloud_hosted" not in captured
-    assert "provider" not in captured
-    assert "short_name" not in captured
-    assert "downloadable" not in captured
-    assert captured["debug"] is True
-    assert captured["count"] == -1
-    assert query["collection_short_name"] == opera.COLLECTION_SHORT_NAME
-    assert query["collection_concept_id"] == opera.COLLECTION_CONCEPT_ID
-    assert query["collection_query_method"].startswith("earthaccess DOI lookup")
-    assert query["downloadable_filter_applied"] is False
-    assert len(records) == 1
+    assert captured_login == {"strategy": "environment"}
+    assert len(session.calls) == 1
+    call = session.calls[0]
+    assert call["url"] == opera.CMR_UMM_GRANULE_SEARCH_URL
+    assert call["headers"]["Accept"] == opera.CMR_UMM_ACCEPT
+    params = dict(call["params"])
+    assert params["collection_concept_id"] == opera.COLLECTION_CONCEPT_ID
+    assert params["temporal[]"] == "2026-08-14T00:00:00Z,2026-08-20T23:59:59Z"
+    assert params["bounding_box"] == "89.6,24,89.8,24.2"
+    assert params["page_num"] == "1"
+    assert params["page_size"] == str(opera.CMR_PAGE_SIZE)
+    assert query["collection_query_method"].startswith("direct authenticated CMR UMM JSON")
+    assert query["granules_returned_by_cmr"] == 1
+    assert query["wtr_records_parsed"] == 1
     assert records[0]["tile_id"] == "45RVM"
     assert records[0]["observation_date"] == "2026-08-18"
     assert records[0]["layer_name"] == "WTR"
+    assert records[0]["wtr_download_url"].startswith("https://")
+    assert records[0]["wtr_download_url"].endswith("_WTR.tif")
+    assert "s3://" not in records[0]["wtr_download_url"]
+
+
+def test_cmr_zero_result_probes_isolate_temporal_and_aoi_coverage(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    item = _cmr_item()
+    session = _FakeCMRSession([
+        _FakeCMRResponse([], 0),        # AOI + date
+        _FakeCMRResponse([item], 15),   # collection + date only
+        _FakeCMRResponse([], 0),        # collection + AOI only
+        _FakeCMRResponse([item], 3015), # collection inventory
+    ])
+    monkeypatch.setitem(
+        sys.modules,
+        "earthaccess",
+        SimpleNamespace(login=lambda **kwargs: None, get_requests_https_session=lambda: session),
+    )
+
+    records, query = opera._discover_records(
+        aoi_wkt="POLYGON((89.6 24.0,89.8 24.0,89.8 24.2,89.6 24.2,89.6 24.0))",
+        requested_date=date.fromisoformat("2026-08-17"),
+        maximum_offset_days=3,
+    )
+
+    assert records == []
+    assert len(session.calls) == 4
+    probes = query["zero_result_probes"]
+    assert probes["combined_query"]["hits"] == 0
+    assert probes["collection_and_date"]["hits"] == 15
+    assert probes["collection_and_aoi"]["hits"] == 0
+    assert probes["collection_only"]["hits"] == 3015
+    assert probes["collection_and_date"]["query"]["bounding_box_wgs84"] is None
+    assert probes["collection_and_aoi"]["query"]["temporal"] is None
+
+
+def test_cmr_search_paginates_using_cmr_hits_header():
+    first_items = [{"meta": {"concept-id": f"G{i}-POCLOUD"}, "umm": {}} for i in range(2)]
+    second_items = [{"meta": {"concept-id": "G2-POCLOUD"}, "umm": {}}]
+    session = _FakeCMRSession([
+        _FakeCMRResponse(first_items, 3),
+        _FakeCMRResponse(second_items, 3),
+    ])
+
+    result = opera._cmr_umm_search(
+        session,
+        collection_concept_id=opera.COLLECTION_CONCEPT_ID,
+        temporal=("2026-08-14T00:00:00Z", "2026-08-20T23:59:59Z"),
+        bounding_box=(89.6, 24.0, 89.8, 24.2),
+        page_size=2,
+    )
+
+    assert result["hits"] == 3
+    assert len(result["items"]) == 3
+    assert len(result["pages"]) == 2
+    assert dict(session.calls[0]["params"])["page_num"] == "1"
+    assert dict(session.calls[1]["params"])["page_num"] == "2"
+
+
+def test_raw_cmr_umm_items_expose_only_https_get_data_links():
+    item = _cmr_item()
+    links = opera._granule_links(item)
+    assert len(links) == 1
+    assert links[0].startswith("https://")
+    assert links[0].endswith("_WTR.tif")
+
 
 
 def test_reference_mosaic_rejects_mixed_absolute_orbits(tmp_path):
