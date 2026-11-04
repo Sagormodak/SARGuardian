@@ -113,13 +113,15 @@ def _align_reference_to_prediction(prediction: Path, reference: Path, aligned: P
             init_dest_nodata=True,
         )
         profile = pred.profile.copy()
+        profile.pop("blockxsize", None)
+        profile.pop("blockysize", None)
         profile.update(
             driver="GTiff",
             count=1,
             dtype="uint8",
             nodata=255,
             compress="deflate",
-            tiled=True,
+            tiled=False,
         )
         aligned.parent.mkdir(parents=True, exist_ok=True)
         with rasterio.open(aligned, "w", **profile) as output:
