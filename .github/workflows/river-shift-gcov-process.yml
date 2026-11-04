@@ -720,14 +720,17 @@ jobs:
 
   retry:
     name: Delayed retry · product ${{ matrix.product_index }}/${{ matrix.total_products }}
-    needs: retry_dispatch
-    if: needs.retry_dispatch.result == 'success' && needs.retry_dispatch.outputs.retry_count != '0'
+    # Use retry_prepare's canonical outputs for the matrix. retry_dispatch remains
+    # a required validation barrier, but the retry workers do not depend on a
+    # second job-output serialization hop that can silently evaluate as empty.
+    needs: [retry_prepare, retry_dispatch]
+    if: needs.retry_prepare.result == 'success' && needs.retry_dispatch.result == 'success' && needs.retry_prepare.outputs.retry_count != '0'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
       max-parallel: 15
-      matrix: ${{ fromJSON(needs.retry_dispatch.outputs.retry_matrix) }}
+      matrix: ${{ fromJSON(needs.retry_prepare.outputs.retry_matrix) }}
     env:
       RIVERSHIFT_WORKER_PHASE: product
       RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}

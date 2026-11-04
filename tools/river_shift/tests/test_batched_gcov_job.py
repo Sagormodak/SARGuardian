@@ -214,9 +214,13 @@ def test_retry_job_consumes_only_the_validated_cross_job_matrix():
     assert "RIVERSHIFT_RETRY_MATRIX_JSON:" in retry_dispatch
     assert "RIVERSHIFT_RETRY_COUNT:" in retry_dispatch
     assert "len(rows) != count" in retry_dispatch
+    assert "needs: [retry_prepare, retry_dispatch]" in retry_job
+    assert "needs.retry_prepare.result == 'success'" in retry_job
     assert "needs.retry_dispatch.result == 'success'" in retry_job
-    assert "needs.retry_dispatch.outputs.retry_count != '0'" in retry_job
-    assert "matrix: ${{ fromJSON(needs.retry_dispatch.outputs.retry_matrix) }}" in retry_job
+    assert "needs.retry_prepare.outputs.retry_count != '0'" in retry_job
+    assert "matrix: ${{ fromJSON(needs.retry_prepare.outputs.retry_matrix) }}" in retry_job
+    assert "needs.retry_dispatch.outputs.retry_count" not in retry_job
+    assert "fromJSON(needs.retry_dispatch.outputs.retry_matrix)" not in retry_job
     assert "continue-on-error: true" not in retry_job
 
 def test_product_catalogue_path_is_absolute_from_child_tools_working_directory(tmp_path, monkeypatch):
@@ -456,7 +460,10 @@ def test_workflow_does_not_mask_product_worker_failures_and_validates_retry_hand
     assert "retry_dispatch:" in workflow
     assert "RIVERSHIFT_RETRY_MATRIX_JSON:" in workflow
     assert "matrix_include_count=" in workflow
-    assert "fromJSON(needs.retry_dispatch.outputs.retry_matrix)" in workflow
+    assert "needs: [retry_prepare, retry_dispatch]" in workflow
+    assert "needs.retry_prepare.outputs.retry_count != '0'" in workflow
+    assert "fromJSON(needs.retry_prepare.outputs.retry_matrix)" in workflow
+    assert "fromJSON(needs.retry_dispatch.outputs.retry_matrix)" not in workflow
     expected_status_env = "RIVERSHIFT_RETRY_DISPATCH_STATUS: $" + "{{ needs.retry_dispatch.result }}"
     assert expected_status_env in workflow
 
