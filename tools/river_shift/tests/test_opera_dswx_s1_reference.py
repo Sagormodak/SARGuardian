@@ -476,7 +476,13 @@ def test_cmr_scene_discovery_window_can_be_wider_without_changing_strict_score_g
     )
 
     params = dict(session.calls[0]["params"])
-    assert params["temporal[]"] == "2026-08-03T00:00:00Z,2026-08-31T23:59:59Z"
+    assert "temporal[]" not in params
+    assert params["bounding_box"] == "89.6,24,89.8,24.2"
+    assert query["local_temporal_filter_utc"] == [
+        "2026-08-03T00:00:00Z",
+        "2026-08-31T23:59:59Z",
+    ]
+    assert query["cmr_temporal_filter_applied"] is False
     assert query["discovery_window_days"] == 14
     assert query["strict_score_maximum_date_offset_days"] == 3
     assert records[0]["observation_date"] == "2026-08-18"
