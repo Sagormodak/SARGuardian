@@ -159,7 +159,7 @@ def test_common_support_fraction_rejects_grid_mismatch(tmp_path) -> None:
     ref_path = tmp_path / "reference.tif"
     _write_mask(pred_path, values)
     _write_mask(ref_path, values, transform=from_origin(500010, 2700000, 10, 10))
-    with pytest.raises(ValueError, match="same projected grid"):
+    with pytest.raises(ValueError, match="exact target grid"):
         runner._common_support_fraction(pred_path, ref_path)
 
 
