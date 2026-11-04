@@ -9,7 +9,7 @@ from rasterio.transform import from_origin
 import run_opera_dswx_s1_reference as opera
 
 
-def _write_wtr(path, values, *, transform=None):
+def _write_wtr(path, values, *, transform=None, tags=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     array = np.asarray(values, dtype=np.uint8)
     profile = {
@@ -24,6 +24,12 @@ def _write_wtr(path, values, *, transform=None):
     }
     with rasterio.open(path, "w", **profile) as dst:
         dst.write(array, 1)
+        dst.update_tags(**(tags or {
+            "SPACECRAFT_NAME": "Sentinel-1A",
+            "RTC_ORBIT_PASS_DIRECTION": "Ascending",
+            "RTC_TRACK_NUMBER": "014",
+            "RTC_ABSOLUTE_ORBIT_NUMBER": "12345",
+        }))
     return path
 
 
@@ -152,3 +158,33 @@ def test_conflicting_overlapping_tile_labels_remain_nodata(tmp_path):
     )
     with rasterio.open(output) as dataset:
         assert dataset.read(1).tolist() == [[255, 0], [1, 0]]
+
+
+def test_reference_mosaic_rejects_mixed_opera_tracks(tmp_path):
+    prediction = _write_wtr(tmp_path / "prediction.tif", [[1, 0], [1, 0]])
+    tile_a = _write_wtr(tmp_path / "a.tif", [[1, 0], [1, 0]])
+    tile_b = _write_wtr(
+        tmp_path / "b.tif",
+        [[1, 0], [1, 0]],
+        tags={
+            "SPACECRAFT_NAME": "Sentinel-1A",
+            "RTC_ORBIT_PASS_DIRECTION": "Ascending",
+            "RTC_TRACK_NUMBER": "015",
+            "RTC_ABSOLUTE_ORBIT_NUMBER": "12346",
+        },
+    )
+    records = [
+        {"tile_id": name, "observation_date": "2026-08-18", "filename": path.name}
+        for name, path in (("45RVM", tile_a), ("45RWM", tile_b))
+    ]
+    try:
+        opera._build_reference_on_nisar_grid(
+            prediction_path=prediction,
+            wtr_paths=[tile_a, tile_b],
+            selected_records=records,
+            output_path=tmp_path / "reference.tif",
+        )
+    except opera.OperaReferenceError as exc:
+        assert "not from the same spacecraft, orbit direction and relative track" in str(exc)
+    else:
+        raise AssertionError("Mismatched Sentinel-1 tracks must not be mosaicked")
