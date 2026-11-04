@@ -170,8 +170,9 @@ function OverlapAuditPanel({ summary }: { summary: Record<string, unknown> }) {
         <span className="rs-chip">DIAGNOSTIC · NOT ACCURACY</span>
       </div>
       <p className="rs-muted">
-        Full-resolution source masks are compared separately from lower-resolution map-preview footprints.
-        Preview overlap can be introduced by downsampling and must not be used as a measurement.
+        Full-resolution source masks are compared separately from majority-occupancy preview polygons.
+        Sparse sub-cell candidates are rendered as small MultiPoint markers and excluded from preview area/Jaccard.
+        Neither preview geometry type is a measurement; source masks remain authoritative.
       </p>
       <div className="rs-overlap-table-wrap">
         <table className="rs-table rs-overlap-table">
@@ -179,9 +180,9 @@ function OverlapAuditPanel({ summary }: { summary: Record<string, unknown> }) {
             <tr>
               <th>Class pair</th>
               <th>Source-mask intersection</th>
-              <th>Preview intersection</th>
+              <th>Preview polygon intersection</th>
               <th>Source Jaccard</th>
-              <th>Preview Jaccard</th>
+              <th>Preview polygon Jaccard</th>
             </tr>
           </thead>
           <tbody>
@@ -829,6 +830,20 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
         : name.includes('deposition') || name.includes('accretion') ? '#5fd7a5'
           : name.includes('new_water') || name.includes('newly_water') || name.includes('water_covered') ? '#53b9f4'
             : isObservedOpenWater ? '#73b3df' : '#9aafbb';
+      if ((geometryType === 'Point' || geometryType === 'MultiPoint')
+        && feature.getProperty('preview_sparse_marker') === true) {
+        return {
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 3.5,
+            fillColor: colour,
+            fillOpacity: 0.95,
+            strokeColor: '#ffffff',
+            strokeWeight: 0.8,
+          },
+          zIndex: 900,
+        };
+      }
       if (geometryType === 'Point' && feature.getProperty('general_change_marker') === true) {
         return {
           icon: {
