@@ -304,9 +304,11 @@ def test_downsampled_disjoint_class_masks_share_one_preview_grid_and_do_not_over
     erosion = np.zeros((512, 512), dtype=np.uint8)
     deposition = np.zeros((512, 512), dtype=np.uint8)
     new_water = np.zeros((512, 512), dtype=np.uint8)
-    erosion[0::2, 0::2] = 1
-    deposition[0::2, 1::2] = 1
-    new_water[1::2, 0::2] = 1
+    # Spatially coherent but disjoint river-change patches, rather than a
+    # pathological checkerboard that would exceed a bounded GeoJSON budget.
+    erosion[64:448, 48:176] = 1
+    deposition[64:448, 336:464] = 1
+    new_water[200:400, 208:304] = 1
 
     erosion_path = _write_mask(morphology_dir / "erosion_candidate_mask.tif", erosion)
     deposition_path = _write_mask(morphology_dir / "deposition_candidate_mask.tif", deposition)
