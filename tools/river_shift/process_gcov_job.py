@@ -1250,10 +1250,14 @@ def preview_geometry_overlap_metrics(
         "status": "DISPLAY_ONLY_DIAGNOSTIC",
         "method": "projected_geometry_intersection_per_display_class",
         "analysis_crs": analysis_crs.to_string(),
+        "per_class_area_km2": {
+            name: area / 1_000_000.0 for name, area in class_area.items()
+        },
         "per_class_polygon_area_km2": {
             name: area / 1_000_000.0 for name, area in class_area.items()
         },
         "per_class_sparse_marker_points": sparse_marker_point_counts,
+        "pairwise": pairwise,
         "pairwise_polygon_footprints": pairwise,
         "warning": (
             "Polygon-footprint overlap is a display-only diagnostic and excludes sparse MultiPoint markers. "
