@@ -279,6 +279,7 @@ def _build_reference_on_nisar_grid(
         width, height = pred.width, pred.height
         transform, crs = pred.transform, pred.crs
         output = np.full((height, width), FILL, dtype=np.uint8)
+    conflict_mask = np.zeros((height, width), dtype=bool)
 
     tile_audits: list[dict[str, Any]] = []
     for path, metadata in zip(wtr_paths, selected_records, strict=True):
@@ -308,14 +309,16 @@ def _build_reference_on_nisar_grid(
                 resampling=Resampling.nearest,
                 init_dest_nodata=True,
             )
-            current_valid = output != FILL
+            current_valid = (output != FILL) & (~conflict_mask)
             tile_valid = warped != FILL
             overlap_conflict = current_valid & tile_valid & (output != warped)
-            fill = (~current_valid) & tile_valid
+            conflict_mask |= overlap_conflict
+            fill = tile_valid & (~current_valid) & (~conflict_mask)
             output[fill] = warped[fill]
             # Conflicting tile labels in overlapping buffers are deliberately
-            # excluded rather than resolved by arbitrary tile order.
-            output[overlap_conflict] = FILL
+            # excluded rather than resolved by arbitrary tile order. Once
+            # conflicted, a pixel stays NoData even if a third tile overlaps it.
+            output[conflict_mask] = FILL
             tile_audits.append({
                 "filename": path.name,
                 "tile_id": metadata["tile_id"],
@@ -622,7 +625,9 @@ def run_pipeline(
             status = "METRICS_COMPUTED_REVIEW_REQUIRED"
 
     if "drive" not in locals():
-        drive, job_folder, upload_folder = _folder_layout(source_job_id, requested_date.isoformat())
+        drive, job_folder, upload_folder = _folder_layout(
+            source_job_id, selected_date_text or requested_date.isoformat()
+        )
     report_upload = _upload_checked(drive, report_path, upload_folder, "upload_opera_reference_report")
     status_payload = {
         "schema_version": 1,
