@@ -13,6 +13,8 @@ from urllib.parse import urlsplit
 import numpy as np
 import rasterio
 import requests
+from rasterio.enums import Resampling
+from rasterio.warp import reproject
 
 from drive_upload_adapter import download_private_result_to_path
 from river_shift.validation import save_validation_report, validate_binary_classification
@@ -80,6 +82,61 @@ def _resolve_source_manifest(job_id: str, api_base_url: str) -> dict:
     return manifest
 
 
+def _align_reference_to_prediction(prediction: Path, reference: Path, aligned: Path) -> dict:
+    """Align an independently labelled categorical raster to the NISAR grid with nearest neighbour."""
+    with rasterio.open(prediction) as pred, rasterio.open(reference) as ref:
+        if pred.crs is None or ref.crs is None:
+            raise ValueError("Both NISAR prediction and independent reference must declare a CRS.")
+        if pred.crs is None or not pred.crs.is_projected:
+            raise ValueError("Validation requires a projected metre-based NISAR analysis grid.")
+        if ref.count != 1:
+            raise ValueError("Independent reference GeoTIFF must contain exactly one binary class band.")
+        source_values = ref.read(1)
+        source_valid = ref.read_masks(1) > 0
+        if not source_valid.any():
+            raise ValueError("Independent reference raster has no valid labelled pixels.")
+        if not np.isin(source_values[source_valid], [0, 1]).all():
+            raise ValueError("Independent reference must be binary: 0=non-water, 1=water; unlabelled pixels must be NoData.")
+
+        source = np.where(source_valid, source_values, 255).astype(np.uint8, copy=False)
+        destination = np.full((pred.height, pred.width), 255, dtype=np.uint8)
+        reproject(
+            source=source,
+            destination=destination,
+            src_transform=ref.transform,
+            src_crs=ref.crs,
+            src_nodata=255,
+            dst_transform=pred.transform,
+            dst_crs=pred.crs,
+            dst_nodata=255,
+            resampling=Resampling.nearest,
+            init_dest_nodata=True,
+        )
+        profile = pred.profile.copy()
+        profile.update(
+            driver="GTiff",
+            count=1,
+            dtype="uint8",
+            nodata=255,
+            compress="deflate",
+            tiled=True,
+        )
+        aligned.parent.mkdir(parents=True, exist_ok=True)
+        with rasterio.open(aligned, "w", **profile) as output:
+            output.write(destination, 1)
+
+        return {
+            "method": "nearest_neighbour_categorical_reprojection",
+            "source_crs": ref.crs.to_string(),
+            "target_crs": pred.crs.to_string(),
+            "target_width": pred.width,
+            "target_height": pred.height,
+            "target_transform": list(pred.transform)[:6],
+            "source_valid_pixels": int(source_valid.sum()),
+            "aligned_valid_pixels": int(np.count_nonzero(destination != 255)),
+        }
+
+
 def _common_support_fraction(prediction: Path, reference: Path) -> float:
     with rasterio.open(prediction) as pred, rasterio.open(reference) as ref:
         if (
@@ -88,9 +145,7 @@ def _common_support_fraction(prediction: Path, reference: Path) -> float:
             or pred.width != ref.width
             or pred.height != ref.height
         ):
-            raise ValueError("Reference and NISAR prediction must use exactly the same projected grid.")
-        if pred.crs is None or not pred.crs.is_projected:
-            raise ValueError("Validation requires a projected metre-based analysis grid.")
+            raise ValueError("Aligned reference and NISAR prediction do not share the exact target grid.")
         pred_valid = pred.read_masks(1) > 0
         ref_valid = ref.read_masks(1) > 0
         total = int(pred_valid.sum())
@@ -134,7 +189,8 @@ def validate(args: argparse.Namespace) -> dict:
     reference_dir.mkdir(parents=True, exist_ok=True)
     prediction_path = flood_dir / "during_water_mask.tif"
     report_path = flood_dir / "river_shift_result.json"
-    reference_path = reference_dir / "reference_mask.tif"
+    reference_path = reference_dir / "reference_mask_source.tif"
+    aligned_reference_path = reference_dir / "reference_mask_aligned_to_nisar.tif"
 
     _download_verified(prediction_item, prediction_path)
     _download_verified(report_item, report_path)
@@ -150,7 +206,9 @@ def validate(args: argparse.Namespace) -> dict:
         raise ValueError("Reference GeoTIFF download size receipt did not match.")
     print(f"RIVERSHIFT_REFERENCE_DOWNLOAD=PASS bytes={reference_path.stat().st_size} sha256={reference_sha}", flush=True)
 
-    support = _common_support_fraction(prediction_path, reference_path)
+    reference_alignment = _align_reference_to_prediction(prediction_path, reference_path, aligned_reference_path)
+    print("RIVERSHIFT_REFERENCE_ALIGNMENT=PASS method=nearest_neighbour_categorical_reprojection", flush=True)
+    support = _common_support_fraction(prediction_path, aligned_reference_path)
     print(f"RIVERSHIFT_COMMON_SUPPORT_FRACTION={support:.6f}", flush=True)
     if support < args.minimum_common_support_fraction:
         raise ValueError(
@@ -160,7 +218,7 @@ def validate(args: argparse.Namespace) -> dict:
 
     result = validate_binary_classification(
         str(prediction_path),
-        str(reference_path),
+        str(aligned_reference_path),
         reference_source=reference_source,
         reference_date=reference_date.isoformat(),
         reference_method=reference_method,
@@ -176,6 +234,7 @@ def validate(args: argparse.Namespace) -> dict:
     result["reference"]["temporal_offset_days"] = offset_days
     result["reference"]["common_support_fraction"] = support
     result["reference"]["reference_file_sha256"] = reference_sha
+    result["reference"]["alignment"] = reference_alignment
     result["reference"]["independence_verified"] = False
     result["quality"]["status"] = "VALIDATION_METRICS_COMPUTED_REVIEW_REQUIRED"
     result["quality"]["release_status"] = "PROVISIONAL"
