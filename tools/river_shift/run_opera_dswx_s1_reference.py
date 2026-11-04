@@ -39,6 +39,9 @@ from validate_independent_reference import (
 COLLECTION_SHORT_NAME = "OPERA_L3_DSWX-S1_V1"
 COLLECTION_CONCEPT_ID = "C2949811996-POCLOUD"
 COLLECTION_DOI = "10.5067/OPDSWS1-L3V1"
+CMR_UMM_GRANULE_SEARCH_URL = "https://cmr.earthdata.nasa.gov/search/granules.umm_json_v1_6_7"
+CMR_UMM_ACCEPT = "application/vnd.nasa.cmr.umm_results+json; version=1.6.7"
+CMR_PAGE_SIZE = 2000
 PRODUCT_SPEC = "OPERA DSWx-S1A/B Product Specification v1.0.0, JPL D-108761 Rev A"
 DATASET_URL = "https://podaac.jpl.nasa.gov/dataset/OPERA_L3_DSWX-S1_V1"
 MAX_REFERENCE_BYTES = 250_000_000
@@ -93,17 +96,137 @@ def _file_metadata(value: str) -> dict[str, Any] | None:
     }
 
 
+def _cmr_umm_search(
+    session: Any,
+    *,
+    collection_concept_id: str,
+    temporal: tuple[str, str] | None = None,
+    bounding_box: tuple[float, float, float, float] | None = None,
+    page_size: int = CMR_PAGE_SIZE,
+    fetch_all: bool = True,
+) -> dict[str, Any]:
+    """Query CMR's UMM JSON API directly, bypassing Earthaccess GranuleQuery defaults."""
+    from math import ceil
+
+    if not 1 <= page_size <= 2000:
+        raise OperaReferenceError("CMR page_size must be between 1 and 2000.")
+    params: list[tuple[str, str]] = [
+        ("collection_concept_id", collection_concept_id),
+        ("page_size", str(page_size)),
+        ("page_num", "1"),
+    ]
+    if temporal is not None:
+        params.append(("temporal[]", f"{temporal[0]},{temporal[1]}"))
+    if bounding_box is not None:
+        params.append(("bounding_box", ",".join(f"{value:.9f}".rstrip("0").rstrip(".") for value in bounding_box)))
+
+    def fetch_page(page_num: int) -> tuple[list[dict[str, Any]], int, dict[str, Any]]:
+        page_params = [
+            (key, str(page_num) if key == "page_num" else value)
+            for key, value in params
+        ]
+        response = session.get(
+            CMR_UMM_GRANULE_SEARCH_URL,
+            params=page_params,
+            headers={"Accept": CMR_UMM_ACCEPT},
+            timeout=(10, 60),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise OperaReferenceError("CMR UMM JSON response was not an object.")
+        items = payload.get("items") or []
+        if not isinstance(items, list):
+            raise OperaReferenceError("CMR UMM JSON response has an invalid items array.")
+        header_hits = response.headers.get("CMR-Hits")
+        try:
+            hits = int(header_hits if header_hits is not None else payload.get("hits", len(items)))
+        except (TypeError, ValueError) as exc:
+            raise OperaReferenceError("CMR response returned an invalid hit count.") from exc
+        if hits < 0:
+            raise OperaReferenceError("CMR returned a negative hit count.")
+        if str(response.headers.get("CMR-Time-Out", "")).lower() == "true":
+            raise OperaReferenceError(
+                "CMR timed out and marked its result set incomplete; refusing partial granule inventory."
+            )
+        if any(not isinstance(item, dict) for item in items):
+            raise OperaReferenceError("CMR UMM JSON contains a non-object granule item.")
+        return items, hits, {
+            "http_status": int(response.status_code),
+            "content_type": response.headers.get("Content-Type"),
+            "page_num": page_num,
+            "page_items": len(items),
+            "cmr_hits": hits,
+            "cmr_search_after_present": bool(response.headers.get("CMR-Search-After")),
+            "cmr_timed_out": str(response.headers.get("CMR-Time-Out", "")).lower() == "true",
+        }
+
+    first_items, hits, first_audit = fetch_page(1)
+    all_items = list(first_items)
+    audit_pages = [first_audit]
+    if fetch_all and hits > page_size:
+        total_pages = min(ceil(hits / page_size), 20)
+        for page_num in range(2, total_pages + 1):
+            page_items, page_hits, page_audit = fetch_page(page_num)
+            if page_hits != hits:
+                raise OperaReferenceError(
+                    "CMR hit count changed during pagination; refusing an incomplete scene inventory."
+                )
+            audit_pages.append(page_audit)
+            if not page_items:
+                break
+            all_items.extend(page_items)
+        if len(all_items) < min(hits, total_pages * page_size):
+            raise OperaReferenceError(
+                f"CMR pagination returned {len(all_items)} of at least {min(hits, total_pages * page_size)} expected granule rows."
+            )
+        if hits > 20 * page_size:
+            raise OperaReferenceError(
+                "CMR returned more than 40,000 AOI/time granules; refusing an incomplete inventory."
+            )
+    return {
+        "items": all_items,
+        "hits": hits,
+        "pages": audit_pages,
+        "query": {
+            "url": CMR_UMM_GRANULE_SEARCH_URL,
+            "collection_concept_id": collection_concept_id,
+            "temporal": list(temporal) if temporal else None,
+            "bounding_box_wgs84": list(bounding_box) if bounding_box else None,
+            "page_size": page_size,
+            "accept": CMR_UMM_ACCEPT,
+        },
+    }
+
+
+def _cmr_related_get_data_urls(item: dict[str, Any]) -> list[str]:
+    umm = item.get("umm") or {}
+    related = umm.get("RelatedUrls") or []
+    if not isinstance(related, list):
+        return []
+    urls: list[str] = []
+    for link in related:
+        if not isinstance(link, dict):
+            continue
+        link_type = str(link.get("Type") or "").strip().upper()
+        url = str(link.get("URL") or "").strip()
+        if link_type == "GET DATA" and url.startswith("https://"):
+            urls.append(url)
+    return urls
+
+
 def _granule_links(granule: Any) -> list[str]:
-    # GitHub-hosted runners are not guaranteed to execute inside AWS us-west-2.
-    # Use authenticated HTTPS (external) links for discovery and download;
-    # direct S3 links are only valid for in-region cloud access.
+    # Raw UMM dictionaries come from the direct authenticated CMR query.
+    if isinstance(granule, dict):
+        return _cmr_related_get_data_urls(granule)
+    # Compatibility for Earthaccess DataGranule objects in unit fixtures.
     try:
         links = granule.data_links(access="external")
     except Exception:
         links = []
     if not isinstance(links, (list, tuple)):
         return []
-    return [str(link) for link in links if isinstance(link, str)]
+    return [str(link) for link in links if isinstance(link, str) and str(link).startswith("https://") ]
 
 
 def _granule_umm(granule: Any) -> dict[str, Any]:
@@ -127,80 +250,159 @@ def _discover_records(
     if geometry.is_empty or not geometry.is_valid:
         raise OperaReferenceError("The retained RiverShift AOI WKT is empty or invalid.")
     west, south, east, north = geometry.bounds
+    bbox = (west, south, east, north)
     start = requested_date - timedelta(days=maximum_offset_days)
     end = requested_date + timedelta(days=maximum_offset_days)
+    temporal = (
+        f"{start.isoformat()}T00:00:00Z",
+        f"{end.isoformat()}T23:59:59Z",
+    )
     print(
         "RIVERSHIFT_OPERA_CMR_QUERY="
         + json.dumps({
             "collection_doi": COLLECTION_DOI,
             "collection_concept_id": COLLECTION_CONCEPT_ID,
             "collection_short_name": COLLECTION_SHORT_NAME,
-            "query_method": "earthaccess DOI lookup",
-            "temporal_start": start.isoformat(),
-            "temporal_end": end.isoformat(),
+            "query_method": "direct authenticated CMR UMM JSON; collection_concept_id",
+            "temporal_start_utc": temporal[0],
+            "temporal_end_utc": temporal[1],
             "bounding_box": [west, south, east, north],
             "maximum_date_offset_days": maximum_offset_days,
         }, sort_keys=True),
         flush=True,
     )
     earthaccess.login(strategy="environment")
-    # Search by DOI so Earthaccess resolves the exact CMR collection concept
-    # ID. OPERA's POCLOUD collection is restricted; GranuleQuery's default
-    # cloud_hosted=True filter can exclude restricted cloud collections even
-    # when the caller omits that argument.
-    granules = earthaccess.search_data(
-        doi=COLLECTION_DOI,
-        temporal=(start.isoformat(), end.isoformat()),
-        bounding_box=(west, south, east, north),
-        debug=True,
-        count=-1,
+    session = earthaccess.get_requests_https_session()
+    result = _cmr_umm_search(
+        session,
+        collection_concept_id=COLLECTION_CONCEPT_ID,
+        temporal=temporal,
+        bounding_box=bbox,
     )
+    items = result["items"]
+    diagnostics: dict[str, Any] = {
+        "combined_query": {
+            "hits": result["hits"],
+            "returned_items": len(items),
+            "pages": result["pages"],
+            "query": result["query"],
+        }
+    }
+    # Zero intersection can be either temporal coverage or spatial coverage.
+    # Probe each dimension separately (1 metadata row per probe, no downloads).
+    if result["hits"] == 0:
+        date_probe = _cmr_umm_search(
+            session,
+            collection_concept_id=COLLECTION_CONCEPT_ID,
+            temporal=temporal,
+            page_size=1,
+            fetch_all=False,
+        )
+        aoi_probe = _cmr_umm_search(
+            session,
+            collection_concept_id=COLLECTION_CONCEPT_ID,
+            bounding_box=bbox,
+            page_size=1,
+            fetch_all=False,
+        )
+        collection_probe = _cmr_umm_search(
+            session,
+            collection_concept_id=COLLECTION_CONCEPT_ID,
+            page_size=1,
+            fetch_all=False,
+        )
+        diagnostics["zero_result_probes"] = {
+            "collection_and_date": {
+                "hits": date_probe["hits"],
+                "one_sample_returned": len(date_probe["items"]),
+                "query": date_probe["query"],
+            },
+            "collection_and_aoi": {
+                "hits": aoi_probe["hits"],
+                "one_sample_returned": len(aoi_probe["items"]),
+                "query": aoi_probe["query"],
+            },
+            "collection_only": {
+                "hits": collection_probe["hits"],
+                "one_sample_returned": len(collection_probe["items"]),
+                "query": collection_probe["query"],
+            },
+        }
     print(
         "RIVERSHIFT_OPERA_CMR_RESULT_COUNT="
-        + json.dumps({"granules_returned": len(granules)}, sort_keys=True),
+        + json.dumps({
+            "granules_returned": result["hits"],
+            "items_loaded": len(items),
+            "cmr_diagnostics": diagnostics,
+        }, sort_keys=True),
         flush=True,
     )
+
     rows: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    for granule in granules:
-        umm = _granule_umm(granule)
+    without_get_data = 0
+    non_wtr = 0
+    for item in items:
+        umm = item.get("umm") or {}
+        meta = item.get("meta") or {}
         granule_ur = str(umm.get("GranuleUR") or "")
-        links = _granule_links(granule)
+        links = _granule_links(item)
         candidates = [granule_ur, *links]
         wtr_meta = None
+        wtr_url = None
         for candidate in candidates:
             parsed = _file_metadata(candidate)
             if parsed and parsed["layer_name"] == "WTR":
                 wtr_meta = parsed
+                if candidate in links:
+                    wtr_url = candidate
                 break
         if not wtr_meta:
+            non_wtr += 1
             continue
-        key = (wtr_meta["filename"], str((granule.get("meta") or {}).get("concept-id", "")))
+        if not wtr_url:
+            # Do not advertise a reference that cannot be fetched as an
+            # authenticated HTTPS GET DATA link outside AWS us-west-2.
+            for link in links:
+                parsed = _file_metadata(link)
+                if parsed and parsed["filename"] == wtr_meta["filename"]:
+                    wtr_url = link
+                    break
+        if not wtr_url:
+            without_get_data += 1
+            continue
+        concept_id = str(meta.get("concept-id") or "")
+        key = (wtr_meta["filename"], concept_id)
         if key in seen:
             continue
         seen.add(key)
         rows.append({
             **wtr_meta,
-            "granule": granule,
             "granule_ur": granule_ur,
             "direct_links": links,
-            "concept_id": (granule.get("meta") or {}).get("concept-id"),
+            "wtr_download_url": wtr_url,
+            "concept_id": concept_id,
         })
     query = {
         "collection_short_name": COLLECTION_SHORT_NAME,
         "collection_concept_id": COLLECTION_CONCEPT_ID,
         "collection_doi": COLLECTION_DOI,
-        "collection_query_method": "earthaccess DOI lookup resolved to exact collection concept ID",
+        "collection_query_method": "direct authenticated CMR UMM JSON by collection_concept_id",
         "cloud_hosted_filter_applied": False,
         "downloadable_filter_applied": False,
         "bounding_box_wgs84": [west, south, east, north],
-        "temporal_query": [start.isoformat(), end.isoformat()],
+        "temporal_query_utc": list(temporal),
         "requested_observation_date": requested_date.isoformat(),
-        "granules_returned_by_cmr": len(granules),
+        "granules_returned_by_cmr": result["hits"],
+        "umm_items_loaded": len(items),
         "wtr_records_parsed": len(rows),
+        "non_wtr_records": non_wtr,
+        "wtr_records_missing_https_get_data": without_get_data,
+        "cmr_query": result["query"],
+        "cmr_pages": result["pages"],
+        "cmr_diagnostics": diagnostics,
     }
     return rows, query
-
 
 def _select_scene_records(
     records: list[dict[str, Any]],
@@ -243,13 +445,20 @@ def _download_selected(selected: list[dict[str, Any]], destination: Path) -> lis
     import earthaccess
 
     destination.mkdir(parents=True, exist_ok=True)
-    granules = [row["granule"] for row in selected]
+    urls = [str(row.get("wtr_download_url") or "") for row in selected]
+    if any(not url.startswith("https://") for url in urls):
+        raise OperaReferenceError("Every selected OPERA WTR granule requires an authenticated HTTPS GET DATA URL.")
     print(
         "RIVERSHIFT_OPERA_DOWNLOAD_START="
-        + json.dumps([row["filename"] for row in selected]),
+        + json.dumps([
+            {"filename": row["filename"], "concept_id": row.get("concept_id")}
+            for row in selected
+        ], sort_keys=True),
         flush=True,
     )
-    earthaccess.download(granules, local_path=str(destination))
+    # Earthaccess accepts HTTP URL lists when the provider is specified. This
+    # also keeps GitHub-hosted runners outside AWS us-west-2 on HTTPS access.
+    earthaccess.download(urls, local_path=str(destination), provider="POCLOUD", threads=4)
     available = [path for path in destination.rglob("*") if path.is_file()]
     wanted = {row["filename"] for row in selected}
     found: dict[str, Path] = {}
