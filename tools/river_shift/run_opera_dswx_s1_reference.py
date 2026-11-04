@@ -142,6 +142,9 @@ def _discover_records(
     earthaccess.login(strategy="environment")
     granules = earthaccess.search_data(
         short_name=COLLECTION_SHORT_NAME,
+        provider="POCLOUD",
+        cloud_hosted=True,
+        downloadable=True,
         temporal=(start.isoformat(), end.isoformat()),
         bounding_box=(west, south, east, north),
         count=-1,
@@ -175,6 +178,9 @@ def _discover_records(
     query = {
         "collection_short_name": COLLECTION_SHORT_NAME,
         "collection_doi": COLLECTION_DOI,
+        "provider": "POCLOUD",
+        "cloud_hosted": True,
+        "downloadable": True,
         "bounding_box_wgs84": [west, south, east, north],
         "temporal_query": [start.isoformat(), end.isoformat()],
         "requested_observation_date": requested_date.isoformat(),
