@@ -51,6 +51,7 @@ from drive_upload_adapter import (
     upload_validated_results,
 )  # noqa: E402
 from river_shift.raster_io import RasterContractError, validate_gcov_series  # noqa: E402
+from river_shift.overlap_audit import audit_scene_mosaic_overlap  # noqa: E402
 
 
 class WorkerFailure(RuntimeError):
@@ -663,6 +664,23 @@ def _mosaic_date_rasters(paths: list[Path], destination: Path) -> Path:
         raise WorkerFailure("RASTER_MOSAIC_FAILED", "Could not combine the selected same-date scene rasters safely.") from None
     finally:
         vrt.unlink(missing_ok=True)
+    try:
+        mosaic_overlap_audit = audit_scene_mosaic_overlap(ordered_paths, destination)
+    except (OSError, ValueError, rasterio.errors.RasterioError) as exc:
+        detail = str(exc).strip() or type(exc).__name__
+        raise WorkerFailure(
+            "MOSAIC_OVERLAP_AUDIT_FAILED",
+            f"Could not complete the same-date scene overlap QA: {detail[:240]}",
+        ) from None
+    _log_worker_stage(
+        "date_mosaic_overlap_audit", "PASS",
+        acquisition_mosaic=destination.name,
+        scene_count=mosaic_overlap_audit.get("scene_count"),
+        pair_count=len(mosaic_overlap_audit.get("pairwise", [])),
+        pairwise=mosaic_overlap_audit.get("pairwise", []),
+        status=mosaic_overlap_audit.get("status"),
+    )
+
     metadata_rows = [
         json.loads(path.with_suffix(".metadata.json").read_text(encoding="utf-8"))
         for path in ordered_paths
@@ -691,6 +709,7 @@ def _mosaic_date_rasters(paths: list[Path], destination: Path) -> Path:
         "output_cog": str(destination.resolve()),
         "output_cog_sha256": sha256_file(destination),
         "mosaic_method": "GDAL VRT; first valid source pixel in deterministic granule-name order",
+        "mosaic_overlap_audit": mosaic_overlap_audit,
     })
     destination.with_suffix(".metadata.json").write_text(json.dumps(source_metadata, indent=2), encoding="utf-8")
     return destination
