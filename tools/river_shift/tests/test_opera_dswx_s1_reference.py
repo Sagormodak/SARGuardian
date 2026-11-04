@@ -216,7 +216,7 @@ def test_granule_link_discovery_uses_external_https_access():
     assert links[0].startswith("https://")
 
 
-def test_discovery_pins_pocloud_downloadable_scene_and_parses_wtr(monkeypatch):
+def test_discovery_uses_exact_opera_doi_and_parses_wtr(monkeypatch):
     import sys
     from types import SimpleNamespace
 
