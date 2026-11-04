@@ -171,6 +171,9 @@ function pointOnSegment(point: ImpactPosition, start: ImpactPosition, end: Impac
     + (point[1] - start[1]) * (end[1] - start[1]);
   if (dot < -1e-10) return false;
   const lengthSquared = (end[0] - start[0]) ** 2 + (end[1] - start[1]) ** 2;
+  if (lengthSquared <= 1e-20) {
+    return Math.hypot(point[0] - start[0], point[1] - start[1]) <= 1e-10;
+  }
   return dot <= lengthSquared + 1e-10;
 }
 
