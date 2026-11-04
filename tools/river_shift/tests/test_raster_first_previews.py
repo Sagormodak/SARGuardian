@@ -2,14 +2,19 @@ import json
 
 import numpy as np
 import rasterio
+import pytest
 from rasterio.transform import from_origin
 
 from process_gcov_job import (
     MAX_WEB_PREVIEW_BYTES,
     create_web_previews,
+    preview_geometry_overlap_metrics,
     sha256_file,
     write_mask_web_preview,
 )
+from pyproj import CRS, Transformer
+from shapely.geometry import MultiPoint, Polygon, mapping
+from shapely.ops import transform as transform_geometry
 
 
 def _write_mask(path, values):
@@ -31,7 +36,7 @@ def _write_mask(path, values):
     return path
 
 
-def test_mask_preview_preserves_an_isolated_source_candidate_after_downsampling(tmp_path):
+def test_isolated_source_candidate_is_a_sparse_marker_not_a_coarse_polygon(tmp_path):
     source = np.zeros((512, 512), dtype=np.uint8)
     source[257, 251] = 1
     source_path = _write_mask(tmp_path / "isolated_mask.tif", source)
@@ -46,17 +51,43 @@ def test_mask_preview_preserves_an_isolated_source_candidate_after_downsampling(
         max_dimension=64,
     )
 
+    diagnostics = preview["river_shift_preview"]
     assert len(preview["features"]) == 1
-    assert preview["river_shift_preview"]["source_candidate_pixels"] == 1
-    assert preview["river_shift_preview"]["preview_candidate_cells"] == 1
-    assert preview["river_shift_preview"]["preview_candidate_cells"] < (
-        preview["river_shift_preview"]["preview_width"] * preview["river_shift_preview"]["preview_height"]
-    )
-    assert preview["river_shift_preview"]["features_omitted_for_size"] == 0
-    assert preview["river_shift_preview"]["method"] == "average_occupancy_gt_zero_then_polygonize"
+    assert preview["features"][0]["geometry"]["type"] == "MultiPoint"
+    assert preview["features"][0]["properties"]["preview_sparse_marker"] is True
+    assert diagnostics["source_candidate_pixels"] == 1
+    assert diagnostics["preview_candidate_cells"] == 1
+    assert diagnostics["preview_polygon_cells"] == 0
+    assert diagnostics["preview_sparse_marker_cells"] == 1
+    assert diagnostics["minimum_polygon_occupancy_fraction"] == 0.5
+    assert diagnostics["features_omitted_for_size"] == 0
+    assert diagnostics["method"] == "average_occupancy_gt_0_5_polygonize_plus_sparse_cell_centres"
     assert preview_path.stat().st_size <= 50_000
     assert sha256_file(source_path) == original_digest
-    assert preview["features"][0]["properties"]["class"] == "erosion"
+
+
+def test_preview_uses_majority_occupancy_for_polygons_and_sparse_markers_for_ties(tmp_path):
+    source = np.zeros((128, 128), dtype=np.uint8)
+    # At 64x64, each preview cell represents an exact 2x2 source block.
+    source[0:2, 0:2] = [[1, 1], [1, 0]]  # 75% occupancy -> polygon cell
+    source[0:2, 2:4] = [[1, 0], [0, 1]]  # 50% occupancy -> sparse marker
+    source_path = _write_mask(tmp_path / "mixed_occupancy_mask.tif", source)
+
+    preview = write_mask_web_preview(
+        source_path,
+        tmp_path / "mixed_occupancy_preview.geojson",
+        class_name="deposition",
+        max_bytes=50_000,
+        max_dimension=64,
+    )
+
+    diagnostics = preview["river_shift_preview"]
+    by_geometry = {feature["geometry"]["type"]: feature for feature in preview["features"]}
+    assert set(by_geometry) == {"Polygon", "MultiPoint"}
+    assert diagnostics["source_candidate_pixels"] == 5
+    assert diagnostics["preview_candidate_cells"] == 2
+    assert diagnostics["preview_polygon_cells"] == 1
+    assert diagnostics["preview_sparse_marker_cells"] == 1
 
 
 def test_empty_mask_is_explicitly_distinguished_from_a_lost_preview(tmp_path):
@@ -172,6 +203,8 @@ def test_raster_first_job_previews_keep_each_change_class_and_each_observed_date
         # These fixtures fit without downsampling, so preview cells must be an
         # exact one-to-one count of the class-specific source mask positives.
         assert diagnostics["preview_candidate_cells"] == expected_class_pixels[class_name]
+        assert diagnostics["preview_polygon_cells"] == expected_class_pixels[class_name]
+        assert diagnostics["preview_sparse_marker_cells"] == 0
     assert len(set(observed_class_pixels.values())) == 3
 
     updated_report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -186,6 +219,8 @@ def test_raster_first_job_previews_keep_each_change_class_and_each_observed_date
         }[frame["date"]]
         assert frame_preview["river_shift_preview"]["source_candidate_pixels"] == expected_frame_pixels
         assert frame_preview["river_shift_preview"]["preview_candidate_cells"] == expected_frame_pixels
+        assert frame_preview["river_shift_preview"]["preview_polygon_cells"] == expected_frame_pixels
+        assert frame_preview["river_shift_preview"]["preview_sparse_marker_cells"] == 0
         assert frame["water_preview_source_candidate_pixels"] == expected_frame_pixels
         assert frame["water_preview_feature_count"] == 1
         assert frame["water_geojson_sha256"] == sha256_file(frame_path)
@@ -195,3 +230,62 @@ def test_raster_first_job_previews_keep_each_change_class_and_each_observed_date
     for layer in layers:
         layer_path = work_dir / layer["path"]
         assert sha256_file(layer_path) == layer["sha256"]
+
+
+def test_preview_overlap_area_excludes_sparse_point_markers_and_reports_them_separately():
+    to_wgs84 = Transformer.from_crs("EPSG:32646", "EPSG:4326", always_xy=True).transform
+    erosion_polygon = Polygon([(500000, 2700000), (500100, 2700000), (500100, 2700100), (500000, 2700100)])
+    deposition_polygon = Polygon([(500050, 2700000), (500150, 2700000), (500150, 2700100), (500050, 2700100)])
+    sparse_points = MultiPoint([(500075, 2700050), (500125, 2700050)])
+
+    features = [
+        {
+            "type": "Feature",
+            "properties": {"river_shift_layer": "erosion"},
+            "geometry": mapping(transform_geometry(to_wgs84, erosion_polygon)),
+        },
+        {
+            "type": "Feature",
+            "properties": {
+                "river_shift_layer": "erosion",
+                "preview_sparse_marker": True,
+            },
+            "geometry": mapping(transform_geometry(to_wgs84, sparse_points)),
+        },
+        {
+            "type": "Feature",
+            "properties": {"river_shift_layer": "deposition"},
+            "geometry": mapping(transform_geometry(to_wgs84, deposition_polygon)),
+        },
+    ]
+
+    result = preview_geometry_overlap_metrics(features, CRS.from_epsg(32646))
+
+    assert result["per_class_polygon_area_km2"]["erosion"] == pytest.approx(0.01, rel=1e-6)
+    assert result["per_class_polygon_area_km2"]["deposition"] == pytest.approx(0.01, rel=1e-6)
+    assert result["per_class_sparse_marker_points"]["erosion"] == 2
+    assert result["pairwise"]["erosion__deposition"]["intersection_area_km2"] == pytest.approx(0.005, rel=1e-5)
+    assert result["pairwise_polygon_footprints"] == result["pairwise"]
+
+
+def test_sparse_preview_marker_cap_is_explicit_and_does_not_change_source_pixels(tmp_path):
+    source = np.zeros((512, 512), dtype=np.uint8)
+    source[0::2, 0::2] = 1  # 65,536 low-occupancy preview cells at 256x256.
+    source_path = _write_mask(tmp_path / "many_sparse_candidates.tif", source)
+    original_digest = sha256_file(source_path)
+
+    preview = write_mask_web_preview(
+        source_path,
+        tmp_path / "many_sparse_preview.geojson",
+        class_name="new_water",
+        max_dimension=256,
+    )
+
+    diagnostics = preview["river_shift_preview"]
+    marker_feature = next(feature for feature in preview["features"] if feature["properties"].get("preview_sparse_marker"))
+    assert diagnostics["source_candidate_pixels"] == 65_536
+    assert diagnostics["preview_sparse_marker_cells"] == 65_536
+    assert diagnostics["preview_sparse_marker_points_rendered"] == 8_000
+    assert diagnostics["preview_sparse_marker_points_omitted"] == 57_536
+    assert len(marker_feature["geometry"]["coordinates"]) == 8_000
+    assert sha256_file(source_path) == original_digest
