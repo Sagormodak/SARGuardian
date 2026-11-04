@@ -92,7 +92,7 @@ function riverShiftCandidateType(properties?: Record<string, unknown>): keyof Ri
     properties.change_type,
     properties.candidate_type,
   ].filter((value): value is string => typeof value === 'string');
-  const label = labels.map((value) => value.toLowerCase().replace(/[\\s-]+/g, '_')).join('_');
+  const label = labels.map((value) => value.toLowerCase().replace(/[\s-]+/g, '_')).join('_');
   if (label.includes('erosion')) return 'erosion';
   if (label.includes('deposition') || label.includes('accretion')) return 'deposition';
   if (label.includes('new_water') || label.includes('newly_water') || label.includes('water_covered')) return 'newWater';
