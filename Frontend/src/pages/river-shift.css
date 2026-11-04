@@ -137,3 +137,142 @@
 .rs-overlap-table th, .rs-overlap-table td { font-variant-numeric: tabular-nums; }
 
 .rs-swatch.rs-observed-water { background: rgba(115, 179, 223, .24); border: 1px solid #73b3df; }
+
+
+/* Judge-facing workflow clarity and source-attributed impact context. */
+.rs-quick-start {
+  max-width: 1440px;
+  margin: 0 auto 20px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.rs-quick-start > div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  column-gap: 9px;
+  row-gap: 3px;
+  padding: 13px 14px;
+  border: 1px solid rgba(149, 194, 208, .16);
+  border-radius: 11px;
+  background: rgba(16, 37, 52, .46);
+}
+.rs-quick-start > div > span {
+  grid-row: span 2;
+  width: 27px;
+  height: 27px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(103, 201, 198, .42);
+  border-radius: 8px;
+  color: #78e4dc;
+  font-size: 10px;
+  font-weight: 800;
+}
+.rs-quick-start strong { color: #e2f3f5; font-size: 11px; }
+.rs-quick-start small { color: #91acbb; font-size: 10px; line-height: 1.45; }
+.rs-date-readiness {
+  display: grid;
+  gap: 5px;
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(149, 194, 208, .18);
+  border-radius: 10px;
+  background: rgba(16, 37, 52, .52);
+  color: #c7dce4;
+  font-size: 11px;
+  line-height: 1.55;
+}
+.rs-date-readiness strong { color: #e8f6f7; }
+.rs-date-readiness small { color: #91acbb; }
+.rs-date-ready { border-color: rgba(95, 215, 165, .35); }
+.rs-date-warning { border-color: rgba(241, 202, 135, .42); }
+.rs-readiness-panel, .rs-impact-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid rgba(149, 194, 208, .16);
+  border-radius: 12px;
+  background: rgba(10, 32, 47, .52);
+}
+.rs-readiness-list { display: grid; gap: 0; }
+.rs-readiness-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(149, 194, 208, .1);
+}
+.rs-readiness-row:last-child { border-bottom: 0; }
+.rs-readiness-row > div { display: grid; gap: 3px; min-width: 0; }
+.rs-readiness-row strong { color: #d9eff2; font-size: 11px; }
+.rs-readiness-row small { color: #91acbb; font-size: 10px; line-height: 1.45; }
+.rs-readiness-status {
+  flex: 0 0 auto;
+  max-width: 190px;
+  color: #b8cbd2;
+  font-size: 9px;
+  font-weight: 800;
+  text-align: right;
+  letter-spacing: .03em;
+}
+.rs-status-recorded { color: #7edfc0; }
+.rs-status-pending { color: #edc98d; }
+.rs-impact-upload-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+.rs-impact-upload-grid .rs-upload { min-height: 78px; }
+.rs-impact-results {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+.rs-impact-total, .rs-impact-class {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  padding: 13px;
+  border: 1px solid rgba(149, 194, 208, .16);
+  border-radius: 10px;
+  background: rgba(91, 148, 165, .07);
+}
+.rs-impact-total { grid-column: 1 / -1; }
+.rs-impact-total span, .rs-impact-class span {
+  color: #b9d0d8;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.rs-impact-total strong { color: #e8f7f8; font-size: 23px; font-variant-numeric: tabular-nums; }
+.rs-impact-class strong { color: #e2f3f5; font-size: 13px; }
+.rs-impact-total small, .rs-impact-class small { color: #91acbb; font-size: 9px; line-height: 1.45; }
+.rs-impact-source { grid-column: 1 / -1; color: #a9c2cc; font-size: 10px; overflow-wrap: anywhere; }
+.rs-impact-source a { color: #83dcd8; }
+.rs-impact-caveat { margin: 0; color: #d7c39a; font-size: 10px; line-height: 1.55; }
+.rs-impact-help { margin: 0; color: #91acbb; font-size: 10px; line-height: 1.55; }
+
+@media (max-width: 760px) {
+  .rs-quick-start { grid-template-columns: 1fr; }
+  .rs-impact-upload-grid { grid-template-columns: 1fr; }
+  .rs-impact-results { grid-template-columns: 1fr; }
+  .rs-impact-total { grid-column: auto; }
+  .rs-readiness-row { align-items: flex-start; flex-direction: column; gap: 6px; }
+  .rs-readiness-status { max-width: none; text-align: left; }
+}
+
+.rs-impact-osm-action {
+  display: grid;
+  justify-items: start;
+  gap: 7px;
+  padding: 12px;
+  border: 1px solid rgba(103, 201, 198, .22);
+  border-radius: 10px;
+  background: rgba(32, 116, 120, .07);
+}
+.rs-impact-osm-action small { color: #91acbb; font-size: 10px; line-height: 1.55; }
