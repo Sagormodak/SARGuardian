@@ -62,7 +62,7 @@ def _upload_checked(client: DriveClient, path: Path, folder_id: str, stage: str)
     print(
         "RIVERSHIFT_REFERENCE_DRIVE_STAGE="
         + f"{stage}:PASS file={path.name} bytes={receipt.get('bytes')} "
-        + f"drive_file_id={receipt.get('drive_file_id')}",
+        + "remote_checksum=PASS",
         flush=True,
     )
     return receipt
@@ -129,13 +129,12 @@ def run_pipeline(
     upload_receipts: dict[str, dict[str, Any]] = {}
     for key, path in (("scl_water", scl_path), ("mndwi_water", mndwi_path)):
         upload_receipts[key] = _upload_checked(drive, path, output_folder, f"upload_{key}")
-        artifacts[key]["drive_file_id"] = upload_receipts[key]["drive_file_id"]
         artifacts[key]["drive_upload"] = {
             "status": upload_receipts[key]["status"],
             "bytes": upload_receipts[key]["bytes"],
             "md5": upload_receipts[key]["md5"],
             "remote_md5": upload_receipts[key]["remote_md5"],
-            "folder": "RiverShift/<job-id>/sentinel2-reference-candidates/<date-datatake>/run-<workflow-run>",
+            "folder_path": "RiverShift/<job-id>/sentinel2-reference-candidates/<date-datatake>/run-<workflow-run>",
         }
 
     report["reference_artifacts"] = artifacts
@@ -143,8 +142,8 @@ def run_pipeline(
         "status": "PASS",
         "provider": "Google Drive",
         "root_folder": RIVERSHIFT_STORAGE_FOLDER_NAME,
-        "job_folder_id": job_folder,
-        "candidate_folder_id": output_folder,
+        "folder_path": "RiverShift/<job-id>/sentinel2-reference-candidates/<date-datatake>/run-<workflow-run>",
+        "privacy_verified": True,
         "retention": "private owner-controlled Drive folder; no public permission created",
     }
     report["quality"] = {
@@ -239,11 +238,29 @@ def run_pipeline(
         "nisar_requested_observation_date": str(report.get("requested_observation_date") or ""),
         "sentinel2_observation_date": reference_date,
         "sentinel2_item_ids": item_ids,
-        "drive_folder_id": output_folder,
-        "reference_uploads": upload_receipts,
+        "reference_uploads": {
+            key: {
+                "status": value.get("status"),
+                "file": (artifacts.get(key) or {}).get("file"),
+                "sha256": (artifacts.get(key) or {}).get("sha256"),
+                "bytes": value.get("bytes"),
+            }
+            for key, value in upload_receipts.items()
+        },
         "independent_validation": results,
-        "validation_report_uploads": validation_reports,
-        "cross_sensor_report_drive_upload": report_upload,
+        "validation_report_uploads": {
+            key: {
+                "status": value.get("status"),
+                "file": value.get("name"),
+                "bytes": value.get("bytes"),
+            }
+            for key, value in validation_reports.items()
+        },
+        "cross_sensor_report_drive_upload": {
+            "status": report_upload.get("status"),
+            "file": report_upload.get("name"),
+            "bytes": report_upload.get("bytes"),
+        },
         "release_status": "PROVISIONAL",
         "independence_verified": False,
         "review_required": True,
@@ -256,12 +273,30 @@ def run_pipeline(
     status_path = output_dir / "sentinel2_reference_validation_status.json"
     _write_json(status_path, status_payload)
     status_upload = _upload_checked(drive, status_path, output_folder, "upload_validation_status")
-    status_payload["status_report_drive_upload"] = status_upload
+    status_payload["status_report_drive_upload"] = {
+        "status": status_upload.get("status"),
+        "file": status_upload.get("name"),
+        "bytes": status_upload.get("bytes"),
+    }
+    receipt_payload = {
+        **status_payload,
+        "private_drive_ids": {
+            "job_folder_id": job_folder,
+            "candidate_folder_id": output_folder,
+            "scl_reference_file_id": upload_receipts["scl_water"]["drive_file_id"],
+            "mndwi_reference_file_id": upload_receipts["mndwi_water"]["drive_file_id"],
+            "sentinel2_report_file_id": report_upload["drive_file_id"],
+            "validation_report_file_ids": {
+                key: value["drive_file_id"] for key, value in validation_reports.items()
+            },
+            "validation_status_file_id": status_upload["drive_file_id"],
+        },
+    }
     receipt_path = output_dir / "sentinel2_reference_drive_receipt.json"
-    _write_json(receipt_path, status_payload)
+    _write_json(receipt_path, receipt_payload)
     receipt_upload = _upload_checked(drive, receipt_path, output_folder, "upload_drive_receipt")
 
-    print("RIVERSHIFT_SENTINEL2_REFERENCE_DRIVE_FOLDER_ID=" + output_folder, flush=True)
+    print("RIVERSHIFT_SENTINEL2_REFERENCE_DRIVE_PATH=RiverShift/<job-id>/sentinel2-reference-candidates/<date-datatake>/run-<workflow-run>", flush=True)
     print("RIVERSHIFT_SENTINEL2_REFERENCE_DATE=" + reference_date, flush=True)
     print("RIVERSHIFT_SENTINEL2_REFERENCE_UPLOAD=PASS", flush=True)
     print("RIVERSHIFT_SENTINEL2_INDEPENDENT_VALIDATION_STATUS=" + status_payload["status"], flush=True)
