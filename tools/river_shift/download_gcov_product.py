@@ -69,7 +69,7 @@ def _http_status_code(error: BaseException) -> int | None:
         if numeric_status is not None and 100 <= numeric_status <= 599:
             return numeric_status
         match = re.search(
-            r"(?:Status code|HTTP(?: status)?)\\s*[:=]?\\s*(\\d{3})\\b",
+            r"(?:Status code|HTTP(?: status)?)\s*[:=]?\s*(\d{3})\b",
             str(current),
             re.IGNORECASE,
         )
