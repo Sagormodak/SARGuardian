@@ -107,3 +107,11 @@
 .rs-marker-toggle strong { color: #d9f0f1; font-size: 11px; }
 .rs-marker-toggle small, .rs-marker-note { margin: 0; color: #91acbb; font-size: 10px; line-height: 1.5; }
 .rs-marker-toggle input:disabled { cursor: not-allowed; }
+
+.rs-change-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 9px 15px; padding: 9px 11px; border: 1px solid rgba(149, 194, 208, .16); border-radius: 9px; background: rgba(16, 37, 52, .42); }
+.rs-change-legend > span { display: inline-flex; align-items: center; gap: 7px; color: #c7dce4; font-size: 10px; line-height: 1.4; }
+.rs-change-swatch { width: 11px; height: 11px; flex: 0 0 11px; border: 1px solid rgba(255, 255, 255, .7); border-radius: 3px; }
+.rs-change-swatch-erosion { background: rgba(240, 116, 98, .82); }
+.rs-change-swatch-deposition { background: rgba(95, 215, 165, .82); }
+.rs-change-swatch-new-water { background: rgba(83, 185, 244, .82); }
+.rs-change-legend-note { margin: 0; color: #91acbb; font-size: 10px; line-height: 1.55; }
