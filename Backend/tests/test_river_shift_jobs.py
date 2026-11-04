@@ -740,3 +740,119 @@ def test_river_shift_artifact_download_logs_google_oauth_error_code_without_resp
     assert "upstream_error_code=invalid_grant" in caplog.text
     assert "do-not-log-this-sensitive-detail" not in caplog.text
     assert "private-file-id-456" not in caplog.text
+
+
+def test_signed_validation_inputs_return_only_verified_water_mask_and_parent_report(monkeypatch) -> None:
+    store = RiverShiftStore()
+    api = configure(monkeypatch, store)
+    created = api.post("/api/river-shift/jobs", json=payload()).json()
+    job_id = created["id"]
+    store.rows[job_id].update({
+        "state": "succeeded",
+        "github_run_id": "41803576163",
+        "event_date": "2026-08-02",
+        "analysis_mode": "event_based",
+        "result_summary": {
+            "release_status": "PROVISIONAL",
+            "event_window": {"event_proximal_observation": "2026-08-17"},
+        },
+        "artifact_manifest": [
+            {
+                "name": "during_water_mask.tif",
+                "path": "outputs/flood/during_water_mask.tif",
+                "bytes": 12,
+                "sha256": "a" * 64,
+                "drive_file_id": "prediction-file-123",
+                "remote_verification": {"status": "PASS"},
+            },
+            {
+                "name": "river_shift_result.json",
+                "path": "outputs/flood/river_shift_result.json",
+                "bytes": 13,
+                "sha256": "b" * 64,
+                "drive_file_id": "report-file-123",
+                "remote_verification": {"status": "PASS"},
+            },
+            {
+                "name": "river_change_candidates_preview.geojson",
+                "path": "outputs/map/river_change_candidates_preview.geojson",
+                "bytes": 10,
+                "sha256": "c" * 64,
+                "drive_file_id": "preview-file-123",
+                "remote_verification": {"status": "PASS"},
+            },
+        ],
+    })
+    body = json.dumps({"prediction_path": "outputs/flood/during_water_mask.tif"}, separators=(",", ":")).encode()
+    response = api.post(
+        f"/api/river-shift/jobs/{job_id}/validation-inputs",
+        content=body,
+        headers={"Content-Type": "application/json", "X-SARGuardian-Signature": sign_callback(body)},
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["job_id"] == job_id
+    assert result["github_run_id"] == "41803576163"
+    assert result["prediction_observation_date"] == "2026-08-17"
+    assert result["prediction"]["drive_file_id"] == "prediction-file-123"
+    assert result["result_report"]["drive_file_id"] == "report-file-123"
+    assert result["source_release_status"] == "PROVISIONAL"
+    assert "aoi_wkt" not in result
+    assert "owner_uid" not in result
+    assert "preview-file-123" not in json.dumps(result)
+
+
+def test_signed_validation_inputs_reject_bad_signature_unfinished_jobs_and_preview_paths(monkeypatch) -> None:
+    store = RiverShiftStore()
+    api = configure(monkeypatch, store)
+    created = api.post("/api/river-shift/jobs", json=payload()).json()
+    job_id = created["id"]
+    body = json.dumps({"prediction_path": "outputs/flood/during_water_mask.tif"}, separators=(",", ":")).encode()
+    invalid = api.post(
+        f"/api/river-shift/jobs/{job_id}/validation-inputs",
+        content=body,
+        headers={"Content-Type": "application/json", "X-SARGuardian-Signature": "sha256=invalid"},
+    )
+    assert invalid.status_code == 401
+
+    signed = {"Content-Type": "application/json", "X-SARGuardian-Signature": sign_callback(body)}
+    unfinished = api.post(f"/api/river-shift/jobs/{job_id}/validation-inputs", content=body, headers=signed)
+    assert unfinished.status_code == 409
+
+    store.rows[job_id]["state"] = "succeeded"
+    wrong_path = json.dumps(
+        {"prediction_path": "outputs/map/river_change_candidates_preview.geojson"},
+        separators=(",", ":"),
+    ).encode()
+    wrong = api.post(
+        f"/api/river-shift/jobs/{job_id}/validation-inputs",
+        content=wrong_path,
+        headers={"Content-Type": "application/json", "X-SARGuardian-Signature": sign_callback(wrong_path)},
+    )
+    assert wrong.status_code == 422
+
+
+def test_signed_validation_inputs_reject_unverified_source_receipts(monkeypatch) -> None:
+    store = RiverShiftStore()
+    api = configure(monkeypatch, store)
+    created = api.post("/api/river-shift/jobs", json=payload()).json()
+    job_id = created["id"]
+    store.rows[job_id].update({
+        "state": "succeeded",
+        "result_summary": {"event_window": {"event_proximal_observation": "2026-08-17"}},
+        "artifact_manifest": [{
+            "name": "during_water_mask.tif",
+            "path": "outputs/flood/during_water_mask.tif",
+            "bytes": 12,
+            "sha256": "b" * 64,
+            "drive_file_id": "prediction-file-123",
+            "remote_verification": {"status": "FAIL"},
+        }],
+    })
+    body = json.dumps({"prediction_path": "outputs/flood/during_water_mask.tif"}, separators=(",", ":")).encode()
+    response = api.post(
+        f"/api/river-shift/jobs/{job_id}/validation-inputs",
+        content=body,
+        headers={"Content-Type": "application/json", "X-SARGuardian-Signature": sign_callback(body)},
+    )
+    assert response.status_code == 409
