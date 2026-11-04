@@ -985,10 +985,10 @@ def _prepare_retry_wave() -> None:
     _write_output("retry_matrix", retry_matrix_json)
     _write_output("retry_count", str(len(retry_rows)))
     _write_step_summary(
-        f"## Delayed retry wave {retry_attempt}\\n\\n"
-        f"- Previously attempted products: **{len(previous_retry_results)}**\\n"
-        f"- Products queued for this fresh runner wave: **{len(retry_rows)}**\\n"
-        "- Maximum automatic retries per product: **3**\\n"
+        f"## Delayed retry wave {retry_attempt}\n\n"
+        f"- Previously attempted products: **{len(previous_retry_results)}**\n"
+        f"- Products queued for this fresh runner wave: **{len(retry_rows)}**\n"
+        "- Maximum automatic retries per product: **3**\n"
         "- Parallel retry runners: **15 maximum**"
     )
 
