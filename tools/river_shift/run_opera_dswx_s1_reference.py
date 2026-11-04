@@ -290,10 +290,19 @@ def _build_reference_on_nisar_grid(
             if src.dtypes[0] != "uint8":
                 raise OperaReferenceError(f"OPERA WTR must be UInt8: {path.name}")
             source_tags = {str(key).upper(): str(value).strip() for key, value in src.tags().items()}
+            # V1 GeoTIFF metadata uses SPACECRAFT_NAME, ORBIT_PASS_DIRECTION
+            # and TRACK_NUMBER. Some exports expose the RTC-prefixed aliases;
+            # normalize both documented forms before comparing tile geometry.
             geometry_fields = {
                 "SPACECRAFT_NAME": source_tags.get("SPACECRAFT_NAME"),
-                "RTC_ORBIT_PASS_DIRECTION": source_tags.get("RTC_ORBIT_PASS_DIRECTION"),
-                "RTC_TRACK_NUMBER": source_tags.get("RTC_TRACK_NUMBER"),
+                "ORBIT_PASS_DIRECTION": (
+                    source_tags.get("ORBIT_PASS_DIRECTION")
+                    or source_tags.get("RTC_ORBIT_PASS_DIRECTION")
+                ),
+                "TRACK_NUMBER": (
+                    source_tags.get("TRACK_NUMBER")
+                    or source_tags.get("RTC_TRACK_NUMBER")
+                ),
             }
             missing_geometry = [key for key, value in geometry_fields.items() if not value]
             if missing_geometry:
@@ -312,7 +321,7 @@ def _build_reference_on_nisar_grid(
             raw = src.read(1)
             valid = src.read_masks(1) > 0
             classes = set(int(value) for value in np.unique(raw))
-            if not classes.issubset({0, 1, 2, 3, 5, 6, 7, 30, 31, 32, 35, 36, 37, 250, 251, 255}):
+            if not classes.issubset({0, 1, 3, 120, 250, 251, 252, 253, 254, 255}):
                 raise OperaReferenceError(
                     f"Unexpected OPERA WTR classes in {path.name}: {sorted(classes)}"
                 )
@@ -345,9 +354,18 @@ def _build_reference_on_nisar_grid(
                 "tile_id": metadata["tile_id"],
                 "source_crs": src.crs.to_string(),
                 "source_geometry": geometry_fields,
-                "absolute_orbit_number": source_tags.get("RTC_ABSOLUTE_ORBIT_NUMBER"),
-                "sensing_start_time": source_tags.get("RTC_SENSING_START_TIME"),
-                "sensing_end_time": source_tags.get("RTC_SENSING_END_TIME"),
+                "absolute_orbit_number": (
+                    source_tags.get("ABSOLUTE_ORBIT_NUMBER")
+                    or source_tags.get("RTC_ABSOLUTE_ORBIT_NUMBER")
+                ),
+                "sensing_start_time": (
+                    source_tags.get("SENSING_START")
+                    or source_tags.get("RTC_SENSING_START_TIME")
+                ),
+                "sensing_end_time": (
+                    source_tags.get("SENSING_END")
+                    or source_tags.get("RTC_SENSING_END_TIME")
+                ),
                 "polarization": source_tags.get("POLARIZATION"),
                 "source_width": src.width,
                 "source_height": src.height,
@@ -607,8 +625,9 @@ def run_pipeline(
                 ),
                 reference_date=selected_date.isoformat(),
                 reference_method=(
-                    "OPERA DSWx-S1 WTR class 1=open water and class 0=not water; "
-                    "classes 2,3,5,6,7,30,31,32,35,36,37,250,251,255 and any other values are NoData; "
+                    "OPERA DSWx-S1 V1 WTR class 1=open water and class 0=not water; "
+                    "class 3=inundated vegetation, 120=fill, 250=HAND mask, 251=layover/shadow, "
+                    "252/253=legacy masks, 254=ocean mask, 255=fill and any other values are NoData; "
                     "same-date tile revisions deduplicated by highest product version "
                     "then latest generation timestamp; nearest-neighbour categorical alignment"
                 ),
