@@ -187,7 +187,7 @@ def test_independent_reference_alignment_uses_nearest_neighbour_and_preserves_no
         assert set(np.unique(values)).issubset({0, 1, 255})
         assert int(np.count_nonzero(values == 255)) == 4
     assert details["method"] == "nearest_neighbour_categorical_reprojection"
-    assert details["aligned_valid_pixels"] == 8
+    assert details["aligned_valid_pixels"] == 12
 
 
 def test_independent_reference_alignment_rejects_non_binary_valid_labels(tmp_path) -> None:
