@@ -854,6 +854,8 @@ def test_assembly_finalization_builds_manifest_before_private_drive_upload(
         assert all(item.get("drive_file_id") for item in artifacts)
         assert ("log", "private_result_publication", "PASS") in events
         assert ("upload", "PASS") in events
+        assert summary["preview_geometry_overlap"]["status"] == "DISPLAY_ONLY_DIAGNOSTIC"
+        assert summary["candidate_overlap_audit"]["status"] == "COMPUTED_DIAGNOSTIC_ONLY"
 
     package_pass = events.index(("log", "result_package_assembly", "PASS"))
     publication_callback = events.index(("callback", "running", "private_result_publication"))
@@ -861,8 +863,6 @@ def test_assembly_finalization_builds_manifest_before_private_drive_upload(
     upload_start = events.index(("upload", "START"))
     assert package_pass < publication_callback < publication_start < upload_start
     assert ("callback", "running", "result_package_assembly") in events
-    assert summary["preview_geometry_overlap"]["status"] == "DISPLAY_ONLY_DIAGNOSTIC"
-    assert summary["candidate_overlap_audit"]["status"] == "COMPUTED_DIAGNOSTIC_ONLY"
 
 
 
