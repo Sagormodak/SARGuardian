@@ -131,3 +131,8 @@ The retained-run replay workflow also publishes the two candidate GeoTIFFs under
 It uses the existing `GOOGLE_DRIVE_OAUTH_CLIENT_JSON`, `GOOGLE_DRIVE_REFRESH_TOKEN`, and `GOOGLE_DRIVE_PARENT_FOLDER_ID` secrets. Each folder is checked for non-public permissions, and every uploaded file is verified against the remote byte count and MD5. No new Drive folder-ID secret is introduced.
 
 The workflow then calls the existing `validate_independent_reference.py` against the retained event-based `during_water_mask.tif`, once for SCL and once for MNDWI. The date gate is ±3 days and the common valid support gate remains 80%. A date or support mismatch creates a blocked/no-score report and fails the validation step; the numeric result remains `PROVISIONAL` / `REVIEW_REQUIRED` even when metrics are computed. The workflow must not interpret this cross-sensor comparison as field ground truth.
+
+
+### Retained artifact directory layout
+
+The replay publisher recursively resolves exactly one `prepared.json` below the Actions download directory. GitHub's `actions/download-artifact` creates an artifact-name subdirectory when `merge-multiple: false`; a root-only lookup is incorrect and is covered by regression tests.

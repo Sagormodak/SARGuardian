@@ -65,3 +65,34 @@ def test_binary_reference_geotiff_rejects_mismatched_arrays(tmp_path):
             observation_date="2026-08-17",
             item_ids=["item"],
         )
+
+
+def test_prepared_manifest_loader_finds_exact_file_in_download_artifact_subfolder(tmp_path):
+    from publish_sentinel2_references import _load_single_json_under
+
+    artifact_dir = tmp_path / "prepared"
+    nested = artifact_dir / "rivershift-prepared-job-uuid"
+    nested.mkdir(parents=True)
+    (nested / "prepared.json").write_text(
+        '{"job_id":"4e6e4071-fb9d-4e20-a331-867f3f2bd88f"}',
+        encoding="utf-8",
+    )
+
+    loaded = _load_single_json_under(artifact_dir, "prepared.json")
+    assert loaded["job_id"] == "4e6e4071-fb9d-4e20-a331-867f3f2bd88f"
+
+
+def test_prepared_manifest_loader_rejects_missing_or_ambiguous_json(tmp_path):
+    from publish_sentinel2_references import _load_single_json_under
+
+    artifact_dir = tmp_path / "prepared"
+    artifact_dir.mkdir()
+    with pytest.raises(ValueError, match="found 0"):
+        _load_single_json_under(artifact_dir, "prepared.json")
+
+    for folder in ("artifact-a", "artifact-b"):
+        nested = artifact_dir / folder
+        nested.mkdir()
+        (nested / "prepared.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="found 2"):
+        _load_single_json_under(artifact_dir, "prepared.json")

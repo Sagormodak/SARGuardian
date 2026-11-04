@@ -1,5 +1,5 @@
 {
   "source_workflow_run_id": "41803576163",
   "observation_date": "2026-08-17",
-  "purpose": "one-time retained-run Sentinel-2 reference GeoTIFF export"
+  "purpose": "rerun retained-run Sentinel-2 reference publication after prepared artifact path fix"
 }
