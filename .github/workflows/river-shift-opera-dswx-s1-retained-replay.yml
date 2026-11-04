@@ -26,7 +26,7 @@ on:
         required: true
         type: choice
         options: ["3", "7", "14", "21", "30"]
-        default: "14"
+        default: "30"
       minimum_common_support_fraction:
         description: Minimum labelled OPERA WTR support over NISAR-valid pixels
         required: true
@@ -84,7 +84,7 @@ jobs:
         env:
           SOURCE_RUN_ID: ${{ inputs.source_run_id || '41803576163' }}
           MAXIMUM_DATE_OFFSET_DAYS: ${{ inputs.maximum_date_offset_days || '3' }}
-          DISCOVERY_WINDOW_DAYS: ${{ inputs.discovery_window_days || '14' }}
+          DISCOVERY_WINDOW_DAYS: ${{ inputs.discovery_window_days || '30' }}
           MINIMUM_COMMON_SUPPORT_FRACTION: ${{ inputs.minimum_common_support_fraction || '0.80' }}
         run: |
           set -euo pipefail
