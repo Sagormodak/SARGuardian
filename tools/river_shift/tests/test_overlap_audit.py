@@ -108,4 +108,4 @@ def test_preview_geometry_overlap_is_reported_separately_from_source_masks():
     assert 0 < pair["jaccard"] < 1
     assert pair["intersection_fraction_of_smaller_class"] > 0
     assert result["pairwise"]["erosion__new_water"]["intersection_area_km2"] == 0
-    assert "never use these areas for measurements" in result["warning"]
+    assert "never use these areas for measurements" in result["warning"].lower()
