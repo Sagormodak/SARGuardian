@@ -435,11 +435,11 @@ def test_unsupported_http_range_falls_back_to_earthaccess_download(monkeypatch, 
     assert (tmp_path / f"{GRANULE}.h5").read_bytes() == fake.payload
 
 
-def test_transient_earthdata_login_connection_error_is_retried_once(monkeypatch, tmp_path):
+def test_transient_earthdata_login_connection_error_is_retried_within_three_attempts(monkeypatch, tmp_path):
     class FlakyLogin(FakeEarthaccess):
         def login(self, **kwargs):
             self.login_calls.append(kwargs)
-            if len(self.login_calls) == 1:
+            if len(self.login_calls) < 3:
                 raise requests.exceptions.ConnectionError("temporary EDL handshake failure")
             return True
 
@@ -450,7 +450,49 @@ def test_transient_earthdata_login_connection_error_is_retried_once(monkeypatch,
     result = download_product(_catalogue_row(), tmp_path)
 
     assert result["downloaded"] is True
-    assert fake.login_calls == [{"strategy": "environment"}, {"strategy": "environment"}]
+    assert fake.login_calls == [{"strategy": "environment"}] * 3
+
+
+def test_transient_earthdata_login_failure_exhausts_exactly_three_attempts(monkeypatch, tmp_path, capsys):
+    class OfflineLogin(FakeEarthaccess):
+        def login(self, **kwargs):
+            self.login_calls.append(kwargs)
+            raise requests.exceptions.ConnectionError("simulated network unreachable")
+
+    fake = OfflineLogin()
+    monkeypatch.setattr("download_gcov_product._load_earthaccess", lambda: fake)
+    monkeypatch.setattr(download_module.time, "sleep", lambda *_args: None)
+
+    with pytest.raises(RuntimeError, match="Earthdata login failed"):
+        download_product(_catalogue_row(), tmp_path)
+
+    assert fake.login_calls == [{"strategy": "environment"}] * 3
+    output = capsys.readouterr().out
+    assert '"status": "RETRY"' in output
+    assert '"status": "FAIL"' in output
+    assert '"max_attempts": 3' in output
+
+
+def test_transient_http_server_errors_are_retryable_but_auth_denials_are_not():
+    class FakeResponse:
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+    service_unavailable = requests.exceptions.HTTPError(
+        "Earthdata returned HTTP 503",
+        response=FakeResponse(503),
+    )
+    unauthorized = requests.exceptions.HTTPError(
+        "Earthdata returned HTTP 401",
+        response=FakeResponse(401),
+    )
+
+    assert download_module._http_status_code(service_unavailable) == 503
+    assert download_module._transient_network_error(service_unavailable) is True
+    assert _earthdata_http_auth_rejection(service_unavailable) is None
+    assert download_module._http_status_code(unauthorized) == 401
+    assert download_module._transient_network_error(unauthorized) is False
+    assert _earthdata_http_auth_rejection(unauthorized) == 401
 
 
 def test_http_range_response_with_wrong_content_range_is_rejected(monkeypatch, tmp_path):
