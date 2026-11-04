@@ -733,6 +733,31 @@ def test_assembly_finalization_builds_manifest_before_private_drive_upload(
         elif script in {"run_flood_analysis.py", "run_morphology_analysis.py"}:
             filename = "river_shift_result.json"
             payload = {"quality": {"status": "PASS"}, "metrics": {}}
+            import numpy as np
+            import rasterio
+            from rasterio.transform import from_origin
+
+            def write_test_mask(name, positive_cell):
+                values = np.zeros((4, 4), dtype=np.uint8)
+                values[positive_cell] = 1
+                with rasterio.open(
+                    output_dir / name,
+                    "w",
+                    driver="GTiff",
+                    height=4,
+                    width=4,
+                    count=1,
+                    dtype="uint8",
+                    crs="EPSG:32646",
+                    transform=from_origin(500000, 2500000, 10, 10),
+                ) as target:
+                    target.write(values, 1)
+
+            if script == "run_flood_analysis.py":
+                write_test_mask("newly_water_covered_mask.tif", (2, 2))
+            else:
+                write_test_mask("erosion_candidate_mask.tif", (0, 0))
+                write_test_mask("deposition_candidate_mask.tif", (3, 3))
         else:
             raise AssertionError(f"Unexpected assembly processing script: {script}")
         (output_dir / filename).write_text(json.dumps(payload), encoding="utf-8")
