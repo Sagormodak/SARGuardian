@@ -14,6 +14,7 @@ from process_gcov_job import (
     _read_input,
     select_covering_granules,
     select_date_window,
+    event_observation_timing,
     select_event_compatible_group,
     select_general_compatible_group,
     select_general_date_window,
