@@ -317,3 +317,11 @@ def test_validate_runs_end_to_end_and_keeps_release_provisional(monkeypatch, tmp
     assert result["source"]["prediction_analysis"]["mission"] == "NISAR"
     assert result["metrics"]["valid_pixel_count"] > 0
     assert result["metrics"]["f1_score"] is not None
+
+
+def test_independent_validation_workflow_uses_production_api_origin() -> None:
+    repository_root = Path(__file__).resolve().parents[3]
+    workflow = repository_root / ".github" / "workflows" / "river-shift-independent-reference-validation.yml"
+    content = workflow.read_text(encoding="utf-8")
+    assert "default: https://sarguardian-backend-api.vercel.app" in content
+    assert "default: https://sar-guardian-dynamic-lilac.vercel.app" not in content
