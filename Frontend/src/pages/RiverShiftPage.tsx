@@ -7,7 +7,7 @@ import type { RiverShiftGeoJSON, RiverShiftReport, RiverShiftTimeSeriesFrame } f
 import { countRiverShiftCandidateLayers, filterRiverShiftCandidateGeoJSON, getRiverShiftEventObservationNote, getRiverShiftOverlapAuditAvailability, isRiverShiftGeoJSONApproved, isRiverShiftReportVerified, isRiverShiftTimeSeriesGeoJSONApproved, parseRiverShiftGeoJSON, parseRiverShiftReport } from '../riverShift/manifest';
 import { formatWktPolygon, parseWktPolygon, type Wgs84Point } from '../riverShift/aoi';
 import { deriveGeneralChangeMarkers } from '../riverShift/generalChangeMarkers';
-import { parseImpactExposureGeoJSON, parseOpenStreetMapImpactResponse, summarizeImpactExposure, type ImpactExposurePointCollection } from '../riverShift/impactContext';
+import { deriveImpactMapPoints, parseImpactExposureGeoJSON, parseOpenStreetMapImpactResponse, summarizeImpactExposure, type ImpactExposurePointCollection } from '../riverShift/impactContext';
 import './river-shift.css';
 
 type Props = {
@@ -411,6 +411,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
   const [impactSourceUrl, setImpactSourceUrl] = useState('');
   const [impactSourceVintage, setImpactSourceVintage] = useState('');
   const [impactValueField, setImpactValueField] = useState('');
+  const [showImpactMapMarkers, setShowImpactMapMarkers] = useState(true);
   const aoiMapElement = useRef<HTMLDivElement>(null);
   const resultMapElement = useRef<HTMLDivElement>(null);
   const aoiMapInstance = useRef<google.maps.Map | null>(null);
@@ -505,6 +506,16 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       ? [activeJobPreview.changeLayer.data]
       : verifiedGeoJSONFiles.map((file) => file.data)
   ), [activeJobPreview?.changeLayer, verifiedGeoJSONFiles]);
+  const impactMapPoints = useMemo(() => (
+    impactExposure && impactSourceName.trim() && safeImpactSourceUrl
+      ? deriveImpactMapPoints(impactExposure.data, 2000)
+      : []
+  ), [impactExposure, impactSourceName, safeImpactSourceUrl]);
+  const impactMapOmittedPoints = impactExposure
+    ? Math.max(0, impactExposure.data.features.reduce((total, feature) => (
+      total + (feature.geometry.type === 'Point' ? 1 : feature.geometry.coordinates.length)
+    ), 0) - impactMapPoints.length)
+    : 0;
   const impactSummary = useMemo(() => (
     impactExposure && impactSourceName.trim() && safeImpactSourceUrl
       ? summarizeImpactExposure(impactCandidateLayers, impactExposure.data, impactValueField)
@@ -1006,6 +1017,20 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
         })),
       } as unknown as object);
     }
+    if (showImpactMapMarkers && impactMapPoints.length > 0) {
+      map.data.addGeoJson({
+        type: 'FeatureCollection',
+        features: impactMapPoints.map((point) => ({
+          type: 'Feature',
+          id: point.id,
+          properties: {
+            impact_context_marker: true,
+            impact_context_kind: point.kind,
+          },
+          geometry: { type: 'Point', coordinates: [point.longitude, point.latitude] },
+        })),
+      } as unknown as object);
+    }
     map.data.setStyle((feature) => {
       const geometryType = feature.getGeometry()?.getType();
       const name = String(feature.getProperty('marker_change_type') || feature.getProperty('river_shift_layer') || feature.getProperty('class') || feature.getProperty('change_type') || '').toLowerCase();
@@ -1014,6 +1039,19 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
         : name.includes('deposition') || name.includes('accretion') ? '#5fd7a5'
           : name.includes('new_water') || name.includes('newly_water') || name.includes('water_covered') ? '#53b9f4'
             : isObservedOpenWater ? '#73b3df' : '#9aafbb';
+      if (geometryType === 'Point' && feature.getProperty('impact_context_marker') === true) {
+        return {
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 4.2,
+            fillColor: '#ffd166',
+            fillOpacity: 1,
+            strokeColor: '#263238',
+            strokeWeight: 1.2,
+          },
+          zIndex: 1100,
+        };
+      }
       if ((geometryType === 'Point' || geometryType === 'MultiPoint')
         && feature.getProperty('preview_sparse_marker') === true) {
         return {
@@ -1071,7 +1109,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       resultMapFitKey.current = overlayFitKey;
     }
 
-  }, [mapReady, currentTimeSeriesFrame, verifiedGeoJSONFiles, jobPreview, currentJobFrame, riverJobId, hasJobPreviewOverlay, report, isGeneralScanJob, riverJob?.aoi_wkt, showGeneralChangeMarkers, generalChangeMarkers, candidateOverlayVisibility, showObservedWaterExtent]);
+  }, [mapReady, currentTimeSeriesFrame, verifiedGeoJSONFiles, jobPreview, currentJobFrame, riverJobId, hasJobPreviewOverlay, report, isGeneralScanJob, riverJob?.aoi_wkt, showGeneralChangeMarkers, generalChangeMarkers, candidateOverlayVisibility, showObservedWaterExtent, impactMapPoints, showImpactMapMarkers]);
 
   useEffect(() => {
     if (!timeSeriesPlaying || playbackFrames.length < 2) return;
@@ -1449,7 +1487,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
           <div className="rs-section-heading"><div><p className="rs-kicker">GEOSPATIAL OUTPUT</p><h3>Change map</h3></div></div>
           {mapError && <p className="rs-warning-inline">{mapError}</p>}
           <div className="rs-map" ref={resultMapElement} role="application" aria-label="Interactive Google satellite map. Use the candidate layer controls below to show or hide each RiverShift overlay." />
-          <div className="rs-legend"><span><i className="rs-swatch rs-erosion" />Erosion candidate</span><span><i className="rs-swatch rs-deposition" />Deposition candidate</span><span><i className="rs-swatch rs-water" />New-water candidate</span><span><i className="rs-swatch rs-observed-water" />Observed-date water extent</span></div>
+          <div className="rs-legend"><span><i className="rs-swatch rs-erosion" />Erosion candidate</span><span><i className="rs-swatch rs-deposition" />Deposition candidate</span><span><i className="rs-swatch rs-water" />New-water candidate</span><span><i className="rs-swatch rs-observed-water" />Observed-date water extent</span>{impactExposure && safeImpactSourceUrl && <span><i className="rs-swatch rs-impact-point" />Mapped exposure point</span>}</div>
           {(hasCandidateOverlaySource || hasObservedWaterFrames) && (
             <div className="rs-overlay-controls" aria-label="RiverShift map overlay visibility">
               {hasCandidateOverlaySource && (
@@ -1531,6 +1569,12 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
             <label className="rs-field"><span>Dataset vintage / date</span><input value={impactSourceVintage} onChange={(event) => setImpactSourceVintage(event.target.value)} placeholder="e.g. downloaded 2026-11-05" /></label>
             <label className="rs-field"><span>Optional numeric property to sum</span><input value={impactValueField} onChange={(event) => setImpactValueField(event.target.value)} placeholder="e.g. population" /></label>
           </div>
+          {impactExposure && impactMapPoints.length > 0 && safeImpactSourceUrl && (
+            <label className="rs-impact-map-toggle">
+              <input type="checkbox" checked={showImpactMapMarkers} onChange={(event) => setShowImpactMapMarkers(event.target.checked)} />
+              <span><strong>Show mapped exposure points on the map</strong><small>{impactMapPoints.length.toLocaleString()} representative point(s) shown in gold; {impactMapOmittedPoints.toLocaleString()} additional point(s) omitted from map rendering when above the 2,000-point display cap. The screening count still uses the full imported layer.</small></span>
+            </label>
+          )}
           {impactExposure && <p className="rs-info-banner">Loaded {impactExposure.fileName} · {impactExposure.data.features.length.toLocaleString()} point feature(s). The source attribution fields must contain a dataset name and HTTPS URL before results are calculated.</p>}
           {impactFetchError && <p className="rs-error" role="alert">{impactFetchError}</p>}
           {impactFetchNotice && <p className="rs-info-banner" role="status">{impactFetchNotice}</p>}

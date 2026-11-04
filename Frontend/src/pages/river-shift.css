@@ -276,3 +276,19 @@
   background: rgba(32, 116, 120, .07);
 }
 .rs-impact-osm-action small { color: #91acbb; font-size: 10px; line-height: 1.55; }
+
+.rs-impact-map-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 209, 102, .28);
+  border-radius: 9px;
+  background: rgba(255, 209, 102, .06);
+  cursor: pointer;
+}
+.rs-impact-map-toggle input { flex: 0 0 auto; margin-top: 2px; }
+.rs-impact-map-toggle span { display: grid; gap: 4px; }
+.rs-impact-map-toggle strong { color: #e7e5d4; font-size: 11px; }
+.rs-impact-map-toggle small { color: #91acbb; font-size: 10px; line-height: 1.5; }
+.rs-swatch.rs-impact-point { background: #ffd166; border: 1px solid #263238; border-radius: 50%; }
