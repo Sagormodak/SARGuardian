@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'firebase/auth';
 import { importLibrary, setOptions } from '@googlemaps/js-api-loader';
 import { createRiverShiftJob, downloadRiverShiftArtifact, getRiverShiftJob, listRiverShiftJobs, type RiverShiftJob } from '../api/catalog';
+import { resolveApiBaseUrl } from '../api/apiOrigin';
 import type { RiverShiftGeoJSON, RiverShiftReport, RiverShiftTimeSeriesFrame } from '../riverShift/manifest';
 import { countRiverShiftCandidateLayers, filterRiverShiftCandidateGeoJSON, getRiverShiftEventObservationNote, getRiverShiftOverlapAuditAvailability, isRiverShiftGeoJSONApproved, isRiverShiftReportVerified, isRiverShiftTimeSeriesGeoJSONApproved, parseRiverShiftGeoJSON, parseRiverShiftReport } from '../riverShift/manifest';
 import { formatWktPolygon, parseWktPolygon, type Wgs84Point } from '../riverShift/aoi';
@@ -53,11 +54,10 @@ type LoadedGeoJSON = { fileName: string; sha256: string; data: RiverShiftGeoJSON
 type LoadedJobPreview = { jobId: string; changeLayer: LoadedGeoJSON | null; report: RiverShiftReport | null; error: string };
 type LoadedJobFrame = { jobId: string; date: string; data: RiverShiftGeoJSON };
 
-const configuredApiUrl = (import.meta.env.VITE_SARGUARDIAN_API_URL as string | undefined)?.trim();
-const defaultApiUrl = import.meta.env.DEV
-  ? 'http://localhost:8000'
-  : 'https://sarguardian-backend-api.vercel.app';
-const API_BASE = (configuredApiUrl || defaultApiUrl).replace(/\/+$/, '');
+const API_BASE = resolveApiBaseUrl(
+  import.meta.env.VITE_SARGUARDIAN_API_URL as string | undefined,
+  import.meta.env.DEV,
+);
 const GOOGLE_MAPS_KEY = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined) || '';
 let mapsConfigured = false;
 
