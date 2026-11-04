@@ -312,7 +312,7 @@ def _build_reference_on_nisar_grid(
             raw = src.read(1)
             valid = src.read_masks(1) > 0
             classes = set(int(value) for value in np.unique(raw))
-            if not classes.issubset({0, 1, 3, 250, 251, 255}):
+            if not classes.issubset({0, 1, 2, 3, 5, 6, 7, 30, 31, 32, 35, 36, 37, 250, 251, 255}):
                 raise OperaReferenceError(
                     f"Unexpected OPERA WTR classes in {path.name}: {sorted(classes)}"
                 )
@@ -385,7 +385,7 @@ def _build_reference_on_nisar_grid(
             SOURCE_LAYER="WTR",
             CLASS_1="open water (OPERA WTR class 1)",
             CLASS_0="not water (OPERA WTR class 0)",
-            NODATA_CLASSES="3=inundated vegetation;250=HAND mask;251=layover/shadow;255=fill/no data;all other classes excluded",
+            NODATA_CLASSES="2=moderate-confidence open water;3=inundated vegetation;5,6,7,30,31,32,35,36,37=other wetland/ambiguous WTR classes;250=HAND mask;251=layover/shadow;255=fill/no data;all other classes excluded",
             ALIGNMENT="Nearest-neighbour categorical reprojection to the retained NISAR prediction grid",
             OVERLAP_POLICY="Conflicting overlapping-tile class labels are marked NoData",
             INTERPRETATION="Independent SAR-derived cross-sensor screening only; not field truth",
@@ -608,7 +608,7 @@ def run_pipeline(
                 reference_date=selected_date.isoformat(),
                 reference_method=(
                     "OPERA DSWx-S1 WTR class 1=open water and class 0=not water; "
-                    "classes 3,250,251,255 and any other values are NoData; "
+                    "classes 2,3,5,6,7,30,31,32,35,36,37,250,251,255 and any other values are NoData; "
                     "same-date tile revisions deduplicated by highest product version "
                     "then latest generation timestamp; nearest-neighbour categorical alignment"
                 ),
