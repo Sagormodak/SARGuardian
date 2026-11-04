@@ -135,3 +135,5 @@
 .rs-overlap-table-wrap { width: 100%; overflow-x: auto; border: 1px solid rgba(149, 194, 208, .14); border-radius: 8px; }
 .rs-overlap-table { min-width: 720px; }
 .rs-overlap-table th, .rs-overlap-table td { font-variant-numeric: tabular-nums; }
+
+.rs-swatch.rs-observed-water { background: rgba(115, 179, 223, .24); border: 1px solid #73b3df; }
