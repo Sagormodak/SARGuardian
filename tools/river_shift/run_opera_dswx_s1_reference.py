@@ -93,8 +93,11 @@ def _file_metadata(value: str) -> dict[str, Any] | None:
 
 
 def _granule_links(granule: Any) -> list[str]:
+    # GitHub-hosted runners are not guaranteed to execute inside AWS us-west-2.
+    # Use authenticated HTTPS (external) links for discovery and download;
+    # direct S3 links are only valid for in-region cloud access.
     try:
-        links = granule.data_links(access="direct")
+        links = granule.data_links(access="external")
     except Exception:
         links = []
     if not isinstance(links, (list, tuple)):
