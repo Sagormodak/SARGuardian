@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+import hashlib
 
 import numpy as np
 import rasterio
@@ -141,6 +142,9 @@ def test_reference_grid_alignment_keeps_opera_masked_classes_as_nodata(tmp_path)
     assert summary["non_water_pixels"] == 2
     assert summary["nodata_pixels"] == 4
     assert len(summary["sha256"]) == 64
+    tile_audit = summary["tile_audits"][0]
+    assert tile_audit["source_file_bytes"] == source.stat().st_size
+    assert tile_audit["source_file_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
 
 
 def test_conflicting_overlapping_tile_labels_remain_nodata(tmp_path):
