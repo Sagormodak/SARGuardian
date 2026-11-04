@@ -1095,6 +1095,102 @@ def write_mask_web_preview(
         ) from None
 
 
+def preview_geometry_overlap_metrics(
+    features: list[dict[str, Any]],
+    analysis_crs: CRS,
+) -> dict[str, Any]:
+    """Quantify apparent overlap between display-only class footprints in a metric CRS."""
+    class_geometries: dict[str, list[Any]] = {
+        "erosion": [],
+        "deposition": [],
+        "new_water": [],
+    }
+    project = Transformer.from_crs("EPSG:4326", analysis_crs, always_xy=True).transform
+    for feature in features:
+        properties = feature.get("properties") if isinstance(feature, dict) else None
+        layer = properties.get("river_shift_layer") if isinstance(properties, dict) else None
+        geometry_value = feature.get("geometry") if isinstance(feature, dict) else None
+        if layer not in class_geometries or not isinstance(geometry_value, dict):
+            continue
+        try:
+            geographic = shape(geometry_value)
+            if geographic.is_empty:
+                continue
+            metric = transform(project, geographic)
+            if not metric.is_empty:
+                class_geometries[layer].append(metric)
+        except Exception as exc:
+            detail = str(exc).strip() or type(exc).__name__
+            raise WorkerFailure(
+                "PREVIEW_OVERLAP_AUDIT_FAILED",
+                f"Could not project the {layer} display geometry for overlap QA: {detail[:180]}",
+            ) from None
+
+    unions: dict[str, Any | None] = {}
+    class_area: dict[str, float] = {}
+    for layer, geometries in class_geometries.items():
+        if not geometries:
+            unions[layer] = None
+            class_area[layer] = 0.0
+            continue
+        merged = unary_union(geometries)
+        if merged.is_empty or not merged.is_valid:
+            merged = merged.buffer(0)
+        if merged.is_empty or not merged.is_valid:
+            raise WorkerFailure(
+                "PREVIEW_OVERLAP_AUDIT_FAILED",
+                f"The {layer} preview geometry is empty or invalid after topology repair.",
+            )
+        unions[layer] = merged
+        class_area[layer] = float(merged.area)
+
+    pairwise: dict[str, Any] = {}
+    for left_name, right_name in (
+        ("erosion", "deposition"),
+        ("erosion", "new_water"),
+        ("deposition", "new_water"),
+    ):
+        left, right = unions[left_name], unions[right_name]
+        intersection_area = (
+            float(left.intersection(right).area)
+            if left is not None and right is not None else 0.0
+        )
+        union_area = (
+            float(left.union(right).area)
+            if left is not None and right is not None
+            else class_area[left_name] + class_area[right_name]
+        )
+        smaller_area = min(class_area[left_name], class_area[right_name])
+        pairwise[f"{left_name}__{right_name}"] = {
+            "left_preview_area_km2": class_area[left_name] / 1_000_000.0,
+            "right_preview_area_km2": class_area[right_name] / 1_000_000.0,
+            "intersection_area_km2": intersection_area / 1_000_000.0,
+            "union_area_km2": union_area / 1_000_000.0,
+            "jaccard": intersection_area / union_area if union_area > 0 else None,
+            "intersection_fraction_of_smaller_class": (
+                intersection_area / smaller_area if smaller_area > 0 else None
+            ),
+            "interpretation": (
+                "Display-only geometry overlap. Compare with the full-resolution candidate-mask "
+                "overlap audit; downsampling can expand footprints and create apparent overlap."
+            ),
+        }
+
+    return {
+        "status": "DISPLAY_ONLY_DIAGNOSTIC",
+        "method": "projected_geometry_intersection_per_display_class",
+        "analysis_crs": analysis_crs.to_string(),
+        "per_class_area_km2": {
+            name: area / 1_000_000.0 for name, area in class_area.items()
+        },
+        "pairwise": pairwise,
+        "warning": (
+            "Preview geometry overlap is not scientific mask overlap. Never use these areas for "
+            "measurements; use full-resolution masks and the candidate_overlap_audit report."
+        ),
+    }
+
+
 def create_web_previews(
     work_dir: Path,
     time_dir: Path,
@@ -1108,6 +1204,7 @@ def create_web_previews(
     with rasterio.open(reference_raster) as reference:
         if reference.crs is None or not CRS.from_user_input(reference.crs).is_projected:
             raise WorkerFailure("RASTER_GRID_INVALID", "Map previews need a projected NISAR raster grid.")
+        preview_analysis_crs = CRS.from_user_input(reference.crs)
     layers: list[dict[str, Any]] = []
     sources = [
         (
@@ -1179,6 +1276,16 @@ def create_web_previews(
             output_sha256=digest,
         )
 
+    preview_overlap = preview_geometry_overlap_metrics(
+        change_features, preview_analysis_crs,
+    )
+    _log_worker_stage(
+        "preview_geometry_overlap_audit", "PASS",
+        status_label=preview_overlap["status"],
+        pairwise=preview_overlap["pairwise"],
+        analysis_crs=preview_overlap["analysis_crs"],
+    )
+
     combined_path = map_dir / "river_change_candidates_preview.geojson"
     combined = {
         "type": "FeatureCollection",
@@ -1193,6 +1300,7 @@ def create_web_previews(
             "class_count": len({feature["properties"]["river_shift_layer"] for feature in change_features}),
             "feature_count": len(change_features),
             "features_omitted_for_size": 0,
+            "preview_geometry_overlap": preview_overlap,
             "warning": (
                 "Red: persistent erosion candidate; green: persistent deposition candidate; blue: newly water-covered "
                 "candidate. Each class is represented independently from its own average-aggregated binary mask. "
@@ -1220,6 +1328,7 @@ def create_web_previews(
         "combined_change_preview", "PASS",
         feature_count=len(change_features),
         class_count=combined["river_shift_preview"]["class_count"],
+        preview_overlap=preview_overlap["pairwise"],
         features_omitted_for_size=0,
         output_bytes=len(encoded_combined),
         output_sha256=combined_digest,
