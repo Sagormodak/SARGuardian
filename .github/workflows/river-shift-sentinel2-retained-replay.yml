@@ -182,7 +182,7 @@ jobs:
               "",
               "**Interpretation:** cross-sensor agreement screening only. Sentinel-2 SCL/MNDWI GeoTIFFs are candidate labels, not ground truth or field validation. Confirm hydrological stage and reference quality before formal scoring. The source NISAR run remains PROVISIONAL.",
               "",
-              "The GeoTIFF candidates, detailed report and replay manifest are retained in a private GitHub Actions artifact for 30 days. No AOI coordinates or NISAR prediction mask are published as a public artifact.",
+              "The GeoTIFF candidates, detailed report and replay manifest are retained in a GitHub Actions artifact for 30 days. The workflow does not upload the NISAR prediction mask or source COGs.",
           ])
           with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
               stream.write("\n".join(lines) + "\n")
