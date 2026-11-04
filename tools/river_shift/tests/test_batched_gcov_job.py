@@ -208,12 +208,11 @@ def test_workflow_hdf5_checks_are_safe_with_pipefail():
 def test_retry_job_consumes_only_the_validated_cross_job_matrix():
     repository_root = Path(__file__).resolve().parents[3]
     workflow = (repository_root / ".github" / "workflows" / "river-shift-gcov-process.yml").read_text(encoding="utf-8")
-    retry_dispatch = workflow.split("\n  retry_dispatch:\n", 1)[1].split("\n  retry:\n", 1)[0]
-    retry_job = workflow.split("\n  retry:\n", 1)[1].split("\n  retry_status:\n", 1)[0]
+    retry_dispatch = workflow.split("\\n  retry_dispatch:\\n", 1)[1].split("\\n  retry:\\n", 1)[0]
+    retry_job = workflow.split("\\n  retry:\\n", 1)[1].split("\\n  retry_prepare_2:\\n", 1)[0]
 
-    assert "RIVERSHIFT_RETRY_MATRIX_JSON:" in retry_dispatch
-    assert "RIVERSHIFT_RETRY_COUNT:" in retry_dispatch
-    assert "len(rows) != count" in retry_dispatch
+    assert "validate_retry_matrix.py" in retry_dispatch
+    assert "RIVERSHIFT_EXPECTED_RETRY_ATTEMPT: \"1\"" in retry_dispatch
     assert "needs: [retry_prepare, retry_dispatch]" in retry_job
     assert "needs.retry_prepare.result == 'success'" in retry_job
     assert "needs.retry_dispatch.result == 'success'" in retry_job
@@ -458,14 +457,15 @@ def test_workflow_does_not_mask_product_worker_failures_and_validates_retry_hand
     # preserve the ability to start later batches and the delayed retry wave.
     assert "continue-on-error: true\n    strategy:" not in workflow
     assert "retry_dispatch:" in workflow
-    assert "RIVERSHIFT_RETRY_MATRIX_JSON:" in workflow
-    assert "matrix_include_count=" in workflow
-    assert "needs: [retry_prepare, retry_dispatch]" in workflow
-    assert "needs.retry_prepare.outputs.retry_count != '0'" in workflow
-    assert "fromJSON(needs.retry_prepare.outputs.retry_matrix)" in workflow
-    assert "fromJSON(needs.retry_dispatch.outputs.retry_matrix)" not in workflow
-    expected_status_env = "RIVERSHIFT_RETRY_DISPATCH_STATUS: $" + "{{ needs.retry_dispatch.result }}"
-    assert expected_status_env in workflow
+    assert "validate_retry_matrix.py" in workflow
+    assert "RIVERSHIFT_EXPECTED_RETRY_ATTEMPT:" in workflow
+    assert "retry_prepare_2:" in workflow and "retry_prepare_3:" in workflow
+    assert "retry_dispatch_2:" in workflow and "retry_dispatch_3:" in workflow
+    assert "retry_2:" in workflow and "retry_3:" in workflow
+    assert "RIVERSHIFT_RETRY_DISPATCH_STATUSES:" in workflow
+    assert "needs.retry_dispatch.result" in workflow
+    assert "needs.retry_dispatch_2.result" in workflow
+    assert "needs.retry_dispatch_3.result" in workflow
 
 
 
