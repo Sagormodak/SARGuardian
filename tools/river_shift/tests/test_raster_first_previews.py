@@ -205,6 +205,7 @@ def test_raster_first_job_previews_keep_each_change_class_and_each_observed_date
         assert diagnostics["preview_candidate_cells"] == expected_class_pixels[class_name]
         assert diagnostics["preview_polygon_cells"] == expected_class_pixels[class_name]
         assert diagnostics["preview_sparse_marker_cells"] == 0
+        assert diagnostics["fixed_preview_grid"] is True
     assert len(set(observed_class_pixels.values())) == 3
 
     updated_report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -289,3 +290,64 @@ def test_sparse_preview_marker_cap_is_explicit_and_does_not_change_source_pixels
     assert diagnostics["preview_sparse_marker_points_omitted"] == 57_536
     assert len(marker_feature["geometry"]["coordinates"]) == 8_000
     assert sha256_file(source_path) == original_digest
+
+
+def test_downsampled_disjoint_class_masks_share_one_preview_grid_and_do_not_overlap_in_area(tmp_path):
+    morphology_dir = tmp_path / "morphology"
+    flood_dir = tmp_path / "flood"
+    time_dir = tmp_path / "time_series"
+    work_dir = tmp_path / "work"
+    morphology_dir.mkdir()
+    flood_dir.mkdir()
+    time_dir.mkdir()
+
+    erosion = np.zeros((512, 512), dtype=np.uint8)
+    deposition = np.zeros((512, 512), dtype=np.uint8)
+    new_water = np.zeros((512, 512), dtype=np.uint8)
+    # Spatially coherent but disjoint river-change patches, rather than a
+    # pathological checkerboard that would exceed a bounded GeoJSON budget.
+    erosion[64:448, 48:176] = 1
+    deposition[64:448, 336:464] = 1
+    new_water[200:400, 208:304] = 1
+
+    erosion_path = _write_mask(morphology_dir / "erosion_candidate_mask.tif", erosion)
+    deposition_path = _write_mask(morphology_dir / "deposition_candidate_mask.tif", deposition)
+    new_water_path = _write_mask(flood_dir / "newly_water_covered_mask.tif", new_water)
+    source_digests = {
+        erosion_path: sha256_file(erosion_path),
+        deposition_path: sha256_file(deposition_path),
+        new_water_path: sha256_file(new_water_path),
+    }
+    reference = _write_mask(tmp_path / "reference.tif", np.zeros((512, 512), dtype=np.uint8))
+    report_path = time_dir / "river_shift_timeseries.json"
+    report_path.write_text(json.dumps({"time_series": [], "quality": {"warnings": []}}), encoding="utf-8")
+
+    create_web_previews(
+        work_dir, time_dir, flood_dir, morphology_dir, reference, report_path,
+    )
+
+    previews = []
+    for name in ("erosion_candidates_preview.geojson", "deposition_candidates_preview.geojson", "newly_water_covered_preview.geojson"):
+        path = work_dir / "outputs" / "map" / name
+        previews.append(json.loads(path.read_text(encoding="utf-8")))
+    grids = {
+        (row["river_shift_preview"]["preview_width"], row["river_shift_preview"]["preview_height"])
+        for row in previews
+    }
+    assert len(grids) == 1
+    assert all(row["river_shift_preview"]["fixed_preview_grid"] is True for row in previews)
+
+    combined = json.loads((work_dir / "outputs" / "map" / "river_change_candidates_preview.geojson").read_text())
+    overlap = combined["river_shift_preview"]["preview_geometry_overlap"]
+    assert overlap["pairwise"]["erosion__deposition"]["intersection_area_km2"] == 0
+    assert overlap["pairwise"]["erosion__deposition"]["jaccard"] == 0
+    # These deliberately dense, coherent patches are majority-occupancy
+    # polygons. Sparse marker behavior is tested by the isolated-pixel and
+    # marker-cap tests above.
+    assert overlap["per_class_sparse_marker_points"]["erosion"] == 0
+    assert overlap["per_class_sparse_marker_points"]["deposition"] == 0
+    # The exact source masks are still disjoint; the preview uses point cues
+    # for sub-cell candidates rather than expanding them into large polygons.
+    assert not np.any((erosion == 1) & (deposition == 1))
+    for source_path, original_digest in source_digests.items():
+        assert sha256_file(source_path) == original_digest

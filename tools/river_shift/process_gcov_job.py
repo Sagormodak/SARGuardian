@@ -916,6 +916,7 @@ def write_mask_web_preview(
     class_name: str,
     max_bytes: int = MAX_WEB_PREVIEW_BYTES,
     max_dimension: int = 1600,
+    fixed_dimension: bool = False,
 ) -> dict[str, Any]:
     """Build a compact display-only GeoJSON layer from a binary science mask.
 
@@ -933,6 +934,8 @@ def write_mask_web_preview(
         raise WorkerFailure("PREVIEW_GENERATION_FAILED", "The display preview byte limit is invalid.")
     if isinstance(max_dimension, bool) or not isinstance(max_dimension, int) or max_dimension < 64:
         raise WorkerFailure("PREVIEW_GENERATION_FAILED", "The display preview dimension is invalid.")
+    if not isinstance(fixed_dimension, bool):
+        raise WorkerFailure("PREVIEW_GENERATION_FAILED", "The fixed preview grid flag must be boolean.")
 
     try:
         with rasterio.open(mask_path) as source:
@@ -958,7 +961,7 @@ def write_mask_web_preview(
                 source_block = source.read(1, window=source_window)
                 source_candidate_pixels += int(np.count_nonzero(source_block == 1))
 
-            dimensions = sorted({
+            dimensions = [max_dimension] if fixed_dimension else sorted({
                 min(max_dimension, value)
                 for value in (1600, 1200, 900, 700, 512, 384, 256)
             }, reverse=True)
@@ -1046,17 +1049,17 @@ def write_mask_web_preview(
                             "PREVIEW_GENERATION_FAILED",
                             f"The downsampled mask geometry for {mask_path.name} is empty or invalid.",
                         )
-                    tolerance = max(display_pixel_size_m * 0.25, 0.01)
-                    simplified = merged.simplify(tolerance, preserve_topology=True)
-                    if simplified.is_empty:
-                        simplified = merged
-                    geographic = transform(to_wgs84, simplified)
+                    # Do not simplify the grid-aligned cell union: separate
+                    # mutually-exclusive classes sharing the same preview grid
+                    # must not gain artificial area intersections from geometry
+                    # simplification.
+                    geographic = transform(to_wgs84, merged)
                     features.append({
                         "type": "Feature",
                         "properties": {
                             "class": class_name,
                             "river_shift_layer": class_name,
-                            "preview_geometry": "majority_occupancy_mask_footprint",
+                            "preview_geometry": "majority_occupancy_grid_aligned_footprint",
                         },
                         "geometry": mapping(geographic),
                     })
@@ -1119,6 +1122,9 @@ def write_mask_web_preview(
                         "preview_sparse_marker_points_omitted": sparse_marker_points_omitted,
                         "maximum_sparse_marker_points": MAX_SPARSE_PREVIEW_MARKERS,
                         "minimum_polygon_occupancy_fraction": 0.5,
+                        "fixed_preview_grid": fixed_dimension,
+                        "polygon_simplification": "none_grid_aligned_partition_preserved",
+                        "fixed_preview_grid": fixed_dimension,
                         "source_candidate_pixels": source_candidate_pixels,
                         "display_pixel_size_m": round(display_pixel_size_m, 3),
                         "feature_count": len(features),
@@ -1331,6 +1337,12 @@ def create_web_previews(
     ]
     change_features: list[dict[str, Any]] = []
     per_class_budget = max(1024, (MAX_WEB_PREVIEW_BYTES - 16_384) // len(sources))
+    # All three source masks share the same exact analysis grid. Use one common
+    # reduced grid so a majority cell from one class is compared with the same
+    # spatial cell in every other class.
+    common_preview_dimension = 384
+    common_preview_grid: tuple[int, int] | None = None
+    common_preview_pixel_size_m: float | None = None
     for source_path, destination, layer_type in sources:
         if not source_path.is_file():
             raise WorkerFailure(
@@ -1349,7 +1361,32 @@ def create_web_previews(
             destination,
             class_name=layer_type,
             max_bytes=per_class_budget,
+            max_dimension=common_preview_dimension,
+            fixed_dimension=True,
         )
+        current_preview_grid = (
+            int(preview["river_shift_preview"]["preview_width"]),
+            int(preview["river_shift_preview"]["preview_height"]),
+        )
+        current_preview_pixel_size_m = float(preview["river_shift_preview"]["display_pixel_size_m"])
+        if common_preview_grid is None:
+            common_preview_grid = current_preview_grid
+            common_preview_pixel_size_m = current_preview_pixel_size_m
+        elif (
+            current_preview_grid != common_preview_grid
+            or not math.isclose(
+                current_preview_pixel_size_m,
+                float(common_preview_pixel_size_m),
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            )
+        ):
+            raise WorkerFailure(
+                "PREVIEW_GRID_MISMATCH",
+                "All RiverShift change-class previews must share one reduced grid and cell size; "
+                f"expected={common_preview_grid}/{common_preview_pixel_size_m}, "
+                f"current={current_preview_grid}/{current_preview_pixel_size_m}.",
+            )
         digest = sha256_file(destination)
         layers.append({
             "path": destination.relative_to(work_dir).as_posix(),
@@ -1410,6 +1447,14 @@ def create_web_previews(
             "feature_count": len(change_features),
             "features_omitted_for_size": 0,
             "preview_geometry_overlap": preview_overlap,
+            "preview_grid": {
+                "width": common_preview_grid[0] if common_preview_grid else None,
+                "height": common_preview_grid[1] if common_preview_grid else None,
+                "display_pixel_size_m": round(common_preview_pixel_size_m, 3)
+                if common_preview_pixel_size_m is not None else None,
+                "fixed_max_dimension": common_preview_dimension,
+                "shared_across_change_classes": True,
+            },
             "warning": (
                 "Red: persistent erosion candidate; green: persistent deposition candidate; blue: newly water-covered "
                 "candidate. Each class is represented independently from its own average-aggregated binary mask. "
