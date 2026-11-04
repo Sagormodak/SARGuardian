@@ -17,6 +17,8 @@ def validate_retry_matrix(raw: str, count_raw: str, expected_attempt: int) -> tu
     except (json.JSONDecodeError, ValueError):
         raise ValueError("RETRY_MATRIX_HANDOFF_FAILED: retry matrix JSON or count is invalid.") from None
 
+    if not 1 <= expected_attempt <= 3:
+        raise ValueError("RETRY_MATRIX_HANDOFF_FAILED: expected retry wave must be between 1 and 3.")
     rows = matrix.get("include") if isinstance(matrix, dict) else None
     if not isinstance(rows, list) or count < 0 or len(rows) != count:
         row_count = len(rows) if isinstance(rows, list) else "invalid"
@@ -31,10 +33,14 @@ def validate_retry_matrix(raw: str, count_raw: str, expected_attempt: int) -> tu
         if not isinstance(row, dict) or not required.issubset(row):
             raise ValueError("RETRY_MATRIX_HANDOFF_FAILED: retry row is missing required identity fields.")
         name = row["granule_name"]
+        integer_fields = ("batch_number", "batch_count", "product_index", "total_products", "retry_attempt")
+        valid_integers = all(type(row.get(field)) is int for field in integer_fields)
         if (
             not isinstance(name, str)
             or not re.fullmatch(r"[A-Za-z0-9_.-]{10,250}", name)
             or name in seen
+            or not valid_integers
+            or not isinstance(row.get("acquisition_date"), str)
             or row["retry_attempt"] != expected_attempt
             or row["batch_number"] != 4 + expected_attempt
             or row["batch_count"] != 1
