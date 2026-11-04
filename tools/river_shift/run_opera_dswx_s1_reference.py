@@ -149,6 +149,7 @@ def _discover_records(
         doi=COLLECTION_DOI,
         temporal=(start.isoformat(), end.isoformat()),
         bounding_box=(west, south, east, north),
+        debug=True,
         count=-1,
     )
     print(
@@ -187,9 +188,8 @@ def _discover_records(
         "collection_concept_id": COLLECTION_CONCEPT_ID,
         "collection_doi": COLLECTION_DOI,
         "collection_query_method": "earthaccess DOI lookup resolved to exact collection concept ID",
-        "provider": "POCLOUD",
         "cloud_hosted_filter_applied": False,
-        "downloadable": True,
+        "downloadable_filter_applied": False,
         "bounding_box_wgs84": [west, south, east, north],
         "temporal_query": [start.isoformat(), end.isoformat()],
         "requested_observation_date": requested_date.isoformat(),
