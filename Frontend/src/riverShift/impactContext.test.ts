@@ -164,7 +164,7 @@ describe('RiverShift impact-context map markers', () => {
     });
     expect(deriveImpactMapPoints(exposure, 2)).toEqual([
       { id: 'building-1-point-0', longitude: 89.7, latitude: 24.5, kind: 'building' },
-      { id: 'school-2-point-0', longitude: 89.8, latitude: 24.6, kind: 'public_facility' },
+      { id: 'school-2-point-1', longitude: 89.81, latitude: 24.61, kind: 'public_facility' },
     ]);
     expect(deriveImpactMapPoints(exposure, 20)).toHaveLength(3);
   });
@@ -176,6 +176,32 @@ describe('RiverShift impact-context map markers', () => {
     });
     expect(() => deriveImpactMapPoints(exposure, -1)).toThrow('non-negative integer');
     expect(() => deriveImpactMapPoints(exposure, 1.2)).toThrow('non-negative integer');
+    expect(deriveImpactMapPoints(exposure, 0)).toEqual([]);
+  });
+});
+
+
+describe('RiverShift impact-context balanced map sampling', () => {
+  it('samples across the complete input order instead of only the first features', () => {
+    const exposure = parseImpactExposureGeoJSON({
+      type: 'FeatureCollection',
+      features: Array.from({ length: 5 }, (_, index) => ({
+        type: 'Feature',
+        id: 'b-' + index,
+        properties: { building: 'yes' },
+        geometry: { type: 'Point', coordinates: [89 + index, 24 + index] },
+      })),
+    });
+    expect(deriveImpactMapPoints(exposure, 2).map((point) => point.id))
+      .toEqual(['b-0-point-0', 'b-3-point-0']);
+    expect(deriveImpactMapPoints(exposure, 5)).toHaveLength(5);
+  });
+
+  it('does not allocate or enumerate map markers when the display cap is zero', () => {
+    const exposure = parseImpactExposureGeoJSON({
+      type: 'FeatureCollection',
+      features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [89, 24] } }],
+    });
     expect(deriveImpactMapPoints(exposure, 0)).toEqual([]);
   });
 });

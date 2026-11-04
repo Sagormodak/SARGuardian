@@ -678,6 +678,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       }
     }
     setRiverJobBusy(true);
+    resetImpactContext();
     setJobPreview(null);
     setJobFrame(null);
     setJobTimeSeriesIndex(0);
@@ -760,6 +761,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     setReportError('');
     setReport(null);
     setGeoJSONFiles([]);
+    resetImpactContext();
     setTimeSeriesIndex(0);
     setTimeSeriesPlaying(false);
     try {
@@ -773,6 +775,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
   const loadGeoJSONFiles = async (files?: FileList | File[]) => {
     if (!files || !files.length) return;
     setGeoJSONError('');
+    resetImpactContext();
     try {
       const loaded = await Promise.all(Array.from(files).map(async (file) => {
         const bytes = await file.arrayBuffer();
@@ -787,6 +790,18 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     } catch (error) {
       setGeoJSONError(error instanceof Error ? error.message : 'Could not read the GeoJSON.');
     }
+  };
+
+  const resetImpactContext = () => {
+    setImpactExposure(null);
+    setImpactExposureError('');
+    setImpactFetchError('');
+    setImpactFetchNotice('');
+    setImpactSourceName('');
+    setImpactSourceUrl('');
+    setImpactSourceVintage('');
+    setImpactValueField('');
+    setShowImpactMapMarkers(true);
   };
 
   const loadImpactExposure = async (file?: File) => {
@@ -1558,7 +1573,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
             <button className="rs-secondary-button" type="button" disabled={impactFetchBusy || !impactCandidateLayers.length || !(riverJob?.aoi_wkt || aoiWkt.trim())} onClick={() => void fetchOpenStreetMapImpactContext()}>
               {impactFetchBusy ? 'Querying one AOI-bounded OSM extract…' : 'Fetch OSM buildings & public facilities for this AOI'}
             </button>
-            <small>One read-only query for mapped building and selected public-facility points inside the study polygon. The shared service may be busy; an attributed GeoJSON import remains available.</small>
+            <small>One read-only query against the completed result AOI for mapped buildings and selected public facilities. The shared service may be busy; an attributed GeoJSON import remains available.</small>
           </div>
           <div className="rs-impact-upload-grid">
             <label className="rs-upload"><span>Exposure points GeoJSON</span><small>Point or MultiPoint features · maximum 20 MB</small>
