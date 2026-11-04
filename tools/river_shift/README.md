@@ -122,6 +122,8 @@ The live worker now adds a full-resolution `outputs/qa/candidate_overlap_audit.j
 
 For same-date multi-granule mosaics, the exporter records pairwise valid overlap and gamma0 backscatter differences in the mosaic metadata sidecar. These statistics are diagnostic; they do not use a universal dB acceptance threshold and do not replace source/geolocation review.
 
+The job result summary also carries the full-resolution pairwise candidate intersections and the projected preview-geometry intersection metrics. The RiverShift Results Explorer shows both side by side so a user can distinguish source-mask overlap from overlap introduced by display generalisation.
+
 See [SCIENTIFIC_VALIDATION_AND_OVERLAY_QA.md](docs/SCIENTIFIC_VALIDATION_AND_OVERLAY_QA.md) for the complete independent-reference protocol, class definitions, QA gates, release states, future char/channel candidates and overlay contract. The display preview is intentionally lower resolution: use the full-resolution masks for all area, overlap and validation measurements.
 
 ## Reproducibility and provenance
