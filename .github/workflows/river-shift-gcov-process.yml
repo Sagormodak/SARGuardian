@@ -675,26 +675,26 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
-      retry_matrix: \${{ steps.validate.outputs.retry_matrix }}
-      retry_count: \${{ steps.validate.outputs.retry_count }}
+      retry_matrix: ${{ steps.validate.outputs.retry_matrix }}
+      retry_count: ${{ steps.validate.outputs.retry_count }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: \${{ github.sha }}
+          ref: ${{ github.sha }}
       - name: Validate exact retry queue and publish verified matrix
         id: validate
         shell: bash
         env:
-          RIVERSHIFT_RETRY_MATRIX_JSON: \${{ needs.retry_prepare.outputs.retry_matrix }}
-          RIVERSHIFT_RETRY_COUNT: \${{ needs.retry_prepare.outputs.retry_count }}
+          RIVERSHIFT_RETRY_MATRIX_JSON: ${{ needs.retry_prepare.outputs.retry_matrix }}
+          RIVERSHIFT_RETRY_COUNT: ${{ needs.retry_prepare.outputs.retry_count }}
           RIVERSHIFT_EXPECTED_RETRY_ATTEMPT: "1"
         run: python -u tools/river_shift/validate_retry_matrix.py
 
   retry:
-    name: Delayed retry wave 1 · product \${{ matrix.product_index }}/\${{ matrix.total_products }}
+    name: Delayed retry wave 1 · product ${{ matrix.product_index }}/${{ matrix.total_products }}
     needs: [retry_prepare, retry_dispatch]
     if: >-
-      \${{ !cancelled()
+      ${{ !cancelled()
           && needs.retry_prepare.result == 'success'
           && needs.retry_dispatch.result == 'success'
           && needs.retry_prepare.outputs.retry_count != '0' }}
@@ -703,31 +703,31 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 15
-      matrix: \${{ fromJSON(needs.retry_prepare.outputs.retry_matrix) }}
+      matrix: ${{ fromJSON(needs.retry_prepare.outputs.retry_matrix) }}
     env:
       RIVERSHIFT_WORKER_PHASE: product
-      RIVERSHIFT_JOB_ID: \${{ inputs.job_id }}
-      RIVERSHIFT_REQUEST_FINGERPRINT: \${{ inputs.request_fingerprint }}
-      RIVERSHIFT_GRANULE_NAME: \${{ matrix.granule_name }}
-      RIVERSHIFT_ACQUISITION_DATE: \${{ matrix.acquisition_date }}
-      RIVERSHIFT_BATCH_NUMBER: \${{ matrix.batch_number }}
-      RIVERSHIFT_BATCH_COUNT: \${{ matrix.batch_count }}
-      RIVERSHIFT_PRODUCT_INDEX: \${{ matrix.product_index }}
-      RIVERSHIFT_TOTAL_PRODUCTS: \${{ matrix.total_products }}
-      RIVERSHIFT_RETRY_ATTEMPT: \${{ matrix.retry_attempt }}
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_GRANULE_NAME: ${{ matrix.granule_name }}
+      RIVERSHIFT_ACQUISITION_DATE: ${{ matrix.acquisition_date }}
+      RIVERSHIFT_BATCH_NUMBER: ${{ matrix.batch_number }}
+      RIVERSHIFT_BATCH_COUNT: ${{ matrix.batch_count }}
+      RIVERSHIFT_PRODUCT_INDEX: ${{ matrix.product_index }}
+      RIVERSHIFT_TOTAL_PRODUCTS: ${{ matrix.total_products }}
+      RIVERSHIFT_RETRY_ATTEMPT: ${{ matrix.retry_attempt }}
       RIVERSHIFT_PREPARED_DIR: prepared
-      RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output/wave-\${{ matrix.retry_attempt }}
-      EARTHDATA_TOKEN: \${{ secrets.EARTHDATA_TOKEN }}
-      EARTHDATA_USERNAME: \${{ secrets.EARTHDATA_USERNAME }}
-      EARTHDATA_PASSWORD: \${{ secrets.EARTHDATA_PASSWORD }}
+      RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output/wave-${{ matrix.retry_attempt }}
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: \${{ github.sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
-          name: rivershift-prepared-\${{ inputs.job_id }}
+          name: rivershift-prepared-${{ inputs.job_id }}
           path: prepared/
       - uses: mamba-org/setup-micromamba@v3
         with:
@@ -764,7 +764,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rivershift-retry-wave-\${{ matrix.retry_attempt }}-product-\${{ matrix.granule_name }}
+          name: rivershift-retry-wave-${{ matrix.retry_attempt }}-product-${{ matrix.granule_name }}
           path: product-output/
           if-no-files-found: warn
           retention-days: 1
@@ -772,20 +772,20 @@ jobs:
 
   retry_prepare_2:
     name: Prepare failed products for fresh-runner retry wave 2
-    needs: [retry_prepare_1, retry_dispatch_1, retry_1]
+    needs: [retry_prepare, retry_dispatch, retry]
     if: >-
-      \${{ !cancelled()
-          && needs.retry_prepare_1.result == 'success'
-          && needs.retry_dispatch_1.result == 'success' }}
+      ${{ !cancelled()
+          && needs.retry_prepare.result == 'success'
+          && needs.retry_dispatch.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
-      retry_matrix: \${{ steps.retry.outputs.retry_matrix }}
-      retry_count: \${{ steps.retry.outputs.retry_count }}
+      retry_matrix: ${{ steps.retry.outputs.retry_matrix }}
+      retry_count: ${{ steps.retry.outputs.retry_count }}
     env:
       RIVERSHIFT_WORKER_PHASE: prepare-retry
-      RIVERSHIFT_JOB_ID: \${{ inputs.job_id }}
-      RIVERSHIFT_REQUEST_FINGERPRINT: \${{ inputs.request_fingerprint }}
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
       RIVERSHIFT_RETRY_ATTEMPT: "2"
       RIVERSHIFT_PREPARED_DIR: prepared
       RIVERSHIFT_PRODUCT_ARTIFACTS_DIR: product-artifacts
@@ -794,10 +794,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: \${{ github.sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
-          name: rivershift-prepared-\${{ inputs.job_id }}
+          name: rivershift-prepared-${{ inputs.job_id }}
           path: prepared/
       - name: Download all first-attempt product receipts
         continue-on-error: true
@@ -830,26 +830,26 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
-      retry_matrix: \${{ steps.validate.outputs.retry_matrix }}
-      retry_count: \${{ steps.validate.outputs.retry_count }}
+      retry_matrix: ${{ steps.validate.outputs.retry_matrix }}
+      retry_count: ${{ steps.validate.outputs.retry_count }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: \${{ github.sha }}
+          ref: ${{ github.sha }}
       - name: Validate exact retry queue and publish verified matrix
         id: validate
         shell: bash
         env:
-          RIVERSHIFT_RETRY_MATRIX_JSON: \${{ needs.retry_prepare_2.outputs.retry_matrix }}
-          RIVERSHIFT_RETRY_COUNT: \${{ needs.retry_prepare_2.outputs.retry_count }}
+          RIVERSHIFT_RETRY_MATRIX_JSON: ${{ needs.retry_prepare_2.outputs.retry_matrix }}
+          RIVERSHIFT_RETRY_COUNT: ${{ needs.retry_prepare_2.outputs.retry_count }}
           RIVERSHIFT_EXPECTED_RETRY_ATTEMPT: "2"
         run: python -u tools/river_shift/validate_retry_matrix.py
 
   retry_2:
-    name: Delayed retry wave 2 · product \${{ matrix.product_index }}/\${{ matrix.total_products }}
+    name: Delayed retry wave 2 · product ${{ matrix.product_index }}/${{ matrix.total_products }}
     needs: [retry_prepare_2, retry_dispatch_2]
     if: >-
-      \${{ !cancelled()
+      ${{ !cancelled()
           && needs.retry_prepare_2.result == 'success'
           && needs.retry_dispatch_2.result == 'success'
           && needs.retry_prepare_2.outputs.retry_count != '0' }}
@@ -858,31 +858,31 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 15
-      matrix: \${{ fromJSON(needs.retry_prepare_2.outputs.retry_matrix) }}
+      matrix: ${{ fromJSON(needs.retry_prepare_2.outputs.retry_matrix) }}
     env:
       RIVERSHIFT_WORKER_PHASE: product
-      RIVERSHIFT_JOB_ID: \${{ inputs.job_id }}
-      RIVERSHIFT_REQUEST_FINGERPRINT: \${{ inputs.request_fingerprint }}
-      RIVERSHIFT_GRANULE_NAME: \${{ matrix.granule_name }}
-      RIVERSHIFT_ACQUISITION_DATE: \${{ matrix.acquisition_date }}
-      RIVERSHIFT_BATCH_NUMBER: \${{ matrix.batch_number }}
-      RIVERSHIFT_BATCH_COUNT: \${{ matrix.batch_count }}
-      RIVERSHIFT_PRODUCT_INDEX: \${{ matrix.product_index }}
-      RIVERSHIFT_TOTAL_PRODUCTS: \${{ matrix.total_products }}
-      RIVERSHIFT_RETRY_ATTEMPT: \${{ matrix.retry_attempt }}
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_GRANULE_NAME: ${{ matrix.granule_name }}
+      RIVERSHIFT_ACQUISITION_DATE: ${{ matrix.acquisition_date }}
+      RIVERSHIFT_BATCH_NUMBER: ${{ matrix.batch_number }}
+      RIVERSHIFT_BATCH_COUNT: ${{ matrix.batch_count }}
+      RIVERSHIFT_PRODUCT_INDEX: ${{ matrix.product_index }}
+      RIVERSHIFT_TOTAL_PRODUCTS: ${{ matrix.total_products }}
+      RIVERSHIFT_RETRY_ATTEMPT: ${{ matrix.retry_attempt }}
       RIVERSHIFT_PREPARED_DIR: prepared
-      RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output/wave-\${{ matrix.retry_attempt }}
-      EARTHDATA_TOKEN: \${{ secrets.EARTHDATA_TOKEN }}
-      EARTHDATA_USERNAME: \${{ secrets.EARTHDATA_USERNAME }}
-      EARTHDATA_PASSWORD: \${{ secrets.EARTHDATA_PASSWORD }}
+      RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output/wave-${{ matrix.retry_attempt }}
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: \${{ github.sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
-          name: rivershift-prepared-\${{ inputs.job_id }}
+          name: rivershift-prepared-${{ inputs.job_id }}
           path: prepared/
       - uses: mamba-org/setup-micromamba@v3
         with:
@@ -919,7 +919,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rivershift-retry-wave-\${{ matrix.retry_attempt }}-product-\${{ matrix.granule_name }}
+          name: rivershift-retry-wave-${{ matrix.retry_attempt }}-product-${{ matrix.granule_name }}
           path: product-output/
           if-no-files-found: warn
           retention-days: 1
@@ -929,18 +929,18 @@ jobs:
     name: Prepare failed products for fresh-runner retry wave 3
     needs: [retry_prepare_2, retry_dispatch_2, retry_2]
     if: >-
-      \${{ !cancelled()
+      ${{ !cancelled()
           && needs.retry_prepare_2.result == 'success'
           && needs.retry_dispatch_2.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
-      retry_matrix: \${{ steps.retry.outputs.retry_matrix }}
-      retry_count: \${{ steps.retry.outputs.retry_count }}
+      retry_matrix: ${{ steps.retry.outputs.retry_matrix }}
+      retry_count: ${{ steps.retry.outputs.retry_count }}
     env:
       RIVERSHIFT_WORKER_PHASE: prepare-retry
-      RIVERSHIFT_JOB_ID: \${{ inputs.job_id }}
-      RIVERSHIFT_REQUEST_FINGERPRINT: \${{ inputs.request_fingerprint }}
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
       RIVERSHIFT_RETRY_ATTEMPT: "3"
       RIVERSHIFT_PREPARED_DIR: prepared
       RIVERSHIFT_PRODUCT_ARTIFACTS_DIR: product-artifacts
@@ -949,10 +949,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: \${{ github.sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
-          name: rivershift-prepared-\${{ inputs.job_id }}
+          name: rivershift-prepared-${{ inputs.job_id }}
           path: prepared/
       - name: Download all first-attempt product receipts
         continue-on-error: true
@@ -985,26 +985,26 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
-      retry_matrix: \${{ steps.validate.outputs.retry_matrix }}
-      retry_count: \${{ steps.validate.outputs.retry_count }}
+      retry_matrix: ${{ steps.validate.outputs.retry_matrix }}
+      retry_count: ${{ steps.validate.outputs.retry_count }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: \${{ github.sha }}
+          ref: ${{ github.sha }}
       - name: Validate exact retry queue and publish verified matrix
         id: validate
         shell: bash
         env:
-          RIVERSHIFT_RETRY_MATRIX_JSON: \${{ needs.retry_prepare_3.outputs.retry_matrix }}
-          RIVERSHIFT_RETRY_COUNT: \${{ needs.retry_prepare_3.outputs.retry_count }}
+          RIVERSHIFT_RETRY_MATRIX_JSON: ${{ needs.retry_prepare_3.outputs.retry_matrix }}
+          RIVERSHIFT_RETRY_COUNT: ${{ needs.retry_prepare_3.outputs.retry_count }}
           RIVERSHIFT_EXPECTED_RETRY_ATTEMPT: "3"
         run: python -u tools/river_shift/validate_retry_matrix.py
 
   retry_3:
-    name: Delayed retry wave 3 · product \${{ matrix.product_index }}/\${{ matrix.total_products }}
+    name: Delayed retry wave 3 · product ${{ matrix.product_index }}/${{ matrix.total_products }}
     needs: [retry_prepare_3, retry_dispatch_3]
     if: >-
-      \${{ !cancelled()
+      ${{ !cancelled()
           && needs.retry_prepare_3.result == 'success'
           && needs.retry_dispatch_3.result == 'success'
           && needs.retry_prepare_3.outputs.retry_count != '0' }}
@@ -1013,31 +1013,31 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 15
-      matrix: \${{ fromJSON(needs.retry_prepare_3.outputs.retry_matrix) }}
+      matrix: ${{ fromJSON(needs.retry_prepare_3.outputs.retry_matrix) }}
     env:
       RIVERSHIFT_WORKER_PHASE: product
-      RIVERSHIFT_JOB_ID: \${{ inputs.job_id }}
-      RIVERSHIFT_REQUEST_FINGERPRINT: \${{ inputs.request_fingerprint }}
-      RIVERSHIFT_GRANULE_NAME: \${{ matrix.granule_name }}
-      RIVERSHIFT_ACQUISITION_DATE: \${{ matrix.acquisition_date }}
-      RIVERSHIFT_BATCH_NUMBER: \${{ matrix.batch_number }}
-      RIVERSHIFT_BATCH_COUNT: \${{ matrix.batch_count }}
-      RIVERSHIFT_PRODUCT_INDEX: \${{ matrix.product_index }}
-      RIVERSHIFT_TOTAL_PRODUCTS: \${{ matrix.total_products }}
-      RIVERSHIFT_RETRY_ATTEMPT: \${{ matrix.retry_attempt }}
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_GRANULE_NAME: ${{ matrix.granule_name }}
+      RIVERSHIFT_ACQUISITION_DATE: ${{ matrix.acquisition_date }}
+      RIVERSHIFT_BATCH_NUMBER: ${{ matrix.batch_number }}
+      RIVERSHIFT_BATCH_COUNT: ${{ matrix.batch_count }}
+      RIVERSHIFT_PRODUCT_INDEX: ${{ matrix.product_index }}
+      RIVERSHIFT_TOTAL_PRODUCTS: ${{ matrix.total_products }}
+      RIVERSHIFT_RETRY_ATTEMPT: ${{ matrix.retry_attempt }}
       RIVERSHIFT_PREPARED_DIR: prepared
-      RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output/wave-\${{ matrix.retry_attempt }}
-      EARTHDATA_TOKEN: \${{ secrets.EARTHDATA_TOKEN }}
-      EARTHDATA_USERNAME: \${{ secrets.EARTHDATA_USERNAME }}
-      EARTHDATA_PASSWORD: \${{ secrets.EARTHDATA_PASSWORD }}
+      RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output/wave-${{ matrix.retry_attempt }}
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: \${{ github.sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
-          name: rivershift-prepared-\${{ inputs.job_id }}
+          name: rivershift-prepared-${{ inputs.job_id }}
           path: prepared/
       - uses: mamba-org/setup-micromamba@v3
         with:
@@ -1074,7 +1074,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rivershift-retry-wave-\${{ matrix.retry_attempt }}-product-\${{ matrix.granule_name }}
+          name: rivershift-retry-wave-${{ matrix.retry_attempt }}-product-${{ matrix.granule_name }}
           path: product-output/
           if-no-files-found: warn
           retention-days: 1
@@ -1087,20 +1087,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
-      callback_sequence: \${{ steps.report.outputs.callback_sequence }}
+      callback_sequence: ${{ steps.report.outputs.callback_sequence }}
     env:
       RIVERSHIFT_WORKER_PHASE: report-retry
-      RIVERSHIFT_JOB_ID: \${{ inputs.job_id }}
-      RIVERSHIFT_REQUEST_FINGERPRINT: \${{ inputs.request_fingerprint }}
-      RIVERSHIFT_CALLBACK_URL: \${{ inputs.callback_url }}
-      RIVERSHIFT_CALLBACK_SECRET: \${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
-      RIVERSHIFT_CALLBACK_SEQUENCE: \${{ needs.batch_4_status.outputs.callback_sequence }}
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_CALLBACK_URL: ${{ inputs.callback_url }}
+      RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+      RIVERSHIFT_CALLBACK_SEQUENCE: ${{ needs.batch_4_status.outputs.callback_sequence }}
       RIVERSHIFT_RETRY_DISPATCH_STATUSES: >-
-        \${{ needs.retry_dispatch.result }},\${{ needs.retry_dispatch_2.result }},\${{ needs.retry_dispatch_3.result }}
+        ${{ needs.retry_dispatch.result }},${{ needs.retry_dispatch_2.result }},${{ needs.retry_dispatch_3.result }}
       RIVERSHIFT_RETRY_PREPARE_STATUSES: >-
-        \${{ needs.retry_prepare.result }},\${{ needs.retry_prepare_2.result }},\${{ needs.retry_prepare_3.result }}
+        ${{ needs.retry_prepare.result }},${{ needs.retry_prepare_2.result }},${{ needs.retry_prepare_3.result }}
       RIVERSHIFT_RETRY_COUNTS: >-
-        \${{ needs.retry_prepare.outputs.retry_count }},\${{ needs.retry_prepare_2.outputs.retry_count }},\${{ needs.retry_prepare_3.outputs.retry_count }}
+        ${{ needs.retry_prepare.outputs.retry_count }},${{ needs.retry_prepare_2.outputs.retry_count }},${{ needs.retry_prepare_3.outputs.retry_count }}
       RIVERSHIFT_PREPARED_DIR: prepared
       RIVERSHIFT_PRODUCT_ARTIFACTS_DIR: product-artifacts
       RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR: retry-product-artifacts
@@ -1108,10 +1108,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: \${{ github.sha }}
+          ref: ${{ github.sha }}
       - uses: actions/download-artifact@v4
         with:
-          name: rivershift-prepared-\${{ inputs.job_id }}
+          name: rivershift-prepared-${{ inputs.job_id }}
           path: prepared/
       - name: Download first-attempt results for final reconciliation
         continue-on-error: true
