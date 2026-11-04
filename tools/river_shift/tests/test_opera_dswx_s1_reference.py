@@ -255,10 +255,12 @@ def test_discovery_pins_pocloud_downloadable_scene_and_parses_wtr(monkeypatch):
     )
 
     assert captured["provider"] == "POCLOUD"
-    assert captured["cloud_hosted"] is True
+    assert "cloud_hosted" not in captured
     assert captured["downloadable"] is True
     assert captured["count"] == -1
     assert query["collection_short_name"] == opera.COLLECTION_SHORT_NAME
+    assert query["collection_concept_id"] == opera.COLLECTION_CONCEPT_ID
+    assert query["cloud_hosted_filter_applied"] is False
     assert len(records) == 1
     assert records[0]["tile_id"] == "45RVM"
     assert records[0]["observation_date"] == "2026-08-18"

@@ -141,14 +141,24 @@ def _discover_records(
         flush=True,
     )
     earthaccess.login(strategy="environment")
+    # Do not apply cloud_hosted=True here. Earthaccess documents that this
+    # collection-level filter can exclude restricted cloud collections; OPERA
+    # PO.DAAC granules are discoverable through their POCLOUD provider and
+    # authenticated external HTTPS links without that filter. The CMR query
+    # result count is logged before local WTR-layer parsing so "no matching
+    # WTR asset" can be distinguished from "no CMR granule matched the query."
     granules = earthaccess.search_data(
         short_name=COLLECTION_SHORT_NAME,
         provider="POCLOUD",
-        cloud_hosted=True,
         downloadable=True,
         temporal=(start.isoformat(), end.isoformat()),
         bounding_box=(west, south, east, north),
         count=-1,
+    )
+    print(
+        "RIVERSHIFT_OPERA_CMR_RESULT_COUNT="
+        + json.dumps({"granules_returned": len(granules)}, sort_keys=True),
+        flush=True,
     )
     rows: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -181,7 +191,7 @@ def _discover_records(
         "collection_concept_id": COLLECTION_CONCEPT_ID,
         "collection_doi": COLLECTION_DOI,
         "provider": "POCLOUD",
-        "cloud_hosted": True,
+        "cloud_hosted_filter_applied": False,
         "downloadable": True,
         "bounding_box_wgs84": [west, south, east, north],
         "temporal_query": [start.isoformat(), end.isoformat()],
