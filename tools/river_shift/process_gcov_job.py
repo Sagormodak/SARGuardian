@@ -32,7 +32,7 @@ from pyproj import CRS, Transformer
 from rasterio.features import shapes
 from rasterio.warp import Resampling, reproject
 from shapely import wkt as shapely_wkt
-from shapely.geometry import mapping, shape
+from shapely.geometry import MultiPoint, mapping, shape
 from shapely.ops import transform, unary_union
 
 
@@ -917,13 +917,13 @@ def write_mask_web_preview(
 ) -> dict[str, Any]:
     """Build a compact display-only GeoJSON layer from a binary science mask.
 
-    The full-resolution mask remains the scientific source of record. The map
-    preview uses average occupancy and marks a reduced cell when any positive
-    occupancy is present, then polygonizes the reduced grid and dissolves it to
-    one feature per class. This preserves sparse patches but can expand
-    footprints and create apparent cross-class overlap at preview scale.
-    Preview geometry is display-only, never a measurement or a substitute
-    for the source mask.
+    The full-resolution mask remains the scientific source of record. Average
+    occupancy cells with >50% candidate support become polygon footprints.
+    Positive cells at or below 50% become MultiPoint sparse markers instead of
+    being expanded into an entire coarse polygon cell. A sparse marker is only
+    an approximate preview-cell location, not a surveyed candidate centroid.
+    All preview geometry remains display-only and is never used for area or
+    displacement measurements.
     """
     if not isinstance(class_name, str) or not class_name.strip():
         raise WorkerFailure("PREVIEW_GENERATION_FAILED", "A display layer must have a non-empty class name.")
@@ -997,20 +997,31 @@ def write_mask_web_preview(
                     resampling=Resampling.average,
                     init_dest_nodata=True,
                 )
-                candidate = sampled_values > 0.0
+                occupied = sampled_values > 0.0
+                candidate = sampled_values > 0.5
+                sparse = occupied & ~candidate
                 if source_candidate_pixels == 0:
+                    occupied.fill(False)
                     candidate.fill(False)
-                candidate_cells = int(np.count_nonzero(candidate))
+                    sparse.fill(False)
+                candidate_cells = int(np.count_nonzero(occupied))
+                polygon_cells = int(np.count_nonzero(candidate))
+                sparse_cells = int(np.count_nonzero(sparse))
                 if source_candidate_pixels > 0 and candidate_cells == 0:
                     raise WorkerFailure(
                         "PREVIEW_GENERATION_FAILED",
-                        f"The source mask {mask_path.name} contains {source_candidate_pixels} positive candidate pixels, but resampling produced an empty display layer.",
+                        f"The source mask {mask_path.name} contains {source_candidate_pixels} positive candidate pixels, but resampling produced no display cells.",
                     )
                 pixel_x_m = math.hypot(preview_transform.a, preview_transform.d)
                 pixel_y_m = math.hypot(preview_transform.b, preview_transform.e)
                 display_pixel_size_m = max(pixel_x_m, pixel_y_m)
 
-                if candidate_cells:
+                features: list[dict[str, Any]] = []
+                to_wgs84 = Transformer.from_crs(
+                    source_crs_value, "EPSG:4326", always_xy=True
+                ).transform
+
+                if polygon_cells:
                     geometries = []
                     for geometry, value in shapes(
                         candidate.astype(np.uint8),
@@ -1023,7 +1034,7 @@ def write_mask_web_preview(
                     if not geometries:
                         raise WorkerFailure(
                             "PREVIEW_GENERATION_FAILED",
-                            f"The source mask {mask_path.name} contains display candidates but polygonization returned none.",
+                            f"The source mask {mask_path.name} contains majority-occupancy cells but polygonization returned none.",
                         )
                     merged = unary_union(geometries)
                     if merged.is_empty or not merged.is_valid:
@@ -1037,21 +1048,35 @@ def write_mask_web_preview(
                     simplified = merged.simplify(tolerance, preserve_topology=True)
                     if simplified.is_empty:
                         simplified = merged
-                    to_wgs84 = Transformer.from_crs(
-                        source_crs_value, "EPSG:4326", always_xy=True
-                    ).transform
                     geographic = transform(to_wgs84, simplified)
-                    features = [{
+                    features.append({
                         "type": "Feature",
                         "properties": {
                             "class": class_name,
                             "river_shift_layer": class_name,
-                            "preview_geometry": "average_aggregated_mask_footprint",
+                            "preview_geometry": "majority_occupancy_mask_footprint",
                         },
                         "geometry": mapping(geographic),
-                    }]
-                else:
-                    features = []
+                    })
+
+                if sparse_cells:
+                    sparse_rows, sparse_columns = np.nonzero(sparse)
+                    sparse_coordinates = []
+                    for row, column in zip(sparse_rows.tolist(), sparse_columns.tolist()):
+                        x, y = preview_transform * (column + 0.5, row + 0.5)
+                        longitude, latitude = to_wgs84(x, y)
+                        sparse_coordinates.append((longitude, latitude))
+                    features.append({
+                        "type": "Feature",
+                        "properties": {
+                            "class": class_name,
+                            "river_shift_layer": class_name,
+                            "preview_geometry": "sparse_candidate_cell_centres",
+                            "preview_sparse_marker": True,
+                            "sparse_preview_cell_count": sparse_cells,
+                        },
+                        "geometry": mapping(MultiPoint(sparse_coordinates)),
+                    })
 
                 payload = {
                     "type": "FeatureCollection",
@@ -1062,7 +1087,7 @@ def write_mask_web_preview(
                     },
                     "river_shift_preview": {
                         "status": "DISPLAY_ONLY",
-                        "method": "average_occupancy_gt_zero_then_polygonize",
+                        "method": "average_occupancy_gt_0_5_polygonize_plus_sparse_cell_centres",
                         "source_mask": mask_path.name,
                         "source_mask_sha256": source_mask_sha256,
                         "source_width": source_width,
@@ -1071,15 +1096,20 @@ def write_mask_web_preview(
                         "preview_width": preview_width,
                         "preview_height": preview_height,
                         "preview_candidate_cells": candidate_cells,
+                        "preview_polygon_cells": polygon_cells,
+                        "preview_sparse_marker_cells": sparse_cells,
+                        "minimum_polygon_occupancy_fraction": 0.5,
                         "source_candidate_pixels": source_candidate_pixels,
                         "display_pixel_size_m": round(display_pixel_size_m, 3),
                         "feature_count": len(features),
                         "features_omitted_for_size": 0,
                         "warning": (
-                            "DISPLAY ONLY: geometry is generated from a average-aggregated lower-resolution copy of the "
-                            "binary NISAR-derived mask. It preserves detected candidate cells for visual context, "
-                            "but is not a survey-grade boundary or displacement measurement. Full-resolution "
-                            "private masks, GeoJSON and scientific metrics are unchanged."
+                            "DISPLAY ONLY: only reduced cells with >50% candidate occupancy become polygons. "
+                            "Cells with positive occupancy at or below 50% are shown as sparse MultiPoint markers "
+                            "at approximate preview-cell centres, not as area footprints. Marker locations may "
+                            "coincide where different classes occupy disjoint parts of the same coarse cell. "
+                            "No preview geometry is a survey-grade boundary or displacement measurement. "
+                            "Full-resolution masks, exact pixels and scientific metrics are unchanged."
                         ),
                     },
                     "features": features,
@@ -1261,7 +1291,7 @@ def create_web_previews(
             layer_type=layer_type,
             source_file=source_path.name,
             output_file=destination.name,
-            preview_method="average_occupancy_gt_zero_then_polygonize",
+            preview_method="average_occupancy_gt_0_5_polygonize_plus_sparse_cell_centres",
         )
         preview = write_mask_web_preview(
             source_path,
@@ -1329,7 +1359,7 @@ def create_web_previews(
             "warning": (
                 "Red: persistent erosion candidate; green: persistent deposition candidate; blue: newly water-covered "
                 "candidate. Each class is represented independently from its own average-aggregated binary mask. "
-                "These are provisional display footprints, not signed bank-migration measurements."
+                "Majority-occupancy cells are provisional display footprints; sparse sub-cell candidates are point markers. Neither representation is a signed bank-migration measurement."
             ),
         },
         "features": change_features,
