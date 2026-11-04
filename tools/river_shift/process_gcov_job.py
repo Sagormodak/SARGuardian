@@ -244,6 +244,31 @@ def _product_date(product: dict[str, Any]) -> str | None:
     return None
 
 
+def event_observation_timing(
+    event_date: date | None,
+    event_window: dict[str, str] | None,
+) -> dict[str, Any] | None:
+    """Return the exact event-to-first-post-event acquisition gap without inferring peak stage."""
+    if event_date is None or not isinstance(event_window, dict):
+        return None
+    observed_raw = event_window.get("event_proximal_observation")
+    if not isinstance(observed_raw, str):
+        raise WorkerFailure("EVENT_WINDOW_INVALID", "The event window is missing its first post-event acquisition date.")
+    try:
+        observed_date = date.fromisoformat(observed_raw)
+    except ValueError:
+        raise WorkerFailure("EVENT_WINDOW_INVALID", "The event-proximal acquisition date is not valid ISO YYYY-MM-DD.") from None
+    offset_days = (observed_date - event_date).days
+    if offset_days <= 0:
+        raise WorkerFailure("EVENT_WINDOW_INVALID", "The first event-proximal acquisition must be strictly after the supplied event date.")
+    return {
+        "event_date": event_date.isoformat(),
+        "first_post_event_observation": observed_date.isoformat(),
+        "offset_days": offset_days,
+        "interpretation": "first qualifying acquisition after the supplied event date; not a measured event-peak or gauge-confirmed river stage",
+    }
+
+
 def select_date_window(
     date_rows: list[dict[str, Any]], event_date: date, maximum_dates: int = MAX_SELECTED_DATES,
 ) -> tuple[list[str], dict[str, str]]:
