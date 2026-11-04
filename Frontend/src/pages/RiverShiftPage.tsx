@@ -7,6 +7,7 @@ import type { RiverShiftGeoJSON, RiverShiftReport, RiverShiftTimeSeriesFrame } f
 import { countRiverShiftCandidateLayers, filterRiverShiftCandidateGeoJSON, getRiverShiftEventObservationNote, getRiverShiftOverlapAuditAvailability, isRiverShiftGeoJSONApproved, isRiverShiftReportVerified, isRiverShiftTimeSeriesGeoJSONApproved, parseRiverShiftGeoJSON, parseRiverShiftReport } from '../riverShift/manifest';
 import { formatWktPolygon, parseWktPolygon, type Wgs84Point } from '../riverShift/aoi';
 import { deriveGeneralChangeMarkers } from '../riverShift/generalChangeMarkers';
+import { parseImpactExposureGeoJSON, summarizeImpactExposure, type ImpactExposurePointCollection } from '../riverShift/impactContext';
 import './river-shift.css';
 
 type Props = {
@@ -291,6 +292,76 @@ function ReportPanel({ report }: { report: RiverShiftReport }) {
   );
 }
 
+
+function ScientificReadinessPanel({
+  summary,
+  report,
+  jobState,
+  artifactCount,
+}: {
+  summary: Record<string, unknown>;
+  report: RiverShiftReport | null;
+  jobState: string;
+  artifactCount: number;
+}) {
+  const sourceAudit = asRecord(summary.candidate_overlap_audit);
+  const previewAudit = asRecord(summary.preview_geometry_overlap);
+  const sourceRecorded = Boolean(sourceAudit && asRecord(sourceAudit.pairwise));
+  const previewRecorded = Boolean(previewAudit && asRecord(previewAudit.pairwise));
+  const metrics = report?.metrics || {};
+  const hasIndependentWaterMetrics = report?.analysis_type === 'classification_validation'
+    && typeof metrics.f1_score === 'number'
+    && typeof metrics.intersection_over_union === 'number';
+  const verified = Boolean(report && isRiverShiftReportVerified(report));
+  const releaseStatus = verified ? 'VERIFIED · REVIEW RECORD PRESENT' : 'PROVISIONAL · REVIEW REQUIRED';
+  const rows = [
+    {
+      label: 'Processing and retained result receipts',
+      status: jobState === 'succeeded' && artifactCount > 0 ? 'PASS' : 'PENDING',
+      detail: artifactCount.toLocaleString() + ' retained artifact receipt(s)',
+    },
+    {
+      label: 'Full-resolution source-mask overlap',
+      status: sourceRecorded ? String(sourceAudit?.status || 'RECORDED') : 'NOT MEASURED',
+      detail: 'Spatial consistency diagnostic; not accuracy validation.',
+    },
+    {
+      label: 'Preview geometry overlap',
+      status: previewRecorded ? 'DISPLAY QA RECORDED' : 'NOT MEASURED',
+      detail: 'Display-only polygons; never use for area or accuracy.',
+    },
+    {
+      label: 'Independent water-reference agreement',
+      status: hasIndependentWaterMetrics ? 'METRICS AVAILABLE · REVIEW REQUIRED' : 'NO_SCORE',
+      detail: hasIndependentWaterMetrics
+        ? 'F1 and IoU are present; the reference source and interpretation still require review.'
+        : 'No eligible reference metrics are attached to this result.',
+    },
+    {
+      label: 'Signed bankline migration',
+      status: report?.analysis_type === 'bankline_migration' ? 'SEPARATE REPORT ONLY' : 'NOT MEASURED',
+      detail: 'Requires independently digitised dated banklines and oriented transects.',
+    },
+  ];
+  return (
+    <section className="rs-readiness-panel" aria-label="Scientific validation readiness">
+      <div className="rs-section-heading">
+        <div><p className="rs-kicker">VALIDATION READINESS</p><h3>What has passed — and what has not</h3></div>
+        <span className="rs-chip">{releaseStatus}</span>
+      </div>
+      <div className="rs-readiness-list">
+        {rows.map((row) => (
+          <div className="rs-readiness-row" key={row.label}>
+            <div><strong>{row.label}</strong><small>{row.detail}</small></div>
+            <span className={row.status === 'PASS' || row.status === 'DISPLAY QA RECORDED' || row.status === 'METRICS AVAILABLE · REVIEW REQUIRED' ? 'rs-readiness-status rs-status-recorded' : 'rs-readiness-status rs-status-pending'}>{row.status}</span>
+          </div>
+        ))}
+      </div>
+      <p className="rs-overlay-note">A processing PASS and an overlap-audit PASS do not establish physical change or model accuracy. VERIFIED requires an eligible independent reference, complete provenance and a signed review record.</p>
+    </section>
+  );
+}
+
 export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, onSignIn, onSignOut }: Props) {
   const [aoiWkt, setAoiWkt] = useState('');
   const [startDate, setStartDate] = useState('');
@@ -331,6 +402,12 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
   const [showDepositionOverlay, setShowDepositionOverlay] = useState(true);
   const [showNewWaterOverlay, setShowNewWaterOverlay] = useState(true);
   const [showObservedWaterExtent, setShowObservedWaterExtent] = useState(true);
+  const [impactExposure, setImpactExposure] = useState<{ fileName: string; data: ImpactExposurePointCollection } | null>(null);
+  const [impactExposureError, setImpactExposureError] = useState('');
+  const [impactSourceName, setImpactSourceName] = useState('');
+  const [impactSourceUrl, setImpactSourceUrl] = useState('');
+  const [impactSourceVintage, setImpactSourceVintage] = useState('');
+  const [impactValueField, setImpactValueField] = useState('');
   const aoiMapElement = useRef<HTMLDivElement>(null);
   const resultMapElement = useRef<HTMLDivElement>(null);
   const aoiMapInstance = useRef<google.maps.Map | null>(null);
@@ -408,6 +485,28 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     currentTimeSeriesFrame || jobTimeSeriesFrames.length || candidateOverlayCounts.observedWater > 0,
   );
   const hasVerifiedOverlay = Boolean(!hasJobPreviewOverlay && ((currentTimeSeriesFrame && showObservedWaterExtent) || verifiedGeoJSONFiles.length));
+  const catalogueObservationDates = useMemo(() => {
+    const values = (catalogue?.products || []).map((product) => formatDate(product.start_time_utc));
+    return [...new Set(values.filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value)))].sort();
+  }, [catalogue]);
+  const safeImpactSourceUrl = useMemo(() => {
+    try {
+      const parsed = new URL(impactSourceUrl.trim());
+      return parsed.protocol === 'https:' ? parsed.href : null;
+    } catch {
+      return null;
+    }
+  }, [impactSourceUrl]);
+  const impactCandidateLayers = useMemo(() => (
+    activeJobPreview?.changeLayer
+      ? [activeJobPreview.changeLayer.data]
+      : verifiedGeoJSONFiles.map((file) => file.data)
+  ), [activeJobPreview?.changeLayer, verifiedGeoJSONFiles]);
+  const impactSummary = useMemo(() => (
+    impactExposure && impactSourceName.trim() && safeImpactSourceUrl
+      ? summarizeImpactExposure(impactCandidateLayers, impactExposure.data, impactValueField)
+      : null
+  ), [impactExposure, impactSourceName, safeImpactSourceUrl, impactCandidateLayers, impactValueField]);
 
   useEffect(() => {
     if (!user) {
@@ -584,7 +683,10 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       }, user);
       setRiverJob(job);
     } catch (error) {
-      setRiverJobError(error instanceof Error ? error.message : 'Could not start live RiverShift processing.');
+      const message = error instanceof Error ? error.message : 'Could not start live RiverShift processing.';
+      setRiverJobError(/fewer than four acquisition dates|at least four comparable.*acquisition dates|needs at least four observations/i.test(message)
+        ? 'The catalogue did not provide four distinct, comparable NISAR acquisition dates for this AOI and window. Widen the date range or adjust the study area, then retry. Four catalogue dates are only the first gate; the worker also checks one compatible orbit/frame group and valid raster coverage.'
+        : message);
     } finally {
       setRiverJobBusy(false);
     }
@@ -670,6 +772,22 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       setTimeSeriesPlaying(false);
     } catch (error) {
       setGeoJSONError(error instanceof Error ? error.message : 'Could not read the GeoJSON.');
+    }
+  };
+
+  const loadImpactExposure = async (file?: File) => {
+    if (!file) return;
+    setImpactExposureError('');
+    if (file.size > 20 * 1024 * 1024) {
+      setImpactExposureError('Impact context GeoJSON must be 20 MB or smaller.');
+      return;
+    }
+    try {
+      const parsed = parseImpactExposureGeoJSON(JSON.parse(await file.text()) as unknown);
+      setImpactExposure({ fileName: file.name, data: parsed });
+    } catch (error) {
+      setImpactExposure(null);
+      setImpactExposureError(error instanceof Error ? error.message : 'Could not read the exposure GeoJSON.');
     }
   };
 
@@ -960,6 +1078,12 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
         </div>
       </section>
 
+      <section className="rs-quick-start" aria-label="RiverShift quick start">
+        <div><span>01</span><strong>Draw a river reach</strong><small>Use one WGS84 AOI around the area to study.</small></div>
+        <div><span>02</span><strong>Choose observation dates</strong><small>Use a wide enough window for four or more distinct acquisitions.</small></div>
+        <div><span>03</span><strong>Review evidence, not just colours</strong><small>Check source dates, overlap QA and independent-reference status.</small></div>
+      </section>
+
       <section className="rs-workspace-grid">
         <div className="rs-panel">
           <div className="rs-section-heading">
@@ -1071,6 +1195,13 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
           {catalogue && (
             <div className="rs-catalogue-result">
               <div className="rs-result-summary"><strong>{catalogue.product_count} product(s)</strong><span>{catalogue.message}</span></div>
+              <div className={catalogueObservationDates.length >= 4 ? 'rs-date-readiness rs-date-ready' : 'rs-date-readiness rs-date-warning'} role="status">
+                <strong>{catalogueObservationDates.length}/4 distinct acquisition dates found</strong>
+                <span>{catalogueObservationDates.length >= 4
+                  ? 'The catalogue-level minimum is met. The worker must still confirm a single compatible orbit/frame group, HDF5 layer and valid AOI raster support.'
+                  : 'This selection is not ready for processing. Widen the date window or adjust the AOI/filter choices until at least four distinct acquisition dates are returned.'}</span>
+                {catalogueObservationDates.length > 0 && <small>Dates: {catalogueObservationDates.join(', ')}</small>}
+              </div>
               <p className="rs-muted">These are catalogue candidates, not individually selected processing inputs. RiverShift rechecks the same filters and then selects only dates/scenes that pass orbit, mode, HDF5-layer and AOI-footprint compatibility checks.</p>
               <div className="rs-info-banner">Catalogue discovery only · Data downloaded: No · Scientific analysis: Not performed</div>
               {catalogue.warnings.map((warning, index) => <p className="rs-warning-inline" key={index}>{warning}</p>)}
@@ -1145,7 +1276,10 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
             <span> {getRiverShiftEventObservationNote(riverJob.result_summary?.event_observation_timing)}</span>
           )}</div>}
         {riverJob.state === 'succeeded' && riverJob.result_summary && (
-          <OverlapAuditPanel summary={riverJob.result_summary} />
+          <>
+            <OverlapAuditPanel summary={riverJob.result_summary} />
+            <ScientificReadinessPanel summary={riverJob.result_summary} report={jobPreview?.report || null} jobState={riverJob.state} artifactCount={riverJob.artifact_manifest?.length || 0} />
+          </>
         )}
         {jobPreview?.jobId === riverJob.id && jobPreview.report && jobTimeSeriesFrames.length > 0 && (
           <section className="rs-timeseries" aria-label="Provisional observed acquisition playback">
@@ -1308,6 +1442,47 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
           {hasVerifiedOverlay && <p className="rs-muted">Verified layer(s) are drawn; each GeoJSON SHA-256 matches the loaded report. Candidate classes require scientific interpretation and are not field-confirmed land change.</p>}
           {hasJobPreviewOverlay && !hasVerifiedOverlay && <p className="rs-warning-inline">Provisional map preview uses majority-occupancy polygons plus small markers for sparse sub-cell candidates. Sparse marker centres are approximate and may coincide when different classes occupy separate parts of one coarse cell. The map is for visual orientation only; full-resolution masks and measurements remain authoritative and PROVISIONAL.</p>}
           {report && geoJSONFiles.length > 0 && !hasVerifiedOverlay && <p className="rs-warning-inline" role="status">Loaded GeoJSON is not drawn: the report is not VERIFIED, the checksum does not match, or the complete time-series layer set is missing.</p>}
+        </section>
+
+        <section className="rs-impact-panel" aria-label="Impact context screening">
+          <div className="rs-section-heading">
+            <div><p className="rs-kicker">04 · LOCAL EXPOSURE CONTEXT</p><h3>Put candidate zones in context</h3></div>
+            <span className="rs-chip">OPTIONAL · SOURCE-ATTRIBUTED</span>
+          </div>
+          <p className="rs-muted">Import a point/centroid GeoJSON layer for buildings, settlements, public facilities or population-grid cells. RiverShift will count representative points inside the retained candidate preview polygons and can sum one numeric attribute such as population. The file is analysed locally in this browser and is not uploaded.</p>
+          <div className="rs-impact-upload-grid">
+            <label className="rs-upload"><span>Exposure points GeoJSON</span><small>Point or MultiPoint features · maximum 20 MB</small>
+              <input type="file" accept=".geojson,.json,application/geo+json,application/json" onChange={(event) => void loadImpactExposure(event.target.files?.[0])} />
+            </label>
+            <label className="rs-field"><span>Dataset / layer name</span><input value={impactSourceName} onChange={(event) => setImpactSourceName(event.target.value)} placeholder="e.g. OSM building centroids" /></label>
+            <label className="rs-field"><span>Public source URL (required)</span><input type="url" value={impactSourceUrl} onChange={(event) => setImpactSourceUrl(event.target.value)} placeholder="https://…" /></label>
+            <label className="rs-field"><span>Dataset vintage / date</span><input value={impactSourceVintage} onChange={(event) => setImpactSourceVintage(event.target.value)} placeholder="e.g. downloaded 2026-11-05" /></label>
+            <label className="rs-field"><span>Optional numeric property to sum</span><input value={impactValueField} onChange={(event) => setImpactValueField(event.target.value)} placeholder="e.g. population" /></label>
+          </div>
+          {impactExposure && <p className="rs-info-banner">Loaded {impactExposure.fileName} · {impactExposure.data.features.length.toLocaleString()} point feature(s). The source attribution fields must contain a dataset name and HTTPS URL before results are calculated.</p>}
+          {impactExposureError && <p className="rs-error" role="alert">{impactExposureError}</p>}
+          {impactExposure && (!impactSourceName.trim() || !safeImpactSourceUrl) && <p className="rs-warning-inline">Add a dataset name and a valid HTTPS source URL to make this exposure context attributable.</p>}
+          {impactSummary && (
+            <>
+              {impactSummary.candidatePolygonCount === 0
+                ? <p className="rs-warning-inline">No candidate preview polygons are available to compare. Sparse marker points are deliberately excluded from this area-intersection screen.</p>
+                : <div className="rs-impact-results">
+                  <article className="rs-impact-total"><span>Unique points inside any candidate preview polygon</span><strong>{impactSummary.uniqueFeaturesInsideAnyCandidate.toLocaleString()}</strong><small>of {impactSummary.exposureFeatureCount.toLocaleString()} uploaded point feature(s)</small></article>
+                  {impactSummary.populationField && <article className="rs-impact-total"><span>Sum of “{impactSummary.populationField}” inside candidate preview polygons</span><strong>{impactSummary.populationValueSum?.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? 'Not available'}</strong><small>{impactSummary.featuresMissingPopulationValue.toLocaleString()} matched feature(s) had no valid non-negative numeric value</small></article>}
+                  {(['erosion', 'deposition', 'newWater'] as const).map((category) => (
+                    <article className="rs-impact-class" key={category}>
+                      <span>{category === 'newWater' ? 'New-water candidate' : category[0].toUpperCase() + category.slice(1) + ' candidate'}</span>
+                      <strong>{impactSummary.byClass[category].featureCount.toLocaleString()} point feature(s)</strong>
+                      {impactSummary.populationField && <small>Attribute sum: {impactSummary.byClass[category].populationValueSum?.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? 'Not available'}</small>}
+                    </article>
+                  ))}
+                  <div className="rs-impact-source">Source: <strong>{impactSourceName.trim()}</strong>{impactSourceVintage.trim() ? ' · ' + impactSourceVintage.trim() : ''} · <a href={safeImpactSourceUrl || undefined} target="_blank" rel="noreferrer">Open dataset source ↗</a></div>
+                </div>}
+              <p className="rs-impact-caveat">Interpretation boundary: these are potential exposure-context counts, not damaged or confirmed affected assets. Counts use point locations inside coarse display-preview polygons only; sparse candidate markers, building footprints, road lengths and points outside the visible polygons are not measured. Do not add class counts together when one point lies in more than one class.</p>
+            </>
+          )}
+          {!impactExposure && <p className="rs-impact-help">Useful inputs: building or facility centroids, settlement points, or population-grid centroids with a numeric population property. Record the provider and data vintage. No source data is bundled or assumed.</p>}
+          {impactExposure && impactSummary && <p className="rs-impact-caveat">{impactSummary.sparseMarkerFeaturesExcluded.toLocaleString()} sparse marker feature(s) excluded from the polygon intersection. Multi-class matches: {impactSummary.featuresMatchingMultipleClasses.toLocaleString()} point feature(s).</p>}
         </section>
         {!report && !hasLiveJobResult && <div className="rs-empty-state">
           <strong>{hasLiveJobResultPending ? 'Live processing finished · preview not loaded' : resultType}</strong>
