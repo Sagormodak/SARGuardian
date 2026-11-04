@@ -1340,6 +1340,8 @@ def create_web_previews(
                 6,
             ),
             preview_candidate_cells=preview["river_shift_preview"]["preview_candidate_cells"],
+            preview_polygon_cells=preview["river_shift_preview"]["preview_polygon_cells"],
+            preview_sparse_marker_cells=preview["river_shift_preview"]["preview_sparse_marker_cells"],
             preview_candidate_fraction=round(
                 preview["river_shift_preview"]["preview_candidate_cells"]
                 / max(1, preview["river_shift_preview"]["preview_width"] * preview["river_shift_preview"]["preview_height"]),
@@ -1359,6 +1361,7 @@ def create_web_previews(
         "preview_geometry_overlap_audit", "PASS",
         status_label=preview_overlap["status"],
         pairwise=preview_overlap["pairwise"],
+        sparse_marker_points=preview_overlap["per_class_sparse_marker_points"],
         analysis_crs=preview_overlap["analysis_crs"],
     )
 
@@ -1380,7 +1383,9 @@ def create_web_previews(
             "warning": (
                 "Red: persistent erosion candidate; green: persistent deposition candidate; blue: newly water-covered "
                 "candidate. Each class is represented independently from its own average-aggregated binary mask. "
-                "Majority-occupancy cells are provisional display footprints; sparse sub-cell candidates are point markers. Neither representation is a signed bank-migration measurement."
+                "Only cells with >50% occupancy are polygon footprints; sparser cells are approximate point markers. "
+                "Markers from different classes may coincide inside the same coarse cell. Neither representation "
+                "is a signed bank-migration measurement."
             ),
         },
         "features": change_features,
@@ -1405,6 +1410,7 @@ def create_web_previews(
         feature_count=len(change_features),
         class_count=combined["river_shift_preview"]["class_count"],
         preview_overlap=preview_overlap["pairwise"],
+        sparse_marker_points=preview_overlap["per_class_sparse_marker_points"],
         features_omitted_for_size=0,
         output_bytes=len(encoded_combined),
         output_sha256=combined_digest,
