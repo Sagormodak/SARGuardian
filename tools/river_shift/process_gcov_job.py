@@ -30,6 +30,7 @@ import rasterio
 import requests
 from pyproj import CRS, Transformer
 from rasterio.features import shapes
+from rasterio.transform import xy
 from rasterio.warp import Resampling, reproject
 from shapely import wkt as shapely_wkt
 from shapely.geometry import MultiPoint, mapping, shape
@@ -1077,7 +1078,7 @@ def write_mask_web_preview(
                     sparse_marker_points_omitted = sparse_cells - sparse_marker_points_rendered
                     sparse_coordinates = []
                     for row, column in zip(sparse_rows.tolist(), sparse_columns.tolist()):
-                        x, y = preview_transform * (column + 0.5, row + 0.5)
+                        x, y = xy(preview_transform, row, column, offset="center")
                         longitude, latitude = to_wgs84(x, y)
                         sparse_coordinates.append((longitude, latitude))
                     features.append({
@@ -1290,8 +1291,8 @@ def preview_geometry_overlap_metrics(
         "warning": (
             "Polygon-footprint overlap is a display-only diagnostic and excludes sparse MultiPoint markers. "
             "Sparse marker counts and display-size omissions are reported separately and are not buffered into area. "
-            "Sparse markers are a deterministic sample capped per class for map readability. Never use preview "
-            "areas for measurements; use full-resolution masks and the candidate_overlap_audit report."
+            "Sparse markers are a deterministic sample capped per class for map readability. Never use these areas "
+            "for measurements; use full-resolution masks and the candidate_overlap_audit report."
         ),
     }
 
