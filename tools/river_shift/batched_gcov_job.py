@@ -1047,32 +1047,34 @@ def _report_retry_wave() -> None:
             max_retry_waves=3,
         )
 
-    for row in original_retry_rows:
-        result = retry_results.get(row["granule_name"])
-        problem = _product_result_problem(prepared, row, result, retry_dir)
-        if problem is None:
-            passed += 1
-            _log_worker_stage(
-                "delayed_retry_reconciliation", "PASS",
-                granule_name=row["granule_name"],
-                acquisition_date=row["acquisition_date"],
-                retry_attempt=int(result.get("retry_attempt", 0) or 0),
-                runner_refresh=True,
-                source_sha256=result.get("source_sha256"),
-                raster_sha256=result.get("raster_sha256"),
-            )
-        else:
-            failed += 1
-            failure_details.append((row["granule_name"], problem))
-            _log_worker_stage(
-                "delayed_retry_reconciliation", "FAIL",
-                granule_name=row["granule_name"],
-                acquisition_date=row["acquisition_date"],
-                first_attempt_failure=row["first_attempt_failure"],
-                last_retry_attempt=int((result or {}).get("retry_attempt", 0) or 0),
-                retry_failure=problem,
-                retry_error_message=(result or {}).get("error_message", "Retry result artifact missing or invalid."),
-            )
+    if not setup_failures:
+        for row in original_retry_rows:
+            result = retry_results.get(row["granule_name"])
+            problem = _product_result_problem(prepared, row, result, retry_dir)
+            if problem is None:
+                passed += 1
+                _log_worker_stage(
+                    "delayed_retry_reconciliation", "PASS",
+                    granule_name=row["granule_name"],
+                    acquisition_date=row["acquisition_date"],
+                    retry_attempt=int(result.get("retry_attempt", 0) or 0),
+                    runner_refresh=True,
+                    source_sha256=result.get("source_sha256"),
+                    raster_sha256=result.get("raster_sha256"),
+                )
+            else:
+                failed += 1
+                failure_details.append((row["granule_name"], problem))
+                _log_worker_stage(
+                    "delayed_retry_reconciliation", "FAIL",
+                    granule_name=row["granule_name"],
+                    acquisition_date=row["acquisition_date"],
+                    first_attempt_failure=row["first_attempt_failure"],
+                    last_retry_attempt=int((result or {}).get("retry_attempt", 0) or 0),
+                    retry_failure=problem,
+                    retry_error_message=(result or {}).get("error_message", "Retry result artifact missing or invalid."),
+                )
+
 
     _log_worker_stage(
         "delayed_retry_barrier", "PASS" if failed == 0 else "FAIL",
