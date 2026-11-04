@@ -132,7 +132,10 @@ def _discover_records(
     print(
         "RIVERSHIFT_OPERA_CMR_QUERY="
         + json.dumps({
-            "short_name": COLLECTION_SHORT_NAME,
+            "collection_doi": COLLECTION_DOI,
+            "collection_concept_id": COLLECTION_CONCEPT_ID,
+            "collection_short_name": COLLECTION_SHORT_NAME,
+            "query_method": "earthaccess DOI lookup",
             "temporal_start": start.isoformat(),
             "temporal_end": end.isoformat(),
             "bounding_box": [west, south, east, north],
@@ -141,18 +144,15 @@ def _discover_records(
         flush=True,
     )
     earthaccess.login(strategy="environment")
-    # Do not apply cloud_hosted=True here. Earthaccess documents that this
-    # collection-level filter can exclude restricted cloud collections; OPERA
-    # PO.DAAC granules are discoverable through their POCLOUD provider and
-    # authenticated external HTTPS links without that filter. The CMR query
-    # result count is logged before local WTR-layer parsing so "no matching
-    # WTR asset" can be distinguished from "no CMR granule matched the query."
+    # Search by DOI so Earthaccess resolves the exact CMR collection concept
+    # ID. OPERA's POCLOUD collection is restricted; GranuleQuery's default
+    # cloud_hosted=True filter can exclude restricted cloud collections even
+    # when the caller omits that argument.
     granules = earthaccess.search_data(
-        short_name=COLLECTION_SHORT_NAME,
-        provider="POCLOUD",
-        downloadable=True,
+        doi=COLLECTION_DOI,
         temporal=(start.isoformat(), end.isoformat()),
         bounding_box=(west, south, east, north),
+        debug=True,
         count=-1,
     )
     print(
@@ -190,9 +190,9 @@ def _discover_records(
         "collection_short_name": COLLECTION_SHORT_NAME,
         "collection_concept_id": COLLECTION_CONCEPT_ID,
         "collection_doi": COLLECTION_DOI,
-        "provider": "POCLOUD",
+        "collection_query_method": "earthaccess DOI lookup resolved to exact collection concept ID",
         "cloud_hosted_filter_applied": False,
-        "downloadable": True,
+        "downloadable_filter_applied": False,
         "bounding_box_wgs84": [west, south, east, north],
         "temporal_query": [start.isoformat(), end.isoformat()],
         "requested_observation_date": requested_date.isoformat(),
