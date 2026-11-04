@@ -194,3 +194,98 @@ def test_reference_mosaic_rejects_mixed_opera_tracks(tmp_path):
         assert "not from the same spacecraft, orbit direction and relative track" in str(exc)
     else:
         raise AssertionError("Mismatched Sentinel-1 tracks must not be mosaicked")
+
+
+def test_granule_link_discovery_uses_external_https_access():
+    class FakeGranule:
+        def __init__(self):
+            self.requested_access = None
+
+        def data_links(self, *, access=None):
+            self.requested_access = access
+            return ["https://archive.example.test/OPERA_L3_DSWx-S1_T45RVM_20260818T120000Z_20260819T010203Z_S1A_30_v1.0_B01_WTR.tif"]
+
+    granule = FakeGranule()
+    links = opera._granule_links(granule)
+    assert granule.requested_access == "external"
+    assert len(links) == 1
+    assert links[0].startswith("https://")
+
+
+def test_discovery_pins_pocloud_downloadable_scene_and_parses_wtr(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    class FakeGranule:
+        def get(self, key, default=None):
+            if key == "umm":
+                return {"GranuleUR": "OPERA test granule"}
+            if key == "meta":
+                return {"concept-id": "G123456-PODAAC"}
+            return default
+
+        def data_links(self, *, access=None):
+            assert access == "external"
+            return [
+                "https://archive.example.test/OPERA_L3_DSWx-S1_T45RVM_"
+                "20260818T120000Z_20260819T010203Z_S1A_30_v1.0_B01_WTR.tif"
+            ]
+
+    captured = {}
+
+    def fake_search_data(**kwargs):
+        captured.update(kwargs)
+        return [FakeGranule()]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "earthaccess",
+        SimpleNamespace(login=lambda **kwargs: captured.setdefault("login", kwargs),
+                         search_data=fake_search_data),
+    )
+
+    records, query = opera._discover_records(
+        aoi_wkt="POLYGON((89.6 24.0,89.8 24.0,89.8 24.2,89.6 24.2,89.6 24.0))",
+        requested_date=date.fromisoformat("2026-08-17"),
+        maximum_offset_days=3,
+    )
+
+    assert captured["provider"] == "POCLOUD"
+    assert captured["cloud_hosted"] is True
+    assert captured["downloadable"] is True
+    assert captured["count"] == -1
+    assert query["collection_short_name"] == opera.COLLECTION_SHORT_NAME
+    assert len(records) == 1
+    assert records[0]["tile_id"] == "45RVM"
+    assert records[0]["observation_date"] == "2026-08-18"
+    assert records[0]["layer_name"] == "WTR"
+
+
+def test_reference_mosaic_rejects_mixed_absolute_orbits(tmp_path):
+    prediction = _write_wtr(tmp_path / "prediction.tif", [[1, 0], [1, 0]])
+    tile_a = _write_wtr(tmp_path / "a.tif", [[1, 0], [1, 0]])
+    tile_b = _write_wtr(
+        tmp_path / "b.tif",
+        [[1, 0], [1, 0]],
+        tags={
+            "SPACECRAFT_NAME": "Sentinel-1A",
+            "RTC_ORBIT_PASS_DIRECTION": "Ascending",
+            "RTC_TRACK_NUMBER": "014",
+            "RTC_ABSOLUTE_ORBIT_NUMBER": "12346",
+        },
+    )
+    records = [
+        {"tile_id": name, "observation_date": "2026-08-18", "filename": path.name}
+        for name, path in (("45RVM", tile_a), ("45RWM", tile_b))
+    ]
+    try:
+        opera._build_reference_on_nisar_grid(
+            prediction_path=prediction,
+            wtr_paths=[tile_a, tile_b],
+            selected_records=records,
+            output_path=tmp_path / "reference.tif",
+        )
+    except opera.OperaReferenceError as exc:
+        assert "not from the same spacecraft, orbit direction and relative track" in str(exc)
+    else:
+        raise AssertionError("Mismatched absolute orbits must not be mosaicked")
