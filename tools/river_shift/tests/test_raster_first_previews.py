@@ -2,6 +2,7 @@ import json
 
 import numpy as np
 import rasterio
+import pytest
 from rasterio.transform import from_origin
 
 from process_gcov_job import (
@@ -12,7 +13,7 @@ from process_gcov_job import (
     write_mask_web_preview,
 )
 from pyproj import CRS, Transformer
-from shapely.geometry import MultiPoint, Polygon, mapping, Point
+from shapely.geometry import MultiPoint, Polygon, mapping
 from shapely.ops import transform as transform_geometry
 
 
