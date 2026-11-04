@@ -367,7 +367,8 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     erosion: showErosionOverlay,
     deposition: showDepositionOverlay,
     newWater: showNewWaterOverlay,
-  }), [showErosionOverlay, showDepositionOverlay, showNewWaterOverlay]);
+    observedWater: showObservedWaterExtent,
+  }), [showErosionOverlay, showDepositionOverlay, showNewWaterOverlay, showObservedWaterExtent]);
   const candidateOverlayCounts = useMemo(() => {
     const sources = activeJobPreview?.changeLayer
       ? [activeJobPreview.changeLayer.data]
@@ -378,13 +379,16 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
         erosion: total.erosion + counts.erosion,
         deposition: total.deposition + counts.deposition,
         newWater: total.newWater + counts.newWater,
+        observedWater: total.observedWater + counts.observedWater,
         unclassified: total.unclassified + counts.unclassified,
       };
-    }, { erosion: 0, deposition: 0, newWater: 0, unclassified: 0 });
+    }, { erosion: 0, deposition: 0, newWater: 0, observedWater: 0, unclassified: 0 });
   }, [activeJobPreview?.changeLayer, verifiedGeoJSONFiles]);
   const hasCandidateOverlaySource = Boolean(activeJobPreview?.changeLayer || verifiedGeoJSONFiles.length);
   const allCandidateLayersVisible = showErosionOverlay && showDepositionOverlay && showNewWaterOverlay;
-  const hasObservedWaterFrames = Boolean(currentTimeSeriesFrame || jobTimeSeriesFrames.length);
+  const hasObservedWaterFrames = Boolean(
+    currentTimeSeriesFrame || jobTimeSeriesFrames.length || candidateOverlayCounts.observedWater > 0,
+  );
   const hasVerifiedOverlay = Boolean(!hasJobPreviewOverlay && ((currentTimeSeriesFrame && showObservedWaterExtent) || verifiedGeoJSONFiles.length));
 
   useEffect(() => {
