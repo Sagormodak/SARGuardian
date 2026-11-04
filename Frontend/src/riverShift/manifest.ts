@@ -39,6 +39,39 @@ export type RiverShiftTimeSeriesFrame = {
   water_geojson_sha256: string;
 };
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Report whether both spatial diagnostics are present; missing is never interpreted as zero. */
+export function getRiverShiftOverlapAuditAvailability(summary: Record<string, unknown>): {
+  sourceMask: boolean;
+  previewGeometry: boolean;
+} {
+  const source = isPlainRecord(summary.candidate_overlap_audit) ? summary.candidate_overlap_audit : null;
+  const preview = isPlainRecord(summary.preview_geometry_overlap) ? summary.preview_geometry_overlap : null;
+  return {
+    sourceMask: Boolean(source && isPlainRecord(source.pairwise)),
+    previewGeometry: Boolean(preview && isPlainRecord(preview.pairwise)),
+  };
+}
+
+/** Build a bounded event-timing note from worker evidence without implying peak-stage capture. */
+export function getRiverShiftEventObservationNote(value: unknown): string | null {
+  if (!isPlainRecord(value)) return null;
+  const eventDate = value.event_date;
+  const observationDate = value.first_post_event_observation;
+  const offsetDays = value.offset_days;
+  if (typeof eventDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(eventDate)
+      || typeof observationDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(observationDate)
+      || typeof offsetDays !== 'number' || !Number.isInteger(offsetDays) || offsetDays <= 0) return null;
+  const eventTime = Date.parse(`${eventDate}T00:00:00Z`);
+  const observationTime = Date.parse(`${observationDate}T00:00:00Z`);
+  const calculatedOffset = (observationTime - eventTime) / 86_400_000;
+  if (!Number.isFinite(calculatedOffset) || calculatedOffset !== offsetDays) return null;
+  return `First post-event NISAR observation: ${observationDate} (${offsetDays} days after the supplied event date). This is not a measured event-peak or same-stage observation.`;
+}
+
 export function isRiverShiftReportVerified(report: RiverShiftReport): boolean {
   const quality = report.quality as Record<string, unknown>;
   const verification = quality.verification;

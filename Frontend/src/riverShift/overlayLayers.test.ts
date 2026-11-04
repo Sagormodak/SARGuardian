@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   countRiverShiftCandidateLayers,
   filterRiverShiftCandidateGeoJSON,
+  getRiverShiftEventObservationNote,
+  getRiverShiftOverlapAuditAvailability,
   type RiverShiftGeoJSON,
 } from './manifest';
 
@@ -65,5 +67,44 @@ describe('RiverShift candidate overlay filters', () => {
       || feature.properties?.class
       || feature.properties?.context_layer
     ))).toEqual(['erosion', 'deposition', 'newly_water_covered', 'aoi_boundary']);
+  });
+});
+
+describe('RiverShift audit and event-timing disclosure', () => {
+  it('distinguishes missing spatial diagnostics from zero overlap', () => {
+    expect(getRiverShiftOverlapAuditAvailability({})).toEqual({
+      sourceMask: false,
+      previewGeometry: false,
+    });
+    expect(getRiverShiftOverlapAuditAvailability({
+      candidate_overlap_audit: { pairwise: {} },
+    })).toEqual({ sourceMask: true, previewGeometry: false });
+  });
+
+  it('recognizes both audit reports only when each has pairwise results', () => {
+    expect(getRiverShiftOverlapAuditAvailability({
+      candidate_overlap_audit: { pairwise: { erosion__deposition: {} } },
+      preview_geometry_overlap: { pairwise: { erosion__deposition: {} } },
+    })).toEqual({ sourceMask: true, previewGeometry: true });
+  });
+
+  it('reports the first actual post-event acquisition without calling it peak-stage data', () => {
+    expect(getRiverShiftEventObservationNote({
+      event_date: '2026-07-28',
+      first_post_event_observation: '2026-08-17',
+      offset_days: 20,
+    })).toContain('20 days after the supplied event date');
+    expect(getRiverShiftEventObservationNote({
+      event_date: '2026-07-28',
+      first_post_event_observation: '2026-08-17',
+      offset_days: 20,
+    })).toContain('not a measured event-peak');
+  });
+
+  it('rejects invalid or incomplete event timing metadata', () => {
+    expect(getRiverShiftEventObservationNote(null)).toBeNull();
+    expect(getRiverShiftEventObservationNote({
+      event_date: '2026-07-28', first_post_event_observation: '2026-08-17', offset_days: 0,
+    })).toBeNull();
   });
 });
