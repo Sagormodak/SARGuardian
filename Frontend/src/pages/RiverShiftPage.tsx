@@ -53,9 +53,11 @@ type LoadedGeoJSON = { fileName: string; sha256: string; data: RiverShiftGeoJSON
 type LoadedJobPreview = { jobId: string; changeLayer: LoadedGeoJSON | null; report: RiverShiftReport | null; error: string };
 type LoadedJobFrame = { jobId: string; date: string; data: RiverShiftGeoJSON };
 
-const API_BASE = ((import.meta.env.VITE_SARGUARDIAN_API_URL as string | undefined) || 'http://localhost:8000')
-  .trim()
-  .replace(/\/+$/, '');
+const configuredApiUrl = (import.meta.env.VITE_SARGUARDIAN_API_URL as string | undefined)?.trim();
+const defaultApiUrl = import.meta.env.DEV
+  ? 'http://localhost:8000'
+  : 'https://sarguardian-backend-api.vercel.app';
+const API_BASE = (configuredApiUrl || defaultApiUrl).replace(/\/+$/, '');
 const GOOGLE_MAPS_KEY = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined) || '';
 let mapsConfigured = false;
 
