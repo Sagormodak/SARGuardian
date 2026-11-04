@@ -408,7 +408,6 @@ def _write_binary_reference_geotiff(
     }
     with rasterio.open(output_path, "w", **profile) as destination:
         destination.write(encoded, 1)
-        destination.write_mask(valid_values.astype(np.uint8) * 255)
         destination.update_tags(
             AREA_OR_POINT="Area",
             ENGINE="RiverShift",
