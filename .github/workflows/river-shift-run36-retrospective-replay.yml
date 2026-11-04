@@ -1,6 +1,6 @@
 name: RiverShift retained Run 36 retrospective overlap replay
 
-run-name: RiverShift retrospective replay of retained Run #36
+run-name: "RiverShift retrospective replay of retained Run #36"
 
 on:
   workflow_dispatch:
@@ -33,16 +33,16 @@ jobs:
       - name: Download the retained Run #36 preparation manifest
         uses: actions/download-artifact@v4
         with:
-          name: rivershift-prepared-${{ env.SOURCE_JOB_ID }}
-          path: ${{ env.REPLAY_ROOT }}/prepared
-          run-id: ${{ env.SOURCE_RUN_ID }}
+          name: rivershift-prepared-4e6e4071-fb9d-4e20-a331-867f3f2bd88f
+          path: ${{ runner.temp }}/rivershift-run36-replay/prepared
+          run-id: 41803576163
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download all six original NISAR GCOV COG artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: rivershift-product-b01-*
-          path: ${{ env.REPLAY_ROOT }}/products
+          path: ${{ runner.temp }}/rivershift-run36-replay/products
           merge-multiple: false
           run-id: ${{ env.SOURCE_RUN_ID }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
