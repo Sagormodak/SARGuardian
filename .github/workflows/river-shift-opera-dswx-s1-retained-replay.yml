@@ -1,6 +1,6 @@
 name: RiverShift retained-run OPERA DSWx-S1 SAR cross-check
 
-run-name: RiverShift OPERA DSWx-S1 · run ${{ inputs.source_run_id || '41803576163' }
+run-name: RiverShift OPERA DSWx-S1 · run ${{ inputs.source_run_id || '41803576163' }}
 
 on:
   push:
@@ -33,7 +33,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: river-shift-opera-dswx-s1-${{ inputs.source_run_id || '41803576163' }
+  group: river-shift-opera-dswx-s1-${{ inputs.source_run_id || '41803576163' }}
   cancel-in-progress: false
 
 jobs:
@@ -42,28 +42,28 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }
-      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }
-      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }
-      RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }
-      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }
-      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }
-      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+      RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
       PYTHONUNBUFFERED: "1"
       PYTHONPATH: ${{ github.workspace }}/tools/river_shift
     steps:
       - name: Check out RiverShift science tools
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }
+          ref: ${{ github.sha }}
 
       - name: Download the exact retained RiverShift prepared manifest
         uses: actions/download-artifact@v4
         with:
           pattern: rivershift-prepared-*
           path: prepared/
-          run-id: ${{ inputs.source_run_id || '41803576163' }
-          github-token: ${{ secrets.GITHUB_TOKEN }
+          run-id: ${{ inputs.source_run_id || '41803576163' }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           merge-multiple: false
 
       - name: Install pinned RiverShift geospatial runtime
@@ -76,9 +76,9 @@ jobs:
       - name: Verify retained selection and run OPERA DSWx-S1 SAR cross-check
         shell: micromamba-shell {0}
         env:
-          SOURCE_RUN_ID: ${{ inputs.source_run_id || '41803576163' }
-          MAXIMUM_DATE_OFFSET_DAYS: ${{ inputs.maximum_date_offset_days || '3' }
-          MINIMUM_COMMON_SUPPORT_FRACTION: ${{ inputs.minimum_common_support_fraction || '0.80' }
+          SOURCE_RUN_ID: ${{ inputs.source_run_id || '41803576163' }}
+          MAXIMUM_DATE_OFFSET_DAYS: ${{ inputs.maximum_date_offset_days || '3' }}
+          MINIMUM_COMMON_SUPPORT_FRACTION: ${{ inputs.minimum_common_support_fraction || '0.80' }}
         run: |
           set -euo pipefail
           echo "::group::RiverShift OPERA DSWx-S1 reference replay"
@@ -100,7 +100,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: river-shift-opera-dswx-s1-reference-${{ inputs.source_run_id || '41803576163' }
+          name: river-shift-opera-dswx-s1-reference-${{ inputs.source_run_id || '41803576163' }}
           path: |
             opera-output/opera_dswx_s1_reference_report.json
             opera-output/opera_dswx_s1_independent_validation.json
