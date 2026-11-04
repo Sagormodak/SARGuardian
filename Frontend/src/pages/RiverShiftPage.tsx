@@ -1448,7 +1448,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
         <section className="rs-map-section">
           <div className="rs-section-heading"><div><p className="rs-kicker">GEOSPATIAL OUTPUT</p><h3>Change map</h3></div></div>
           {mapError && <p className="rs-warning-inline">{mapError}</p>}
-          <div className="rs-map" ref={resultMapElement} role="img" aria-label="Google satellite basemap with checksum-checked RiverShift result overlays" />
+          <div className="rs-map" ref={resultMapElement} role="application" aria-label="Interactive Google satellite map. Use the candidate layer controls below to show or hide each RiverShift overlay." />
           <div className="rs-legend"><span><i className="rs-swatch rs-erosion" />Erosion candidate</span><span><i className="rs-swatch rs-deposition" />Deposition candidate</span><span><i className="rs-swatch rs-water" />New-water candidate</span><span><i className="rs-swatch rs-observed-water" />Observed-date water extent</span></div>
           {(hasCandidateOverlaySource || hasObservedWaterFrames) && (
             <div className="rs-overlay-controls" aria-label="RiverShift map overlay visibility">

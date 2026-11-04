@@ -117,6 +117,26 @@ export function parseImpactExposureGeoJSON(value: unknown): ImpactExposurePointC
 type Ring = ImpactPosition[];
 type PolygonRings = Ring[];
 type CandidateClass = 'erosion' | 'deposition' | 'newWater';
+type CandidatePolygon = {
+  rings: PolygonRings;
+  minLongitude: number;
+  maxLongitude: number;
+  minLatitude: number;
+  maxLatitude: number;
+};
+
+function indexCandidatePolygon(rings: PolygonRings): CandidatePolygon {
+  const outer = rings[0];
+  const longitudes = outer.map(([longitude]) => longitude);
+  const latitudes = outer.map(([, latitude]) => latitude);
+  return {
+    rings,
+    minLongitude: Math.min(...longitudes),
+    maxLongitude: Math.max(...longitudes),
+    minLatitude: Math.min(...latitudes),
+    maxLatitude: Math.max(...latitudes),
+  };
+}
 
 function candidateClass(properties: Record<string, unknown> | undefined): CandidateClass | null {
   const value = properties?.river_shift_layer ?? properties?.class
@@ -221,7 +241,7 @@ export function summarizeImpactExposure(
 ): ImpactExposureSummary {
   const field = populationField?.trim() || null;
   const classes: CandidateClass[] = ['erosion', 'deposition', 'newWater'];
-  const polygons: Record<CandidateClass, PolygonRings[]> = {
+  const polygons: Record<CandidateClass, CandidatePolygon[]> = {
     erosion: [],
     deposition: [],
     newWater: [],
@@ -241,7 +261,7 @@ export function summarizeImpactExposure(
       }
       const featurePolygons = polygonsFromFeature(feature);
       if (featurePolygons.length) {
-        polygons[category].push(...featurePolygons);
+        polygons[category].push(...featurePolygons.map(indexCandidatePolygon));
         candidatePolygonCount += featurePolygons.length;
       }
     });
@@ -262,7 +282,11 @@ export function summarizeImpactExposure(
   exposure.features.forEach((feature, featureIndex) => {
     const positions = featurePositions(feature);
     const matchingClasses = classes.filter((category) => (
-      polygons[category].some((polygon) => positions.some((point) => pointInPolygon(point, polygon)))
+      polygons[category].some((polygon) => positions.some((point) => (
+        point[0] >= polygon.minLongitude && point[0] <= polygon.maxLongitude
+        && point[1] >= polygon.minLatitude && point[1] <= polygon.maxLatitude
+        && pointInPolygon(point, polygon.rings)
+      )))
     ));
     if (!matchingClasses.length) return;
 
