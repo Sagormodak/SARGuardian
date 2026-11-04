@@ -814,3 +814,90 @@ def test_assembly_finalization_builds_manifest_before_private_drive_upload(
     assert package_pass < publication_callback < publication_start < upload_start
     assert ("callback", "running", "result_package_assembly") in events
 
+
+
+def test_retry_wave_matrix_uses_wave_specific_attempt_and_batch_identity():
+    first = _retry_matrix([{"granule_name": "NISAR_L2_PR_GCOV_025", "acquisition_date": "2026-07-12"}])
+    second = _retry_matrix([{"granule_name": "NISAR_L2_PR_GCOV_025", "acquisition_date": "2026-07-12"}], retry_attempt=2)
+    third = _retry_matrix([{"granule_name": "NISAR_L2_PR_GCOV_025", "acquisition_date": "2026-07-12"}], retry_attempt=3)
+
+    assert first["include"][0]["retry_attempt"] == 1
+    assert second["include"][0]["retry_attempt"] == 2
+    assert third["include"][0]["retry_attempt"] == 3
+    assert [first["include"][0]["batch_number"], second["include"][0]["batch_number"], third["include"][0]["batch_number"]] == [5, 6, 7]
+
+
+def test_retry_wave_queues_only_products_still_unverified_after_previous_wave(tmp_path):
+    recovered = "NISAR_L2_PR_GCOV_025"
+    still_failed = "NISAR_L2_PR_GCOV_026"
+    prepared = {
+        "job_id": "job-multiwave",
+        "request_fingerprint": "f" * 64,
+        "selected_product_names": [recovered, still_failed],
+        "date_by_name": {recovered: "2026-07-12", still_failed: "2026-07-24"},
+    }
+    first_dir = tmp_path / "first"
+    retry_dir = tmp_path / "retry"
+    for name, observed_date in ((recovered, "2026-07-12"), (still_failed, "2026-07-24")):
+        product_dir = first_dir / name
+        product_dir.mkdir(parents=True)
+        (product_dir / "worker-result.json").write_text(json.dumps({
+            "status": "FAIL",
+            "job_id": "job-multiwave",
+            "request_fingerprint": "f" * 64,
+            "granule_name": name,
+            "acquisition_date": observed_date,
+            "error_code": "DOWNLOAD_FAILED",
+            "files": [],
+        }), encoding="utf-8")
+
+    recovered_dir = retry_dir / "wave-1" / recovered
+    recovered_dir.mkdir(parents=True)
+    required = [
+        f"{recovered}.tif",
+        f"{recovered}.metadata.json",
+        f"{recovered}.download.json",
+        f"{recovered}.gcov_inventory.json",
+    ]
+    files = []
+    for filename in required:
+        payload = filename.encode("utf-8")
+        (recovered_dir / filename).write_bytes(payload)
+        files.append({"name": filename, "sha256": hashlib.sha256(payload).hexdigest()})
+    (recovered_dir / "worker-result.json").write_text(json.dumps({
+        "status": "PASS",
+        "job_id": "job-multiwave",
+        "request_fingerprint": "f" * 64,
+        "granule_name": recovered,
+        "acquisition_date": "2026-07-12",
+        "retry_attempt": 1,
+        "files": files,
+    }), encoding="utf-8")
+
+    failed_dir = retry_dir / "wave-1" / still_failed
+    failed_dir.mkdir(parents=True)
+    (failed_dir / "worker-result.json").write_text(json.dumps({
+        "status": "FAIL",
+        "job_id": "job-multiwave",
+        "request_fingerprint": "f" * 64,
+        "granule_name": still_failed,
+        "acquisition_date": "2026-07-24",
+        "retry_attempt": 1,
+        "error_code": "EARTHDATA_NETWORK_UNREACHABLE",
+        "files": [],
+    }), encoding="utf-8")
+
+    previous = batch_module._load_product_results(retry_dir)
+    queued = _select_retry_rows(
+        prepared,
+        batch_module._load_product_results(first_dir),
+        first_dir,
+        previous_retry_results=previous,
+        previous_retry_dir=retry_dir,
+    )
+
+    assert [row["granule_name"] for row in queued] == [still_failed]
+    assert queued[0]["previous_retry_failure"] == "EARTHDATA_NETWORK_UNREACHABLE"
+    assert queued[0]["previous_retry_attempt"] == 1
+    wave_two = _retry_matrix(queued, retry_attempt=2)
+    assert wave_two["include"][0]["retry_attempt"] == 2
