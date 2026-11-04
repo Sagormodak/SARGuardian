@@ -5,6 +5,7 @@ import { createRiverShiftJob, downloadRiverShiftArtifact, getRiverShiftJob, list
 import type { RiverShiftGeoJSON, RiverShiftReport, RiverShiftTimeSeriesFrame } from '../riverShift/manifest';
 import { isRiverShiftGeoJSONApproved, isRiverShiftReportVerified, isRiverShiftTimeSeriesGeoJSONApproved, parseRiverShiftGeoJSON, parseRiverShiftReport } from '../riverShift/manifest';
 import { formatWktPolygon, parseWktPolygon, type Wgs84Point } from '../riverShift/aoi';
+import { deriveGeneralChangeMarkers } from '../riverShift/generalChangeMarkers';
 import './river-shift.css';
 
 type Props = {
@@ -232,11 +233,13 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
   const [jobFrame, setJobFrame] = useState<LoadedJobFrame | null>(null);
   const [jobTimeSeriesIndex, setJobTimeSeriesIndex] = useState(0);
   const [jobTimeSeriesPlaying, setJobTimeSeriesPlaying] = useState(false);
+  const [showGeneralChangeMarkers, setShowGeneralChangeMarkers] = useState(false);
   const aoiMapElement = useRef<HTMLDivElement>(null);
   const resultMapElement = useRef<HTMLDivElement>(null);
   const aoiMapInstance = useRef<google.maps.Map | null>(null);
   const resultMapInstance = useRef<google.maps.Map | null>(null);
   const resultMapFitKey = useRef('');
+  const resultAoiPolygon = useRef<google.maps.Polygon | null>(null);
   const aoiPolygon = useRef<google.maps.Polygon | null>(null);
   const aoiPreviewLine = useRef<google.maps.Polyline | null>(null);
   const timeSeriesFrames = useMemo(() => (report?.time_series || []).flatMap((frame) => {
@@ -265,6 +268,12 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
   const hasJobPreviewOverlay = Boolean(jobPreview && riverJobId && jobPreview.jobId === riverJobId
     && (jobPreview.changeLayer || currentJobFrame));
   const activeJobPreview = jobPreview && riverJobId && jobPreview.jobId === riverJobId ? jobPreview : null;
+  const isGeneralScanJob = Boolean(riverJob?.state === 'succeeded' && riverJob.analysis_mode === 'general_scan');
+  const generalChangeMarkers = useMemo(() => (
+    isGeneralScanJob && activeJobPreview?.changeLayer
+      ? deriveGeneralChangeMarkers(activeJobPreview.changeLayer.data)
+      : []
+  ), [isGeneralScanJob, activeJobPreview?.changeLayer]);
   const hasLiveJobResult = Boolean(riverJob?.state === 'succeeded' && activeJobPreview
     && (activeJobPreview.report || activeJobPreview.changeLayer));
   const hasLiveJobResultPending = Boolean(riverJob?.state === 'succeeded' && riverJobArtifactManifest?.length
@@ -437,6 +446,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     setJobFrame(null);
     setJobTimeSeriesIndex(0);
     setJobTimeSeriesPlaying(false);
+    setShowGeneralChangeMarkers(false);
     try {
       const job = await createRiverShiftJob({
         aoiWkt, startDate, endDate, analysisMode,
@@ -638,6 +648,31 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     if (!mapReady) return;
     const map = resultMapInstance.current;
     if (!map) return;
+    if (resultAoiPolygon.current) resultAoiPolygon.current.setMap(null);
+    resultAoiPolygon.current = null;
+    if (isGeneralScanJob && riverJob?.aoi_wkt) {
+      try {
+        const aoiPoints = parseWktPolygon(riverJob.aoi_wkt).slice(0, -1);
+        resultAoiPolygon.current = new google.maps.Polygon({
+          paths: aoiPoints.map(([lng, lat]) => ({ lng, lat })),
+          strokeColor: '#70eee0',
+          strokeOpacity: 0.98,
+          strokeWeight: 3,
+          fillOpacity: 0,
+          clickable: false,
+          zIndex: 1000,
+        });
+        resultAoiPolygon.current.setMap(map);
+      } catch {
+        resultAoiPolygon.current = null;
+      }
+    }
+  }, [mapReady, isGeneralScanJob, riverJob?.id, riverJob?.aoi_wkt]);
+
+  useEffect(() => {
+    if (!mapReady) return;
+    const map = resultMapInstance.current;
+    if (!map) return;
     map.data.forEach((feature) => map.data.remove(feature));
     const displayLayers = hasJobPreviewOverlay && jobPreview && riverJobId && jobPreview.jobId === riverJobId
       ? [jobPreview.changeLayer?.data, currentJobFrame].filter((layer): layer is RiverShiftGeoJSON => Boolean(layer))
@@ -645,18 +680,60 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
         ? [currentTimeSeriesFrame.data]
         : verifiedGeoJSONFiles.map((file) => file.data);
     displayLayers.forEach((layer) => map.data.addGeoJson(layer as unknown as object));
+    if (isGeneralScanJob && showGeneralChangeMarkers && generalChangeMarkers.length > 0) {
+      map.data.addGeoJson({
+        type: 'FeatureCollection',
+        features: generalChangeMarkers.map((marker) => ({
+          type: 'Feature',
+          properties: {
+            general_change_marker: true,
+            marker_change_type: marker.changeType,
+            marker_id: marker.id,
+          },
+          geometry: { type: 'Point', coordinates: [marker.longitude, marker.latitude] },
+        })),
+      } as unknown as object);
+    }
     map.data.setStyle((feature) => {
-      const name = String(feature.getProperty('class') || feature.getProperty('change_type') || '').toLowerCase();
+      const geometryType = feature.getGeometry()?.getType();
+      const name = String(feature.getProperty('river_shift_layer') || feature.getProperty('class') || feature.getProperty('change_type') || '').toLowerCase();
       const colour = name.includes('erosion') ? '#f07462'
         : name.includes('deposition') ? '#5fd7a5'
           : '#53b9f4';
-      return { fillColor: colour, strokeColor: colour, fillOpacity: 0.34, strokeWeight: 2 };
+      if (geometryType === 'Point' && feature.getProperty('general_change_marker') === true) {
+        return {
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 7.5,
+            fillColor: colour,
+            fillOpacity: 1,
+            strokeColor: '#ffffff',
+            strokeWeight: 1.5,
+          },
+          zIndex: 1000,
+        };
+      }
+      return {
+        fillColor: colour,
+        strokeColor: colour,
+        fillOpacity: isGeneralScanJob ? 0 : 0.34,
+        strokeOpacity: 0.95,
+        strokeWeight: isGeneralScanJob ? 2.4 : 2,
+      };
     });
     const bounds = new google.maps.LatLngBounds();
     map.data.forEach((feature) => {
       const geometry = feature.getGeometry();
       if (geometry) geometry.forEachLatLng((point) => bounds.extend(point));
     });
+    if (isGeneralScanJob && riverJob?.aoi_wkt) {
+      try {
+        parseWktPolygon(riverJob.aoi_wkt).slice(0, -1)
+          .forEach(([longitude, latitude]) => bounds.extend({ lng: longitude, lat: latitude }));
+      } catch {
+        // The result map still shows available geometry if a retained AOI cannot be parsed.
+      }
+    }
     const overlayFitKey = hasJobPreviewOverlay && riverJobId
       ? `job:${riverJobId}`
       : `report:${report?.analysis_type || 'none'}:${verifiedGeoJSONFiles.map((file) => file.sha256).join(',')}`;
@@ -666,7 +743,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       resultMapFitKey.current = overlayFitKey;
     }
 
-  }, [mapReady, currentTimeSeriesFrame, verifiedGeoJSONFiles, jobPreview, currentJobFrame, riverJobId, hasJobPreviewOverlay, report]);
+  }, [mapReady, currentTimeSeriesFrame, verifiedGeoJSONFiles, jobPreview, currentJobFrame, riverJobId, hasJobPreviewOverlay, report, isGeneralScanJob, riverJob?.aoi_wkt, showGeneralChangeMarkers, generalChangeMarkers]);
 
   useEffect(() => {
     if (!timeSeriesPlaying || playbackFrames.length < 2) return;
@@ -934,6 +1011,25 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
                   onChange={(event) => { setJobTimeSeriesPlaying(false); setJobTimeSeriesIndex(Number(event.target.value)); }} />
               </label>
             </div>
+            {riverJob.analysis_mode === 'general_scan' && (
+              <div className="rs-marker-control">
+                <label className="rs-marker-toggle">
+                  <input
+                    type="checkbox"
+                    checked={showGeneralChangeMarkers}
+                    disabled={generalChangeMarkers.length === 0}
+                    onChange={(event) => setShowGeneralChangeMarkers(event.target.checked)}
+                  />
+                  <span>
+                    <strong>Show change-candidate markers during playback</strong>
+                    <small>Markers use the retained erosion, deposition and new-water candidate footprints.</small>
+                  </span>
+                </label>
+                <p className="rs-marker-note">{generalChangeMarkers.length > 0
+                  ? `${generalChangeMarkers.length} window-level candidate marker(s) available. They remain visible across observed-date steps; they are not date-specific measurements.`
+                  : 'No erosion, deposition or new-water candidate footprints are available for markers in this result.'}</p>
+              </div>
+            )}
             {currentJobFrameMetadata && <p className="rs-info-banner">NISAR observation {currentJobFrameMetadata.date} · frame {jobTimeSeriesIndex + 1}/{jobTimeSeriesFrames.length} · open-water candidate area {currentJobFrameMetadata.water_area_km2.toFixed(3)} km² · valid common-support pixels {(currentJobFrameMetadata.valid_pixel_fraction * 100).toFixed(1)}% · source {currentJobFrameMetadata.granule_name || 'granule ID recorded in source report'}{!currentJobFrame ? ' · loading checksum-verified map layer…' : ''}</p>}
           </section>
         )}
