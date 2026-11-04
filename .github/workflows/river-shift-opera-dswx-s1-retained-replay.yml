@@ -16,11 +16,17 @@ on:
         type: string
         default: "41803576163"
       maximum_date_offset_days:
-        description: Maximum absolute OPERA sensing-date offset from the exact NISAR observation
+        description: Strict maximum sensing-date offset allowed for a validation score
         required: true
         type: choice
         options: ["0", "1", "2", "3", "5", "7"]
         default: "3"
+      discovery_window_days:
+        description: Search window for the nearest OPERA scene; scenes outside the strict score gate remain NO_SCORE
+        required: true
+        type: choice
+        options: ["3", "7", "14", "21", "30"]
+        default: "14"
       minimum_common_support_fraction:
         description: Minimum labelled OPERA WTR support over NISAR-valid pixels
         required: true
@@ -78,6 +84,7 @@ jobs:
         env:
           SOURCE_RUN_ID: ${{ inputs.source_run_id || '41803576163' }}
           MAXIMUM_DATE_OFFSET_DAYS: ${{ inputs.maximum_date_offset_days || '3' }}
+          DISCOVERY_WINDOW_DAYS: ${{ inputs.discovery_window_days || '14' }}
           MINIMUM_COMMON_SUPPORT_FRACTION: ${{ inputs.minimum_common_support_fraction || '0.80' }}
         run: |
           set -euo pipefail
@@ -90,6 +97,7 @@ jobs:
             --api-base-url https://sarguardian-backend-api.vercel.app \
             --output-dir opera-output \
             --maximum-date-offset-days "$MAXIMUM_DATE_OFFSET_DAYS" \
+            --discovery-window-days "$DISCOVERY_WINDOW_DAYS" \
             --minimum-common-support-fraction "$MINIMUM_COMMON_SUPPORT_FRACTION" \
             --block-size-pixels 64 \
             --bootstrap-replicates 500
