@@ -9,12 +9,13 @@
 
 RiverShift lets a user draw an area of interest (AOI), choose an event/date window and inspect the actual NISAR acquisitions available for that area. It then screens comparable NASA–ISRO NISAR Level-2 GCOV observations for changes in radar-derived open-water coverage and persistent land/water transitions. The results are displayed as checksum-checked, colour-coded footprints on a Google Maps Satellite basemap, with a discrete playback across the observed acquisition dates.
 
-The product is designed to answer four questions:
+The product is designed to answer five questions:
 
 1. Where did the observed radar water classification change?
 2. Which persistent land-to-water transitions are erosion candidates?
 3. Which persistent water-to-land transitions are deposition candidates?
-4. Which actual NISAR acquisition dates and source products support each map frame?
+4. Which mapped buildings and selected public facilities coincide with those candidate preview zones?
+5. Which actual NISAR acquisition dates, source products and independent-validation gaps support interpretation?
 
 RiverShift is an evidence-screening and communication tool, not an operational flood-warning service or a substitute for field surveying.
 
@@ -112,6 +113,14 @@ The diagnostic OPERA RTC-S1 inventory returned 2,093 AOI granules and 2,020 VV b
 
 The replay successfully uploaded its diagnostic report, validation status and private Drive receipt with remote checksum verification. The GitHub Action is deliberately red because the independent-reference metrics gate did not pass; this prevents a no-score result from appearing green.
 
+## Optional impact-context screen — mapped exposure, not damage
+
+The Dynamic RiverShift page now includes an optional, one-query OpenStreetMap context action for the completed job AOI. It requests mapped building features and a selected set of public-facility amenities from the Overpass API, converts OSM nodes and way/relation centres to point features, deduplicates by OSM element identity, and records the OSM snapshot timestamp when returned. The alternative is a source-attributed point/centroid GeoJSON imported locally in the browser.
+
+The screen counts unique features and per-class matches inside the retained **candidate preview polygons**. It excludes sparse preview markers and can optionally sum a user-supplied numeric property from an imported dataset. The OSM building/facility query does not provide population values. It is a screening context only: it does not show that a building is damaged, occupied, threatened, or affected; OSM coverage is incomplete and uneven; preview polygons are approximate display geometry rather than authoritative measurement masks. A query reaching the 5,000-element cap is explicitly marked potentially incomplete. No imported exposure data is uploaded to SARGuardian's backend.
+
+Attribute OpenStreetMap as **© OpenStreetMap contributors** under the ODbL. The shared Overpass API is not a guaranteed production data service; the UI performs one AOI-bounded request on explicit user action and reports errors rather than fabricating zero counts. For a formal impact claim, use an authoritative, dated building/population dataset and a documented spatial overlay against the authoritative full-resolution change masks.
+
 ## Independent validation pathway
 
 RiverShift keeps three kinds of evidence separate:
@@ -168,20 +177,21 @@ The legacy `validate_with_sentinel2.py` tool and retained-run workflow remain av
 3. Show the ASF DAAC catalogue and explain exact acquisition comparability and why insufficient support stops analysis.
 4. Show the real NISAR observation dates and play the time series. Point out that each frame is an actual acquisition.
 5. Turn attention to red, green and blue layers; explain each as a candidate, not ground truth.
-6. Open the Run #36 metrics and provenance; show the source granule IDs, checksums and that the areas are candidate-only.
-7. Show the OPERA DSWx-S1 replay report. Explain that no eligible reference existed within the date window, so the system correctly published NO_MATCH_NO_SCORE rather than inventing an accuracy score. End with the need for a date-appropriate independent water reference and field/bankline evidence before a VERIFIED claim.
+6. In the impact-context panel, run the AOI-bounded OpenStreetMap query. Show the OSM snapshot timestamp, unique mapped-feature count and class matches; state explicitly that this is mapped exposure context, not damage or population.
+7. Open the Run #36 metrics and provenance; show the source granule IDs, checksums and that the areas are candidate-only.
+8. Show the OPERA DSWx-S1 replay report. Explain that no eligible reference existed within the date window, so the system correctly published NO_MATCH_NO_SCORE rather than inventing an accuracy score. End with the need for a date-appropriate independent water reference and field/bankline evidence before a VERIFIED claim.
 
 ## Score-sheet evidence checklist
 
 | Criterion | Evidence to present | Remaining human action / risk |
 |---|---|---|
-| Impact | Riverbank / flood-change use case, AOI-specific candidate maps and bounded area metrics. | Add a sourced local impact story and independently sourced exposure only if available; do not imply lives/assets saved. |
+| Impact | Riverbank/flood-change use case, AOI-specific candidate maps and bounded area metrics; the Dynamic PR #81 adds an optional AOI-bounded OpenStreetMap buildings/public-facilities context screen and accepts source-attributed point GeoJSON. It reports unique and per-class point matches against candidate preview polygons. | Execute the optional OSM query for the exact demo AOI and retain its snapshot timestamp; describe counts only as mapped-feature exposure context, never damaged assets, affected population, or a complete inventory. OSM coverage and the preview geometry are incomplete/approximate. |
 | Creativity | User-drawn AOI, target-free change discovery, discrete radar time series, explainable classes and private provenance. | A polished end-to-end demo is still needed. |
-| Validity | Product comparability checks, common-valid support, source hashes, synthetic raster/mosaic/replay tests, retained-artifact checksum checks, and provisional release status. Backend main at 93d2f746: 249 RiverShift tests passed; 585 repository regression tests passed (1 skipped); 180 maintained science-engine tests passed; AOI/static parser checks passed. | OPERA DSWx-S1 and RTC-S1 inventory found no eligible reference near 2026-08-17; Sentinel-2 was too cloudy. Independent same-AOI water reference and field/bankline validation remain the main scientific gap. Signed transect measurement still requires independently digitized banklines. |
+| Validity | Current backend main `bf8f8e16`: 259 RiverShift tests passed; retained Run #36 replay reproduced all three reported areas after six source-COG checksums matched; full-resolution source-mask overlap and shared-grid preview QA are recorded separately. Dynamic feature PR #81 build/type-check/lint and 151 frontend tests passed; backend tests passed. New worker jobs fail closed when required overlap QA is missing. | These prove software contracts and reproducibility, not physical accuracy. Run #36 has no eligible OPERA WTR reference; Sentinel-2 common support was 0.1554%. F1/IoU and field/bankline accuracy remain NO_SCORE. Signed transect tools require independently digitised dated banklines. |
 | Relevance | NISAR Level-2 GCOV is the primary measurement input; challenge name is explicit. | Explain what radar contributes and why NISAR observations are central. |
-| Presentation | Google Satellite result map, red/green/blue classes, observed-date playback, report and this judge guide. | Record a clear two-minute demo and finish project-page text. |
+| Presentation | Google Satellite result map, independently toggled candidate layers, actual-date playback, source/preview overlap panel, explicit scientific-readiness panel, source-attributed OSM exposure context, judge guide and project-page draft. | Complete and rehearse the two-minute demo; use one actual AOI and explain what each number means and does not mean. Do not claim the OSM counts or map previews are damage estimates. |
 | Teamwork | Actual commits, issue/PR history and documented roles. | Team must supply truthful member names, roles and evidence of collaboration. |
-| User experience | Draw-AOI workflow, discovery/processing distinction, map legend, source date and warnings. | Do a first-time-user test and remove unresolved setup friction. |
+| User experience | Three-step quick-start, visible catalogue date count against the four-date gate, actionable insufficient-acquisition guidance, independent result-layer controls, OSM one-click AOI context query, manual GeoJSON fallback, and validation-readiness panel. | A real first-time-user test on phone and desktop is still needed; the shared Overpass API may be busy and OSM coverage is uneven. |
 | NASA data usage | NISAR GCOV is the primary analysis source; ASF DAAC provides exact product access/provenance; Copernicus Sentinel-2 L2A was used in two three-tile same-datatake mosaics; Google Satellite is contextual basemap only. | NISAR remains the central measurement source. The retained Run #36 OPERA cross-check correctly returned NO_MATCH_NO_SCORE; the cloudy Sentinel-2 candidate also had no metrics. Keep all source roles and limitations visible. |
 | Challenge category | “Dancing with the SARs” / Earth Science identified in the UI and project text. | Verify the exact category label shown in the team's official project form. |
 | Repository access | Public backend and Dynamic GitHub repositories. | Verify links in a signed-out browser before final submission. |

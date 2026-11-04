@@ -33,6 +33,7 @@ RiverShift addresses the discovery and communication gap: the user identifies th
 ## What we built
 
 - A user-drawn AOI and date-window workflow.
+- A first-run guide and an explicit catalogue preflight that counts distinct acquisition dates before the worker's stricter compatibility checks.
 - Discovery of real NISAR GCOV acquisitions through ASF DAAC.
 - Product-comparability and spatial-coverage checks before pixel-wise analysis.
 - Common-support open-water time-series screening.
@@ -41,6 +42,7 @@ RiverShift addresses the discovery and communication gap: the user identifies th
 - Red / green / blue change-map overlays on a third-party Google Satellite basemap.
 - Discrete playback of actual NISAR acquisition dates, with no daily interpolation.
 - Source granule, processing metadata, result hashes and private retention of full-resolution products.
+- Optional AOI-bounded OpenStreetMap buildings/public-facilities context, plus source-attributed point GeoJSON import; counts only mapped points inside candidate preview polygons.
 - A separate OPERA DSWx-S1 Sentinel-1 C-band cross-sensor reference workflow with explicit NO_SCORE gates, plus signed-bankline tools that require independently supplied dated banklines and oriented transects.
 
 ## NASA and external data
@@ -57,9 +59,11 @@ RiverShift addresses the discovery and communication gap: the user identifies th
 
 **Legacy optical tool:** a standalone Copernicus Sentinel-2 L2A CLI remains available for scenes with adequate cloud-free common support, but it is not the monsoon reference strategy. The 2026-08-18 candidate for this AOI had 97.957% reported cloud cover and only 0.1554% common valid support; no metrics were published.
 
+**Open map-data impact context:** The optional AOI-bounded Overpass request reads OpenStreetMap building features and selected public-facility amenities. It supplies mapped feature locations only, not population counts or damage labels. Results are counted against candidate preview polygons, not authoritative full-resolution masks. Attribute **© OpenStreetMap contributors** under ODbL; the OSM snapshot timestamp is shown when returned.
+
 **Third-party visual context:** Google Maps Satellite imagery provides geographic orientation in the result map. It is not used in the NISAR classification and is not an independent validation dataset.
 
-Do not add Copernicus DEM, GPM IMERG, gauge values, field survey, or population/exposure data to the claims unless the submitted build actually processed the source and retained its identity, timestamp and method. Gauge readings must not be described as spatial water-mask validation.
+Do not add Copernicus DEM, GPM IMERG, gauge values, field survey, or population/exposure data to claims unless the submitted build actually processed the source and retained its identity, timestamp and method. The OSM panel is a mapped building/facility context screen, not a complete asset inventory, census, damage assessment, or independent validation dataset. Gauge readings must not be described as spatial water-mask validation.
 
 ## How the science works
 
@@ -94,11 +98,11 @@ The separate [OPERA DSWx-S1 replay #41900559056](https://github.com/moshiour0/SA
 - **Radar-first:** NISAR GCOV is the measurement input, not just a decorative image on a map.
 - **Evidence before interpretation:** source products, observation dates, comparable-product checks, checksums and warning states remain visible.
 - **Time-series honesty:** each frame is an actual acquisition; unavailable dates are not filled with invented observations.
-- **Accessible communication:** candidate layers, plain-language explanations and a satellite basemap help non-specialists explore the results.
+- **Accessible communication:** a quick-start sequence, distinct acquisition-date preflight, independent candidate-layer controls, validation-readiness panel and source-attributed local exposure context help non-specialists explore the evidence.
 
 ## Limitations and next steps
 
-The current automatic output is provisional. Persistent water/land transitions are candidates rather than independently confirmed erosion/deposition. The automatic workflow does not calculate signed channel migration from a centreline, sediment volume, water depth or flood causality. Those claims require independently dated banklines, appropriately oriented transects and/or field measurements.
+The current automatic output is provisional. Persistent water/land transitions are candidates rather than independently confirmed erosion/deposition. OSM building/facility counts are optional mapped exposure context only; OpenStreetMap is not a complete asset register and the preview polygons are approximate display geometry. The automatic workflow does not calculate signed channel migration from a centreline, sediment volume, water depth or flood causality. Those claims require independently dated banklines, appropriately oriented transects and/or field measurements.
 
 The Run #36 OPERA DSWx-S1 search found no eligible WTR scene in the same AOI within ±30 days of the 2026-08-17 NISAR date; the nearest RTC-S1 burst was 52 days earlier and cannot satisfy the strict ±3-day score gate. No OPERA reference mask or agreement metrics exist for this run. The Sentinel-2 candidate was heavily clouded (97.957% reported cloud cover; 0.1554% common support) and is not corroboration.
 
@@ -107,6 +111,8 @@ An appropriate next validation is a date-matched, independently reviewed water r
 ## Demo
 
 **Live application:** https://sar-guardian-dynamic-lilac.vercel.app
+
+**Suggested on-screen demo sequence:** draw the AOI; check the distinct-acquisition preflight; run the actual NISAR workflow; review observed dates and independent candidate toggles; run the one-shot OSM building/facility context query; show its snapshot date and the explicit “mapped exposure context, not damage” caveat; finish with the NO_SCORE validation status.
 
 **Two-minute demo video:** [PASTE VIDEO URL]
 
