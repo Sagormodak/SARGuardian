@@ -202,7 +202,7 @@ def test_workflow_hdf5_checks_are_safe_with_pipefail():
     # set -o pipefail even when GDAL has the HDF5 driver installed.
     assert "gdalinfo --formats | grep" not in workflow
     assert workflow.count('gdal_formats="$(gdalinfo --formats)"') == 8
-    assert workflow.count("grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-' <<< \"$gdal_formats\"") == 5
+    assert workflow.count("grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-' <<< \"$gdal_formats\"") == 7
 
 
 def test_retry_job_consumes_only_the_validated_cross_job_matrix():
