@@ -37,6 +37,7 @@ from validate_independent_reference import (
 )
 
 COLLECTION_SHORT_NAME = "OPERA_L3_DSWX-S1_V1"
+COLLECTION_CONCEPT_ID = "C2949811996-POCLOUD"
 COLLECTION_DOI = "10.5067/OPDSWS1-L3V1"
 PRODUCT_SPEC = "OPERA DSWx-S1A/B Product Specification v1.0.0, JPL D-108761 Rev A"
 DATASET_URL = "https://podaac.jpl.nasa.gov/dataset/OPERA_L3_DSWX-S1_V1"
@@ -177,6 +178,7 @@ def _discover_records(
         })
     query = {
         "collection_short_name": COLLECTION_SHORT_NAME,
+        "collection_concept_id": COLLECTION_CONCEPT_ID,
         "collection_doi": COLLECTION_DOI,
         "provider": "POCLOUD",
         "cloud_hosted": True,
@@ -379,6 +381,8 @@ def _build_reference_on_nisar_grid(
             output[conflict_mask] = FILL
             tile_audits.append({
                 "filename": path.name,
+                "source_file_bytes": path.stat().st_size,
+                "source_file_sha256": _sha256(path),
                 "tile_id": metadata["tile_id"],
                 "source_crs": src.crs.to_string(),
                 "source_geometry": geometry_fields,
@@ -422,6 +426,7 @@ def _build_reference_on_nisar_grid(
         dst.update_tags(
             SOURCE_PROVIDER="NASA/JPL PO.DAAC OPERA",
             COLLECTION_SHORT_NAME=COLLECTION_SHORT_NAME,
+            COLLECTION_CONCEPT_ID=COLLECTION_CONCEPT_ID,
             COLLECTION_DOI=COLLECTION_DOI,
             PRODUCT_VERSION="1.0",
             INPUT_SENSOR="Sentinel-1 C-band SAR",
