@@ -623,6 +623,100 @@ def get_river_shift_job(job_id: UUID, user: dict = Depends(get_current_user)) ->
     return _response(record)
 
 
+@router.post("/jobs/{job_id}/validation-inputs")
+async def get_river_shift_validation_inputs(job_id: UUID, request: Request) -> dict[str, Any]:
+    """Expose only the exact retained mask/report pair to a signed validation runner."""
+    body = await request.body()
+    if len(body) > 8_192:
+        raise HTTPException(status_code=413, detail="RiverShift validation input request is too large.")
+    settings = get_settings()
+    if not callback_signature_is_valid(
+        settings.river_shift_callback_secret,
+        body,
+        request.headers.get("X-SARGuardian-Signature"),
+    ):
+        raise HTTPException(status_code=401, detail="Invalid RiverShift validation runner signature.")
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=422, detail="RiverShift validation input request is invalid.") from None
+    if not isinstance(payload, dict) or set(payload) != {"prediction_path"}:
+        raise HTTPException(status_code=422, detail="RiverShift validation requires one allow-listed prediction path.")
+
+    # This first release validates the event-proximal binary water mask. It
+    # deliberately does not treat preview GeoJSON or morphology candidates as
+    # a water-classification reference.
+    prediction_path = payload.get("prediction_path")
+    if prediction_path != "outputs/flood/during_water_mask.tif":
+        raise HTTPException(status_code=422, detail="Only outputs/flood/during_water_mask.tif is supported by this validation contract.")
+
+    try:
+        record = _store().get_river_shift_job_unscoped(job_id)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not resolve the RiverShift validation source job.") from None
+    if not record:
+        raise HTTPException(status_code=404, detail="RiverShift validation source job was not found.")
+    if record.get("state") != JobState.SUCCEEDED.value:
+        raise HTTPException(status_code=409, detail="Independent validation requires a successfully completed RiverShift job.")
+
+    artifacts = record.get("artifact_manifest")
+    if not isinstance(artifacts, list):
+        raise HTTPException(status_code=409, detail="RiverShift source job has no retained artifact manifest.")
+    by_path = {
+        item.get("path"): item
+        for item in artifacts
+        if isinstance(item, dict) and isinstance(item.get("path"), str)
+    }
+    report_path = "outputs/flood/river_shift_result.json"
+    selected = {
+        "prediction": by_path.get(prediction_path),
+        "result_report": by_path.get(report_path),
+    }
+    resolved: dict[str, dict[str, Any]] = {}
+    for label, item in selected.items():
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=409, detail=f"RiverShift validation source is missing the required {label} artifact.")
+        verification = item.get("remote_verification")
+        file_id = item.get("drive_file_id")
+        digest = item.get("sha256")
+        size = item.get("bytes")
+        if (
+            not isinstance(file_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", file_id)
+            or not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest)
+            or isinstance(size, bool) or not isinstance(size, int) or not 0 < size <= MAX_ARTIFACT_BYTES
+            or not isinstance(verification, dict) or verification.get("status") != "PASS"
+        ):
+            raise HTTPException(status_code=409, detail=f"RiverShift validation {label} receipt is incomplete or unverified.")
+        resolved[label] = {
+            "drive_file_id": file_id,
+            "name": item.get("name"),
+            "path": item.get("path"),
+            "bytes": size,
+            "sha256": digest,
+        }
+
+    summary = record.get("result_summary")
+    event_window = summary.get("event_window") if isinstance(summary, dict) else None
+    target_date = event_window.get("event_proximal_observation") if isinstance(event_window, dict) else None
+    if not isinstance(target_date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", target_date):
+        raise HTTPException(status_code=409, detail="RiverShift source result does not identify the event-proximal water-mask date.")
+
+    return {
+        "schema_version": 1,
+        "engine": "RiverShift",
+        "job_id": str(job_id),
+        "github_run_id": record.get("github_run_id"),
+        "analysis_mode": record.get("analysis_mode"),
+        "event_date": record.get("event_date"),
+        "prediction_observation_date": target_date,
+        "prediction": resolved["prediction"],
+        "result_report": resolved["result_report"],
+        "source_release_status": (summary or {}).get("release_status") if isinstance(summary, dict) else "PROVISIONAL",
+        "independent_validation_status": "PENDING",
+        "note": "Signed internal response. Drive identifiers are available only to a runner holding RIVERSHIFT_CALLBACK_SECRET.",
+    }
+
+
 @router.get("/jobs/{job_id}/artifacts/{artifact_index}")
 def download_river_shift_artifact(
     job_id: UUID,
