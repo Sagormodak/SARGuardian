@@ -234,9 +234,9 @@ def test_raster_first_job_previews_keep_each_change_class_and_each_observed_date
 
 def test_preview_overlap_area_excludes_sparse_point_markers_and_reports_them_separately():
     to_wgs84 = Transformer.from_crs("EPSG:32646", "EPSG:4326", always_xy=True).transform
-    erosion_polygon = Polygon([(0, 0), (100, 0), (100, 100), (0, 100)])
-    deposition_polygon = Polygon([(50, 0), (150, 0), (150, 100), (50, 100)])
-    sparse_points = MultiPoint([(75, 50), (125, 50)])
+    erosion_polygon = Polygon([(500000, 2700000), (500100, 2700000), (500100, 2700100), (500000, 2700100)])
+    deposition_polygon = Polygon([(500050, 2700000), (500150, 2700000), (500150, 2700100), (500050, 2700100)])
+    sparse_points = MultiPoint([(500075, 2700050), (500125, 2700050)])
 
     features = [
         {
