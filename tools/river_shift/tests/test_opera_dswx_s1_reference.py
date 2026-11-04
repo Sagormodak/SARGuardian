@@ -57,9 +57,17 @@ def test_filename_metadata_uses_sensing_time_not_generation_time():
 
 
 def test_wtr_reference_labels_only_open_water_and_not_water():
-    source = np.array([[0, 1, 3], [250, 251, 255]], dtype=np.uint8)
+    source = np.array(
+        [[0, 1, 2, 3], [5, 6, 7, 30], [31, 32, 35, 36], [37, 250, 251, 255]],
+        dtype=np.uint8,
+    )
     result = opera._classify_wtr(source)
-    assert result.tolist() == [[0, 1, 255], [255, 255, 255]]
+    assert result.tolist() == [
+        [0, 1, 255, 255],
+        [255, 255, 255, 255],
+        [255, 255, 255, 255],
+        [255, 255, 255, 255],
+    ]
     assert set(np.unique(result)).issubset({0, 1, 255})
 
 
