@@ -678,7 +678,7 @@ def _mosaic_date_rasters(paths: list[Path], destination: Path) -> Path:
         scene_count=mosaic_overlap_audit.get("scene_count"),
         pair_count=len(mosaic_overlap_audit.get("pairwise", [])),
         pairwise=mosaic_overlap_audit.get("pairwise", []),
-        status=mosaic_overlap_audit.get("status"),
+        audit_status=mosaic_overlap_audit.get("status"),
     )
 
     metadata_rows = [
