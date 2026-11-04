@@ -1,0 +1,86 @@
+name: RiverShift retained Run 36 retrospective overlap replay
+
+run-name: RiverShift retrospective replay of retained Run #36
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "tools/river_shift/replay_retained_run36.py"
+      - ".github/workflows/river-shift-run36-retrospective-replay.yml"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: rivershift-run36-retrospective-replay
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      SOURCE_RUN_ID: "41803576163"
+      SOURCE_JOB_ID: "4e6e4071-fb9d-4e20-a331-867f3f2bd88f"
+      REPLAY_ROOT: ${{ runner.temp }}/rivershift-run36-replay
+    steps:
+      - name: Check out the current RiverShift worker
+        uses: actions/checkout@v4
+
+      - name: Download the retained Run #36 preparation manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: rivershift-prepared-${{ env.SOURCE_JOB_ID }}
+          path: ${{ env.REPLAY_ROOT }}/prepared
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download all six original NISAR GCOV COG artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-product-b01-*
+          path: ${{ env.REPLAY_ROOT }}/products
+          merge-multiple: false
+          run-id: ${{ env.SOURCE_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install the pinned RiverShift geospatial environment
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+
+      - name: Verify retained inputs and replay the current science functions
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          python --version
+          python -m compileall -q tools/river_shift/replay_retained_run36.py
+          find "${REPLAY_ROOT}/prepared" -name prepared.json -print
+          find "${REPLAY_ROOT}/products" -name '*.tif' -print
+          python tools/river_shift/replay_retained_run36.py \
+            --prepared-root "${REPLAY_ROOT}/prepared" \
+            --products-root "${REPLAY_ROOT}/products" \
+            --output-root "${REPLAY_ROOT}/output"
+
+      - name: Publish the retrospective audit evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: rivershift-run36-retrospective-overlap
+          path: |
+            ${{ runner.temp }}/rivershift-run36-replay/output/run36_retrospective_overlap_replay.json
+            ${{ runner.temp }}/rivershift-run36-replay/output/run36_retrospective_overlap_replay.json.sha256
+            ${{ runner.temp }}/rivershift-run36-replay/output/outputs/quality-assurance/candidate_mask_overlap_audit.json
+            ${{ runner.temp }}/rivershift-run36-replay/output/outputs/quality-assurance/erosion_mask.tif
+            ${{ runner.temp }}/rivershift-run36-replay/output/outputs/quality-assurance/deposition_mask.tif
+            ${{ runner.temp }}/rivershift-run36-replay/output/outputs/quality-assurance/new_water_mask.tif
+            ${{ runner.temp }}/rivershift-run36-replay/output/outputs/map/river_change_candidates_preview.geojson
+            ${{ runner.temp }}/rivershift-run36-replay/output/outputs/map/erosion_candidates_preview.geojson
+            ${{ runner.temp }}/rivershift-run36-replay/output/outputs/map/deposition_candidates_preview.geojson
+            ${{ runner.temp }}/rivershift-run36-replay/output/outputs/map/newly_water_covered_preview.geojson
+          if-no-files-found: error
+          retention-days: 90
