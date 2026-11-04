@@ -115,3 +115,25 @@
 .rs-change-swatch-deposition { background: rgba(95, 215, 165, .82); }
 .rs-change-swatch-new-water { background: rgba(83, 185, 244, .82); }
 .rs-change-legend-note { margin: 0; color: #91acbb; font-size: 10px; line-height: 1.55; }
+
+.rs-overlay-controls { display: grid; gap: 12px; margin: 12px 0 18px; padding: 13px; border: 1px solid rgba(115, 198, 203, .2); border-radius: 10px; background: rgba(5, 26, 40, .48); }
+.rs-overlay-toggle { display: flex; align-items: flex-start; gap: 9px; min-width: 0; color: #d5e9ee; cursor: pointer; font-size: 10px; }
+.rs-overlay-toggle input { flex: 0 0 auto; width: 15px; height: 15px; margin: 1px 0 0; accent-color: #70d9ce; }
+.rs-overlay-toggle span { display: grid; gap: 3px; min-width: 0; }
+.rs-overlay-toggle strong { color: #e5f4f6; font-size: 10px; }
+.rs-overlay-toggle small { color: #8eabb8; font-size: 9px; line-height: 1.45; }
+.rs-overlay-toggle input:disabled { cursor: not-allowed; opacity: .45; }
+.rs-overlay-toggle-all { padding-bottom: 10px; border-bottom: 1px solid rgba(149, 194, 208, .12); }
+.rs-overlay-class-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 18px; }
+.rs-overlay-unavailable { opacity: .65; cursor: not-allowed; }
+.rs-overlay-observed { padding-top: 10px; border-top: 1px solid rgba(149, 194, 208, .12); }
+.rs-overlay-note { margin: 0; color: #8eaab7; font-size: 9px; line-height: 1.5; }
+@media (max-width: 560px) { .rs-overlay-class-grid { grid-template-columns: 1fr; } }
+
+.rs-overlap-audit { margin-top: 14px; padding: 14px; border: 1px solid rgba(115, 198, 203, .2); border-radius: 10px; background: rgba(5, 26, 40, .42); }
+.rs-overlap-audit h3 { margin: 0; color: #edf9fc; font: 700 16px 'Manrope', sans-serif; letter-spacing: -.03em; }
+.rs-overlap-table-wrap { width: 100%; overflow-x: auto; border: 1px solid rgba(149, 194, 208, .14); border-radius: 8px; }
+.rs-overlap-table { min-width: 720px; }
+.rs-overlap-table th, .rs-overlap-table td { font-variant-numeric: tabular-nums; }
+
+.rs-swatch.rs-observed-water { background: rgba(115, 179, 223, .24); border: 1px solid #73b3df; }

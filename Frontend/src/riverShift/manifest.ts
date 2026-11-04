@@ -71,6 +71,59 @@ export function isRiverShiftTimeSeriesGeoJSONApproved(
     && frame.water_geojson_sha256.toLowerCase() === sha256.toLowerCase());
 }
 
+export type RiverShiftCandidateVisibility = {
+  erosion: boolean;
+  deposition: boolean;
+  newWater: boolean;
+};
+
+export type RiverShiftCandidateCounts = {
+  erosion: number;
+  deposition: number;
+  newWater: number;
+  unclassified: number;
+};
+
+function riverShiftCandidateType(properties?: Record<string, unknown>): keyof RiverShiftCandidateVisibility | null {
+  if (!properties) return null;
+  const labels = [
+    properties.river_shift_layer,
+    properties.class,
+    properties.change_type,
+    properties.candidate_type,
+  ].filter((value): value is string => typeof value === 'string');
+  const label = labels.map((value) => value.toLowerCase().replace(/[\s-]+/g, '_')).join('_');
+  if (label.includes('erosion')) return 'erosion';
+  if (label.includes('deposition') || label.includes('accretion')) return 'deposition';
+  if (label.includes('new_water') || label.includes('newly_water') || label.includes('water_covered')) return 'newWater';
+  return null;
+}
+
+/** Count class-tagged candidate features without changing the source GeoJSON. */
+export function countRiverShiftCandidateLayers(data: RiverShiftGeoJSON): RiverShiftCandidateCounts {
+  const counts: RiverShiftCandidateCounts = { erosion: 0, deposition: 0, newWater: 0, unclassified: 0 };
+  for (const feature of data.features) {
+    const type = riverShiftCandidateType(feature.properties);
+    if (!type) counts.unclassified += 1;
+    else counts[type] += 1;
+  }
+  return counts;
+}
+
+/** Filter only recognized candidate classes; preserve unknown/context features. */
+export function filterRiverShiftCandidateGeoJSON(
+  data: RiverShiftGeoJSON,
+  visibility: RiverShiftCandidateVisibility,
+): RiverShiftGeoJSON {
+  return {
+    ...data,
+    features: data.features.filter((feature) => {
+      const type = riverShiftCandidateType(feature.properties);
+      return type === null || visibility[type];
+    }),
+  };
+}
+
 export function parseRiverShiftReport(value: unknown): RiverShiftReport {
   if (!value || typeof value !== 'object') {
     throw new Error('Result JSON must be an object.');
