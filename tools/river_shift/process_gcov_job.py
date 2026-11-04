@@ -1160,6 +1160,11 @@ def preview_geometry_overlap_metrics(
         "deposition": [],
         "new_water": [],
     }
+    sparse_marker_point_counts: dict[str, int] = {
+        "erosion": 0,
+        "deposition": 0,
+        "new_water": 0,
+    }
     project = Transformer.from_crs("EPSG:4326", analysis_crs, always_xy=True).transform
     for feature in features:
         properties = feature.get("properties") if isinstance(feature, dict) else None
@@ -1170,6 +1175,16 @@ def preview_geometry_overlap_metrics(
         try:
             geographic = shape(geometry_value)
             if geographic.is_empty:
+                continue
+            if properties.get("preview_sparse_marker") is True:
+                if geographic.geom_type == "Point":
+                    sparse_marker_point_counts[layer] += 1
+                elif geographic.geom_type == "MultiPoint":
+                    sparse_marker_point_counts[layer] += len(geographic.geoms)
+                continue
+            # Overlap area/Jaccard is polygon-footprint-only. Sparse marker
+            # points are counted separately and never buffered into area.
+            if geographic.geom_type not in {"Polygon", "MultiPolygon"}:
                 continue
             metric = transform(project, geographic)
             if not metric.is_empty:
@@ -1235,13 +1250,15 @@ def preview_geometry_overlap_metrics(
         "status": "DISPLAY_ONLY_DIAGNOSTIC",
         "method": "projected_geometry_intersection_per_display_class",
         "analysis_crs": analysis_crs.to_string(),
-        "per_class_area_km2": {
+        "per_class_polygon_area_km2": {
             name: area / 1_000_000.0 for name, area in class_area.items()
         },
-        "pairwise": pairwise,
+        "per_class_sparse_marker_points": sparse_marker_point_counts,
+        "pairwise_polygon_footprints": pairwise,
         "warning": (
-            "Preview geometry overlap is not scientific mask overlap. Never use these areas for "
-            "measurements; use full-resolution masks and the candidate_overlap_audit report."
+            "Polygon-footprint overlap is a display-only diagnostic and excludes sparse MultiPoint markers. "
+            "Sparse marker counts are reported separately and are not buffered into area. Never use preview "
+            "areas for measurements; use full-resolution masks and the candidate_overlap_audit report."
         ),
     }
 
