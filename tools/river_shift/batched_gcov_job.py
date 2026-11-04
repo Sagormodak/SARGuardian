@@ -457,7 +457,7 @@ def _run_product_worker() -> int:
     }
     wave_label = "delayed retry wave" if retry_attempt else f"batch {batch_number:02d}/{batch_count:02d}"
     print(
-        f"::group::RiverShift {wave_label} · attempt {attempt_number}/2 · "
+        f"::group::RiverShift {wave_label} · attempt {attempt_number}/4 · "
         f"product {product_index}/{total_products} · {acquisition_date} · {granule_name}",
         flush=True,
     )
@@ -696,15 +696,18 @@ def _batch_rows(prepared: dict[str, Any], batch_number: int) -> list[dict[str, A
 
 
 def _load_product_results(results_dir: Path) -> dict[str, dict[str, Any]]:
+    """Load product receipts from flat first-attempt or wave-scoped retry artifacts."""
     results: dict[str, dict[str, Any]] = {}
     if not results_dir.exists():
         return results
-    for result_path in results_dir.glob("*/worker-result.json"):
+    for result_path in sorted(results_dir.rglob("worker-result.json")):
         try:
             result = json.loads(result_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
         if isinstance(result, dict) and isinstance(result.get("granule_name"), str):
+            # A product enters a later retry wave only after the previous wave failed.
+            # Sorting ensures the latest wave's receipt is authoritative.
             results[result["granule_name"]] = result
     return results
 
@@ -748,7 +751,9 @@ def _product_result_problem(
             or not re.fullmatch(r"[0-9a-f]{64}", digest)
         ):
             continue
-        source = results_dir / name / filename
+        retry_attempt = int(result.get("retry_attempt", 0) or 0)
+        product_root = results_dir / f"wave-{retry_attempt}" if retry_attempt > 0 else results_dir
+        source = product_root / name / filename
         try:
             if source.is_file() and sha256_file(source) == digest:
                 verified.add(filename)
@@ -759,18 +764,20 @@ def _product_result_problem(
     return None
 
 
-def _retry_matrix(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _retry_matrix(rows: list[dict[str, Any]], *, retry_attempt: int = 1) -> dict[str, Any]:
+    if not 1 <= retry_attempt <= 3:
+        raise ValueError("RiverShift retry_attempt must be between 1 and 3.")
     total = len(rows)
     return {
         "include": [
             {
                 "granule_name": row["granule_name"],
                 "acquisition_date": row["acquisition_date"],
-                "batch_number": MAX_BATCHES + 1,
+                "batch_number": MAX_BATCHES + retry_attempt,
                 "batch_count": 1,
                 "product_index": index,
                 "total_products": total,
-                "retry_attempt": 1,
+                "retry_attempt": retry_attempt,
             }
             for index, row in enumerate(rows, start=1)
         ]
@@ -781,16 +788,35 @@ def _select_retry_rows(
     prepared: dict[str, Any],
     first_attempt_results: dict[str, dict[str, Any]],
     first_attempt_dir: Path,
+    *,
+    previous_retry_results: dict[str, dict[str, Any]] | None = None,
+    previous_retry_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
+    """Queue only products without a verified PASS from any earlier attempt."""
     rows = []
+    previous_retry_results = previous_retry_results or {}
     for name in prepared["selected_product_names"]:
         row = {"granule_name": name, "acquisition_date": prepared["date_by_name"][name]}
-        problem = _product_result_problem(
+        first_problem = _product_result_problem(
             prepared, row, first_attempt_results.get(name), first_attempt_dir
         )
-        if problem:
-            row["first_attempt_failure"] = problem
-            rows.append(row)
+        if first_problem is None:
+            continue
+
+        previous_result = previous_retry_results.get(name)
+        previous_problem = None
+        if previous_result is not None and previous_retry_dir is not None:
+            previous_problem = _product_result_problem(
+                prepared, row, previous_result, previous_retry_dir
+            )
+            if previous_problem is None:
+                continue
+
+        row["first_attempt_failure"] = first_problem
+        if previous_problem:
+            row["previous_retry_failure"] = previous_problem
+            row["previous_retry_attempt"] = int(previous_result.get("retry_attempt", 0) or 0)
+        rows.append(row)
     return rows
 
 
@@ -905,13 +931,22 @@ def _prepare_retry_wave() -> None:
     prepared_dir = Path(os.environ.get("RIVERSHIFT_PREPARED_DIR", "prepared"))
     prepared = _read_json(prepared_dir / "prepared.json", "prepared selection")
     first_dir = Path(os.environ.get("RIVERSHIFT_PRODUCT_ARTIFACTS_DIR", "product-artifacts"))
+    retry_dir = Path(os.environ.get("RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR", "retry-product-artifacts"))
+    retry_attempt = int(os.environ.get("RIVERSHIFT_RETRY_ATTEMPT", "1") or 1)
     first_results = _load_product_results(first_dir)
-    retry_rows = _select_retry_rows(prepared, first_results, first_dir)
-    matrix = _retry_matrix(retry_rows)
-    _write_json(Path("retry-plan") / "retry-products.json", {
+    previous_retry_results = _load_product_results(retry_dir)
+    retry_rows = _select_retry_rows(
+        prepared,
+        first_results,
+        first_dir,
+        previous_retry_results=previous_retry_results,
+        previous_retry_dir=retry_dir,
+    )
+    matrix = _retry_matrix(retry_rows, retry_attempt=retry_attempt)
+    _write_json(Path("retry-plan") / f"retry-products-wave-{retry_attempt}.json", {
         "job_id": prepared["job_id"],
         "request_fingerprint": prepared["request_fingerprint"],
-        "retry_attempt": 1,
+        "retry_attempt": retry_attempt,
         "products": retry_rows,
     })
     for row in retry_rows:
@@ -920,14 +955,18 @@ def _prepare_retry_wave() -> None:
             granule_name=row["granule_name"],
             acquisition_date=row["acquisition_date"],
             first_attempt_failure=row["first_attempt_failure"],
-            retry_attempt=1,
+            previous_retry_failure=row.get("previous_retry_failure"),
+            retry_attempt=retry_attempt,
+            runner_refresh=True,
         )
     _log_worker_stage(
         "delayed_retry_plan", "PASS",
         first_attempt_product_count=len(prepared["selected_product_names"]),
+        previously_attempted_retry_count=len(previous_retry_results),
         retry_queue_count=len(retry_rows),
+        retry_attempt=retry_attempt,
         retry_max_parallel=15,
-        retry_policy="one retry wave after every first-attempt batch has completed",
+        retry_policy="up to three delayed retry waves; each wave uses a fresh GitHub-hosted runner",
     )
     retry_matrix_json = json.dumps(matrix, separators=(",", ":"))
     if len(matrix.get("include", [])) != len(retry_rows):
@@ -937,6 +976,7 @@ def _prepare_retry_wave() -> None:
         raise WorkerFailure("RETRY_MATRIX_INVALID", "Retry matrix contains duplicate granule identities.")
     _log_worker_stage(
         "delayed_retry_matrix_output", "PASS",
+        retry_attempt=retry_attempt,
         retry_queue_count=len(retry_rows),
         matrix_include_count=len(matrix["include"]),
         matrix_json_bytes=len(retry_matrix_json.encode("utf-8")),
@@ -945,12 +985,13 @@ def _prepare_retry_wave() -> None:
     _write_output("retry_matrix", retry_matrix_json)
     _write_output("retry_count", str(len(retry_rows)))
     _write_step_summary(
-        "## Delayed retry queue\n\n"
-        f"- First-attempt products: **{len(prepared['selected_product_names'])}**\n"
-        f"- Retry products queued: **{len(retry_rows)}**\n"
-        "- Automatic retry attempts per product: **1**\n"
+        f"## Delayed retry wave {retry_attempt}\n\n"
+        f"- Previously attempted products: **{len(previous_retry_results)}**\n"
+        f"- Products queued for this fresh runner wave: **{len(retry_rows)}**\n"
+        "- Maximum automatic retries per product: **3**\n"
         "- Parallel retry runners: **15 maximum**"
     )
+
 
 
 def _report_retry_wave() -> None:
@@ -960,33 +1001,54 @@ def _report_retry_wave() -> None:
     retry_dir = Path(os.environ.get("RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR", "retry-product-artifacts"))
     first_results = _load_product_results(first_dir)
     retry_results = _load_product_results(retry_dir)
-    retry_rows = _select_retry_rows(prepared, first_results, first_dir)
-    dispatch_status = os.environ.get("RIVERSHIFT_RETRY_DISPATCH_STATUS", "success").strip().lower()
+    original_retry_rows = _select_retry_rows(prepared, first_results, first_dir)
+
+    raw_dispatch = os.environ.get("RIVERSHIFT_RETRY_DISPATCH_STATUSES", "").strip()
+    if raw_dispatch:
+        dispatch_statuses = [value.strip().lower() for value in raw_dispatch.split(",")]
+    else:
+        # Backward compatibility for standalone callers/tests using the original
+        # one-wave status variable. The newer two optional waves default to the
+        # no-queue/success path unless their explicit status is supplied.
+        legacy_status = os.environ.get("RIVERSHIFT_RETRY_DISPATCH_STATUS", "success").strip().lower()
+        dispatch_statuses = [legacy_status, "success", "success"]
+    raw_prepare = os.environ.get("RIVERSHIFT_RETRY_PREPARE_STATUSES", "success,success,success")
+    prepare_statuses = [value.strip().lower() for value in raw_prepare.split(",")]
+    raw_counts = os.environ.get("RIVERSHIFT_RETRY_COUNTS", "1,0,0")
+    retry_counts = [value.strip() for value in raw_counts.split(",")]
+
+    # Wave 1 is required. Waves 2 and 3 may prepare successfully with an empty
+    # queue; their dispatch validators still run and must pass.
+    setup_failures = []
+    for index in range(3):
+        prepare_status = prepare_statuses[index] if index < len(prepare_statuses) else "missing"
+        dispatch_status = dispatch_statuses[index] if index < len(dispatch_statuses) else "missing"
+        try:
+            queue_count = int(retry_counts[index]) if index < len(retry_counts) and retry_counts[index] else -1
+        except ValueError:
+            queue_count = -1
+        if prepare_status != "success":
+            setup_failures.append(f"wave {index + 1} preparation={prepare_status}")
+        elif dispatch_status != "success":
+            setup_failures.append(f"wave {index + 1} matrix validation={dispatch_status}")
+        elif queue_count < 0:
+            setup_failures.append(f"wave {index + 1} retry_count missing or invalid")
+
     passed = 0
     failed = 0
     failure_details: list[tuple[str, str]] = []
-
-    if dispatch_status != "success":
-        failed = max(1, len(retry_rows))
-        failure_details.append(("retry matrix handoff", f"RETRY_DISPATCH_{dispatch_status.upper()}"))
+    if setup_failures:
+        failed = max(1, len(original_retry_rows))
+        failure_details.extend(("retry setup", value) for value in setup_failures)
         _log_worker_stage(
-            "delayed_retry_dispatch", "FAIL",
-            retry_dispatch_status=dispatch_status,
-            queued_retry_count=len(retry_rows),
-            further_automatic_retries=0,
+            "delayed_retry_setup", "FAIL",
+            setup_failures=setup_failures,
+            queued_retry_count=len(original_retry_rows),
+            max_retry_waves=3,
         )
-        for row in retry_rows:
-            _log_worker_stage(
-                "delayed_retry_reconciliation", "FAIL",
-                granule_name=row["granule_name"],
-                acquisition_date=row["acquisition_date"],
-                retry_attempt=1,
-                first_attempt_failure=row["first_attempt_failure"],
-                retry_failure="RETRY_MATRIX_HANDOFF_FAILED",
-                retry_dispatch_status=dispatch_status,
-            )
-    else:
-        for row in retry_rows:
+
+    if not setup_failures:
+        for row in original_retry_rows:
             result = retry_results.get(row["granule_name"])
             problem = _product_result_problem(prepared, row, result, retry_dir)
             if problem is None:
@@ -995,7 +1057,8 @@ def _report_retry_wave() -> None:
                     "delayed_retry_reconciliation", "PASS",
                     granule_name=row["granule_name"],
                     acquisition_date=row["acquisition_date"],
-                    retry_attempt=1,
+                    retry_attempt=int(result.get("retry_attempt", 0) or 0),
+                    runner_refresh=True,
                     source_sha256=result.get("source_sha256"),
                     raster_sha256=result.get("raster_sha256"),
                 )
@@ -1006,19 +1069,22 @@ def _report_retry_wave() -> None:
                     "delayed_retry_reconciliation", "FAIL",
                     granule_name=row["granule_name"],
                     acquisition_date=row["acquisition_date"],
-                    retry_attempt=1,
                     first_attempt_failure=row["first_attempt_failure"],
+                    last_retry_attempt=int((result or {}).get("retry_attempt", 0) or 0),
                     retry_failure=problem,
                     retry_error_message=(result or {}).get("error_message", "Retry result artifact missing or invalid."),
                 )
 
+
     _log_worker_stage(
         "delayed_retry_barrier", "PASS" if failed == 0 else "FAIL",
-        queued=len(retry_rows),
+        original_retry_queue=len(original_retry_rows),
         passed=passed,
         failed=failed,
-        retry_dispatch_status=dispatch_status,
-        retries_per_product=1,
+        retry_dispatch_statuses=dispatch_statuses,
+        retry_counts=retry_counts,
+        max_retry_waves=3,
+        fresh_runner_per_wave=True,
         further_automatic_retries=0,
     )
     sequence = int(os.environ.get("RIVERSHIFT_CALLBACK_SEQUENCE", "0") or 0)
@@ -1032,31 +1098,30 @@ def _report_retry_wave() -> None:
     error_code = None
     error_message = None
     callback_state = "running"
-    callback_stage = "delayed_retry_wave_completed"
-    if dispatch_status != "success":
+    callback_stage = "delayed_retry_waves_completed"
+    if setup_failures:
         callback_state = "failed"
-        callback_stage = "delayed_retry_matrix_handoff_failed"
+        callback_stage = "delayed_retry_setup_failed"
         error_code = "RETRY_MATRIX_HANDOFF_FAILED"
-        error_message = (
-            "GitHub Actions did not validate and hand off the retry matrix to the retry workers; "
-            f"retry_dispatch concluded as {dispatch_status}."
-        )
+        error_message = "One or more retry matrix handoffs for fresh-runner waves could not be prepared: " + "; ".join(setup_failures)
     elif failed:
         callback_state = "failed"
-        callback_stage = "delayed_retry_wave_failed"
+        callback_stage = "delayed_retry_waves_exhausted"
         error_code = "PRODUCT_RETRY_FAILED"
-        error_message = f"{failed} delayed retry product(s) failed or were unverifiable."
+        error_message = (
+            f"{failed} delayed retry product(s) remained unverifiable after up to three fresh-runner retry waves."
+        )
 
     callbacks.send(
         callback_state,
         callback_stage,
         result_summary={
-            "retry_count": len(retry_rows),
+            "retry_count": len(original_retry_rows),
             "retry_success_count": passed,
             "retry_failure_count": failed,
-            "retries_per_product": 1,
-            "further_automatic_retries": 0,
-            "retry_dispatch_status": dispatch_status,
+            "maximum_retry_waves": 3,
+            "fresh_runner_per_wave": True,
+            "retry_dispatch_statuses": dispatch_statuses,
         },
         error_code=error_code,
         error_message=error_message,
@@ -1069,16 +1134,18 @@ def _report_retry_wave() -> None:
         f"| {name} | {reason} |" for name, reason in failure_details[:30]
     ) or "| — | No retry required |"
     _write_step_summary(
-        "## Delayed retry outcome\n\n"
-        f"- Retry dispatch validation: **{dispatch_status}**\n"
-        f"- Queued: **{len(retry_rows)}**\n"
-        f"- Passed: **{passed}**\n"
-        f"- Failed/unverifiable: **{failed}**\n\n"
-        "| Product | Outcome |\n|---|---|\n" + detail_rows
+        "## Fresh-runner retry outcome\n\n"
+        f"- Maximum retry waves: **3**\n"
+        f"- Original retry queue: **{len(original_retry_rows)}**\n"
+        f"- Recovered: **{passed}**\n"
+        f"- Still failed/unverifiable: **{failed}**\n"
+        f"- Dispatch checks: **{', '.join(dispatch_statuses)}**\n\n"
+        "| Product / stage | Final outcome |\n|---|---|\n" + detail_rows
     )
     if callback_state == "failed":
-        print(f"::error::Delayed retry processing failed: {error_code} · {error_message}", flush=True)
-        raise WorkerFailure(error_code or "PRODUCT_RETRY_FAILED", error_message or "Delayed retry wave failed.")
+        print(f"::error::Fresh-runner retry processing failed: {error_code} · {error_message}", flush=True)
+        raise WorkerFailure(error_code or "PRODUCT_RETRY_FAILED", error_message or "Fresh-runner retry waves failed.")
+
 
 def _rebase_exporter_sidecar_for_assembly(
     metadata_path: Path,
@@ -1162,7 +1229,8 @@ def _verify_and_stage_product_results(
     for name, retry_result in retry_results.items():
         if name in expected:
             results[name] = retry_result
-            result_dirs[name] = retry_dir
+            retry_attempt = int(retry_result.get("retry_attempt", 0) or 0)
+            result_dirs[name] = retry_dir / f"wave-{retry_attempt}" if retry_attempt > 0 else retry_dir
     missing = sorted(expected - set(results))
     failures = []
     product_rasters: dict[str, Path] = {}

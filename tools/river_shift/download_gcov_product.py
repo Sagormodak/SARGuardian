@@ -531,7 +531,8 @@ def download_product(product: dict, output_dir: Path) -> dict:
     earthaccess = _load_earthaccess()
 
     token = os.environ.get("EARTHDATA_TOKEN", "").strip()
-    retry_wave = os.environ.get("RIVERSHIFT_RETRY_ATTEMPT", "0").strip() == "1"
+    retry_attempt_number = int(os.environ.get("RIVERSHIFT_RETRY_ATTEMPT", "0").strip() or 0)
+    retry_wave = retry_attempt_number > 0
     auth_mode = "username_password_delayed_retry" if retry_wave and token else (
         "bearer_token" if token else "username_password"
     )
@@ -539,7 +540,7 @@ def download_product(product: dict, output_dir: Path) -> dict:
         "stage": "earthdata_login",
         "status": "START",
         "auth_mode": auth_mode,
-        "workflow_attempt_number": 2 if retry_wave else 1,
+        "workflow_attempt_number": retry_attempt_number + 1,
         "login_attempt_number": 1,
         "delayed_retry_wave": retry_wave,
         "max_transient_attempts": EARTHDATA_LOGIN_MAX_ATTEMPTS,
@@ -550,6 +551,7 @@ def download_product(product: dict, output_dir: Path) -> dict:
         print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
             "stage": "earthdata_login",
             "status": "FAIL",
+            "workflow_attempt_number": retry_attempt_number + 1,
             "auth_mode": auth_mode,
             "error_type": type(exc).__name__,
             "http_status": _http_status_code(exc),
@@ -650,7 +652,7 @@ def download_product(product: dict, output_dir: Path) -> dict:
                     "status": "FAIL",
                     "error_type": type(download_error).__name__,
                     "http_status": denied_status,
-                    "attempt_number": 2 if retry_wave else 1,
+                    "attempt_number": retry_attempt_number + 1,
                     "delayed_retry_wave": retry_wave,
                     "immediate_retry_performed": False,
                     "error_message": _safe_error_message(download_error),

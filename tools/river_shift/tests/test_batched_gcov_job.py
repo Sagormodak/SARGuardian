@@ -201,19 +201,18 @@ def test_workflow_hdf5_checks_are_safe_with_pipefail():
     # pipeline can terminate gdalinfo early and produce SIGPIPE (141) under
     # set -o pipefail even when GDAL has the HDF5 driver installed.
     assert "gdalinfo --formats | grep" not in workflow
-    assert workflow.count('gdal_formats="$(gdalinfo --formats)"') == 6
-    assert workflow.count("grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-' <<< \"$gdal_formats\"") == 5
+    assert workflow.count('gdal_formats="$(gdalinfo --formats)"') == 8
+    assert workflow.count("grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-' <<< \"$gdal_formats\"") == 7
 
 
 def test_retry_job_consumes_only_the_validated_cross_job_matrix():
     repository_root = Path(__file__).resolve().parents[3]
     workflow = (repository_root / ".github" / "workflows" / "river-shift-gcov-process.yml").read_text(encoding="utf-8")
     retry_dispatch = workflow.split("\n  retry_dispatch:\n", 1)[1].split("\n  retry:\n", 1)[0]
-    retry_job = workflow.split("\n  retry:\n", 1)[1].split("\n  retry_status:\n", 1)[0]
+    retry_job = workflow.split("\n  retry:\n", 1)[1].split("\n  retry_prepare_2:\n", 1)[0]
 
-    assert "RIVERSHIFT_RETRY_MATRIX_JSON:" in retry_dispatch
-    assert "RIVERSHIFT_RETRY_COUNT:" in retry_dispatch
-    assert "len(rows) != count" in retry_dispatch
+    assert "validate_retry_matrix.py" in retry_dispatch
+    assert "RIVERSHIFT_EXPECTED_RETRY_ATTEMPT: \"1\"" in retry_dispatch
     assert "needs: [retry_prepare, retry_dispatch]" in retry_job
     assert "needs.retry_prepare.result == 'success'" in retry_job
     assert "needs.retry_dispatch.result == 'success'" in retry_job
@@ -458,14 +457,15 @@ def test_workflow_does_not_mask_product_worker_failures_and_validates_retry_hand
     # preserve the ability to start later batches and the delayed retry wave.
     assert "continue-on-error: true\n    strategy:" not in workflow
     assert "retry_dispatch:" in workflow
-    assert "RIVERSHIFT_RETRY_MATRIX_JSON:" in workflow
-    assert "matrix_include_count=" in workflow
-    assert "needs: [retry_prepare, retry_dispatch]" in workflow
-    assert "needs.retry_prepare.outputs.retry_count != '0'" in workflow
-    assert "fromJSON(needs.retry_prepare.outputs.retry_matrix)" in workflow
-    assert "fromJSON(needs.retry_dispatch.outputs.retry_matrix)" not in workflow
-    expected_status_env = "RIVERSHIFT_RETRY_DISPATCH_STATUS: $" + "{{ needs.retry_dispatch.result }}"
-    assert expected_status_env in workflow
+    assert "validate_retry_matrix.py" in workflow
+    assert "RIVERSHIFT_EXPECTED_RETRY_ATTEMPT:" in workflow
+    assert "retry_prepare_2:" in workflow and "retry_prepare_3:" in workflow
+    assert "retry_dispatch_2:" in workflow and "retry_dispatch_3:" in workflow
+    assert "retry_2:" in workflow and "retry_3:" in workflow
+    assert "RIVERSHIFT_RETRY_DISPATCH_STATUSES:" in workflow
+    assert "needs.retry_dispatch.result" in workflow
+    assert "needs.retry_dispatch_2.result" in workflow
+    assert "needs.retry_dispatch_3.result" in workflow
 
 
 
@@ -814,3 +814,90 @@ def test_assembly_finalization_builds_manifest_before_private_drive_upload(
     assert package_pass < publication_callback < publication_start < upload_start
     assert ("callback", "running", "result_package_assembly") in events
 
+
+
+def test_retry_wave_matrix_uses_wave_specific_attempt_and_batch_identity():
+    first = _retry_matrix([{"granule_name": "NISAR_L2_PR_GCOV_025", "acquisition_date": "2026-07-12"}])
+    second = _retry_matrix([{"granule_name": "NISAR_L2_PR_GCOV_025", "acquisition_date": "2026-07-12"}], retry_attempt=2)
+    third = _retry_matrix([{"granule_name": "NISAR_L2_PR_GCOV_025", "acquisition_date": "2026-07-12"}], retry_attempt=3)
+
+    assert first["include"][0]["retry_attempt"] == 1
+    assert second["include"][0]["retry_attempt"] == 2
+    assert third["include"][0]["retry_attempt"] == 3
+    assert [first["include"][0]["batch_number"], second["include"][0]["batch_number"], third["include"][0]["batch_number"]] == [5, 6, 7]
+
+
+def test_retry_wave_queues_only_products_still_unverified_after_previous_wave(tmp_path):
+    recovered = "NISAR_L2_PR_GCOV_025"
+    still_failed = "NISAR_L2_PR_GCOV_026"
+    prepared = {
+        "job_id": "job-multiwave",
+        "request_fingerprint": "f" * 64,
+        "selected_product_names": [recovered, still_failed],
+        "date_by_name": {recovered: "2026-07-12", still_failed: "2026-07-24"},
+    }
+    first_dir = tmp_path / "first"
+    retry_dir = tmp_path / "retry"
+    for name, observed_date in ((recovered, "2026-07-12"), (still_failed, "2026-07-24")):
+        product_dir = first_dir / name
+        product_dir.mkdir(parents=True)
+        (product_dir / "worker-result.json").write_text(json.dumps({
+            "status": "FAIL",
+            "job_id": "job-multiwave",
+            "request_fingerprint": "f" * 64,
+            "granule_name": name,
+            "acquisition_date": observed_date,
+            "error_code": "DOWNLOAD_FAILED",
+            "files": [],
+        }), encoding="utf-8")
+
+    recovered_dir = retry_dir / "wave-1" / recovered
+    recovered_dir.mkdir(parents=True)
+    required = [
+        f"{recovered}.tif",
+        f"{recovered}.metadata.json",
+        f"{recovered}.download.json",
+        f"{recovered}.gcov_inventory.json",
+    ]
+    files = []
+    for filename in required:
+        payload = filename.encode("utf-8")
+        (recovered_dir / filename).write_bytes(payload)
+        files.append({"name": filename, "sha256": hashlib.sha256(payload).hexdigest()})
+    (recovered_dir / "worker-result.json").write_text(json.dumps({
+        "status": "PASS",
+        "job_id": "job-multiwave",
+        "request_fingerprint": "f" * 64,
+        "granule_name": recovered,
+        "acquisition_date": "2026-07-12",
+        "retry_attempt": 1,
+        "files": files,
+    }), encoding="utf-8")
+
+    failed_dir = retry_dir / "wave-1" / still_failed
+    failed_dir.mkdir(parents=True)
+    (failed_dir / "worker-result.json").write_text(json.dumps({
+        "status": "FAIL",
+        "job_id": "job-multiwave",
+        "request_fingerprint": "f" * 64,
+        "granule_name": still_failed,
+        "acquisition_date": "2026-07-24",
+        "retry_attempt": 1,
+        "error_code": "EARTHDATA_NETWORK_UNREACHABLE",
+        "files": [],
+    }), encoding="utf-8")
+
+    previous = batch_module._load_product_results(retry_dir)
+    queued = _select_retry_rows(
+        prepared,
+        batch_module._load_product_results(first_dir),
+        first_dir,
+        previous_retry_results=previous,
+        previous_retry_dir=retry_dir,
+    )
+
+    assert [row["granule_name"] for row in queued] == [still_failed]
+    assert queued[0]["previous_retry_failure"] == "EARTHDATA_NETWORK_UNREACHABLE"
+    assert queued[0]["previous_retry_attempt"] == 1
+    wave_two = _retry_matrix(queued, retry_attempt=2)
+    assert wave_two["include"][0]["retry_attempt"] == 2

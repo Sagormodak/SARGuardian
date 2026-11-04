@@ -619,7 +619,7 @@ jobs:
 
 
   retry_prepare:
-    name: Prepare delayed retry queue after all first-attempt batches
+    name: Prepare failed products for fresh-runner retry wave 1
     needs: [prepare, batch_1_status, batch_2_status, batch_3_status, batch_4_status]
     if: always() && needs.prepare.result == 'success' && needs.batch_1_status.result == 'success' && needs.batch_2_status.result == 'success' && needs.batch_3_status.result == 'success' && needs.batch_4_status.result == 'success'
     runs-on: ubuntu-24.04
@@ -632,7 +632,9 @@ jobs:
       RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
       RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
       RIVERSHIFT_PREPARED_DIR: prepared
+      RIVERSHIFT_RETRY_ATTEMPT: "1"
       RIVERSHIFT_PRODUCT_ARTIFACTS_DIR: product-artifacts
+      RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR: retry-product-artifacts
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
@@ -649,18 +651,25 @@ jobs:
           pattern: rivershift-product-*
           path: product-artifacts/
           merge-multiple: true
+      - name: Download any earlier retry receipts (none on wave 1)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-retry-wave-*-product-*
+          path: retry-product-artifacts/
+          merge-multiple: true
       - uses: mamba-org/setup-micromamba@v3
         with:
           environment-file: tools/river_shift/environment.yml
           cache-environment: true
           generate-run-shell: true
-      - name: Identify failed or unverifiable products for one delayed retry
+      - name: Queue products not yet recovered
         id: retry
         shell: micromamba-shell {0}
         run: python -u tools/river_shift/batched_gcov_job.py
 
   retry_dispatch:
-    name: Validate retry matrix handoff across GitHub Actions jobs
+    name: Validate retry wave 1 matrix handoff
     needs: retry_prepare
     if: always() && needs.retry_prepare.result == 'success'
     runs-on: ubuntu-24.04
@@ -669,60 +678,20 @@ jobs:
       retry_matrix: ${{ steps.validate.outputs.retry_matrix }}
       retry_count: ${{ steps.validate.outputs.retry_count }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
       - name: Validate exact retry queue and publish verified matrix
         id: validate
         shell: bash
         env:
           RIVERSHIFT_RETRY_MATRIX_JSON: ${{ needs.retry_prepare.outputs.retry_matrix }}
           RIVERSHIFT_RETRY_COUNT: ${{ needs.retry_prepare.outputs.retry_count }}
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          raw = os.environ.get('RIVERSHIFT_RETRY_MATRIX_JSON', '')
-          count_raw = os.environ.get('RIVERSHIFT_RETRY_COUNT', '')
-          if not raw or not count_raw:
-              raise SystemExit('RETRY_MATRIX_HANDOFF_FAILED: retry_prepare job outputs are missing at the job boundary.')
-          try:
-              matrix = json.loads(raw)
-              count = int(count_raw)
-          except (json.JSONDecodeError, ValueError):
-              raise SystemExit('RETRY_MATRIX_HANDOFF_FAILED: retry matrix JSON or retry count is invalid.') from None
-          rows = matrix.get('include') if isinstance(matrix, dict) else None
-          if not isinstance(rows, list) or count < 0 or len(rows) != count:
-              row_count = len(rows) if isinstance(rows, list) else 'invalid'
-              raise SystemExit(f'RETRY_MATRIX_HANDOFF_FAILED: retry_count={count}, matrix_include_count={row_count}.')
-          required = {'granule_name', 'acquisition_date', 'retry_attempt'}
-          seen = set()
-          for row in rows:
-              if not isinstance(row, dict) or not required.issubset(row):
-                  raise SystemExit('RETRY_MATRIX_HANDOFF_FAILED: a retry row is missing required identity fields.')
-              name = row['granule_name']
-              if not isinstance(name, str) or not name or name in seen or row['retry_attempt'] != 1:
-                  raise SystemExit('RETRY_MATRIX_HANDOFF_FAILED: retry matrix contains an invalid or duplicate product identity.')
-              seen.add(name)
-          with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as stream:
-              stream.write(f'retry_matrix={raw}\n')
-              stream.write(f'retry_count={count}\n')
-          Path(os.environ['GITHUB_STEP_SUMMARY']).write_text(
-              '## Retry matrix handoff validation\n\n'
-              f'- retry_prepare count: **{count}**\n'
-              f'- validated matrix rows: **{len(rows)}**\n'
-              '- Identity uniqueness: **PASS**\n'
-              '- Retry attempt cap: **one retry per product**\n',
-              encoding='utf-8',
-          )
-          print(f'RIVERSHIFT_RETRY_MATRIX_HANDOFF=PASS count={count}', flush=True)
-          PY
+          RIVERSHIFT_EXPECTED_RETRY_ATTEMPT: "1"
+        run: python -u tools/river_shift/validate_retry_matrix.py
 
   retry:
-    name: Delayed retry · product ${{ matrix.product_index }}/${{ matrix.total_products }}
-    # Use retry_prepare's canonical outputs for the matrix. retry_dispatch remains
-    # a required validation barrier, but the retry workers do not depend on a
-    # second job-output serialization hop that can silently evaluate as empty.
+    name: Delayed retry wave 1 · product ${{ matrix.product_index }}/${{ matrix.total_products }}
     needs: [retry_prepare, retry_dispatch]
     if: >-
       ${{ !cancelled()
@@ -745,9 +714,9 @@ jobs:
       RIVERSHIFT_BATCH_COUNT: ${{ matrix.batch_count }}
       RIVERSHIFT_PRODUCT_INDEX: ${{ matrix.product_index }}
       RIVERSHIFT_TOTAL_PRODUCTS: ${{ matrix.total_products }}
-      RIVERSHIFT_RETRY_ATTEMPT: "1"
+      RIVERSHIFT_RETRY_ATTEMPT: ${{ matrix.retry_attempt }}
       RIVERSHIFT_PREPARED_DIR: prepared
-      RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output
+      RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output/wave-${{ matrix.retry_attempt }}
       EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
       EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
       EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
@@ -765,7 +734,7 @@ jobs:
           environment-file: tools/river_shift/environment.yml
           cache-environment: true
           generate-run-shell: true
-      - name: Verify retry runner HDF5 driver
+      - name: Verify this fresh runner's HDF5 driver
         shell: micromamba-shell {0}
         run: |
           set -euo pipefail
@@ -776,22 +745,344 @@ jobs:
             exit 1
           fi
           python -c "import rasterio, earthaccess; print('RIVERSHIFT_RETRY_RUNTIME=PASS')"
-      - name: Re-download, re-inspect, and re-process this failed product once
+      - name: Back off before re-establishing Earthdata connections
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RIVERSHIFT_RETRY_ATTEMPT" in
+            1) delay_seconds=15 ;;
+            2) delay_seconds=30 ;;
+            3) delay_seconds=60 ;;
+            *) echo "::error::Unexpected retry attempt."; exit 1 ;;
+          esac
+          echo "Fresh runner wave $RIVERSHIFT_RETRY_ATTEMPT will start a new Earthdata authentication and download session after $delay_seconds seconds."
+          sleep "$delay_seconds"
+      - name: Re-authenticate, re-download and re-process this still-failed product
         shell: micromamba-shell {0}
         run: python -u tools/river_shift/batched_gcov_job.py
-      - name: Retain delayed retry COG and provenance receipt
+      - name: Retain this wave's COG and provenance receipt
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rivershift-retry-product-${{ matrix.granule_name }}
+          name: rivershift-retry-wave-${{ matrix.retry_attempt }}-product-${{ matrix.granule_name }}
+          path: product-output/
+          if-no-files-found: warn
+          retention-days: 1
+          compression-level: 1
+
+  retry_prepare_2:
+    name: Prepare failed products for fresh-runner retry wave 2
+    needs: [retry_prepare, retry_dispatch, retry]
+    if: >-
+      ${{ !cancelled()
+          && needs.retry_prepare.result == 'success'
+          && needs.retry_dispatch.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      retry_matrix: ${{ steps.retry.outputs.retry_matrix }}
+      retry_count: ${{ steps.retry.outputs.retry_count }}
+    env:
+      RIVERSHIFT_WORKER_PHASE: prepare-retry
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_RETRY_ATTEMPT: "2"
+      RIVERSHIFT_PREPARED_DIR: prepared
+      RIVERSHIFT_PRODUCT_ARTIFACTS_DIR: product-artifacts
+      RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR: retry-product-artifacts
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rivershift-prepared-${{ inputs.job_id }}
+          path: prepared/
+      - name: Download all first-attempt product receipts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-product-*
+          path: product-artifacts/
+          merge-multiple: true
+      - name: Download every previous retry wave result
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-retry-wave-*-product-*
+          path: retry-product-artifacts/
+          merge-multiple: true
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+      - name: Queue only products still failing after previous attempts
+        id: retry
+        shell: micromamba-shell {0}
+        run: python -u tools/river_shift/batched_gcov_job.py
+
+  retry_dispatch_2:
+    name: Validate retry wave 2 matrix handoff
+    needs: retry_prepare_2
+    if: always() && needs.retry_prepare_2.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      retry_matrix: ${{ steps.validate.outputs.retry_matrix }}
+      retry_count: ${{ steps.validate.outputs.retry_count }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Validate exact retry queue and publish verified matrix
+        id: validate
+        shell: bash
+        env:
+          RIVERSHIFT_RETRY_MATRIX_JSON: ${{ needs.retry_prepare_2.outputs.retry_matrix }}
+          RIVERSHIFT_RETRY_COUNT: ${{ needs.retry_prepare_2.outputs.retry_count }}
+          RIVERSHIFT_EXPECTED_RETRY_ATTEMPT: "2"
+        run: python -u tools/river_shift/validate_retry_matrix.py
+
+  retry_2:
+    name: Delayed retry wave 2 · product ${{ matrix.product_index }}/${{ matrix.total_products }}
+    needs: [retry_prepare_2, retry_dispatch_2]
+    if: >-
+      ${{ !cancelled()
+          && needs.retry_prepare_2.result == 'success'
+          && needs.retry_dispatch_2.result == 'success'
+          && needs.retry_prepare_2.outputs.retry_count != '0' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.retry_prepare_2.outputs.retry_matrix) }}
+    env:
+      RIVERSHIFT_WORKER_PHASE: product
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_GRANULE_NAME: ${{ matrix.granule_name }}
+      RIVERSHIFT_ACQUISITION_DATE: ${{ matrix.acquisition_date }}
+      RIVERSHIFT_BATCH_NUMBER: ${{ matrix.batch_number }}
+      RIVERSHIFT_BATCH_COUNT: ${{ matrix.batch_count }}
+      RIVERSHIFT_PRODUCT_INDEX: ${{ matrix.product_index }}
+      RIVERSHIFT_TOTAL_PRODUCTS: ${{ matrix.total_products }}
+      RIVERSHIFT_RETRY_ATTEMPT: ${{ matrix.retry_attempt }}
+      RIVERSHIFT_PREPARED_DIR: prepared
+      RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output/wave-${{ matrix.retry_attempt }}
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rivershift-prepared-${{ inputs.job_id }}
+          path: prepared/
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+      - name: Verify this fresh runner's HDF5 driver
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          gdalinfo --version
+          gdal_formats="$(gdalinfo --formats)"
+          if ! grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-' <<< "$gdal_formats"; then
+            echo "::error::Required GDAL HDF5 driver is unavailable."
+            exit 1
+          fi
+          python -c "import rasterio, earthaccess; print('RIVERSHIFT_RETRY_RUNTIME=PASS')"
+      - name: Back off before re-establishing Earthdata connections
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RIVERSHIFT_RETRY_ATTEMPT" in
+            1) delay_seconds=15 ;;
+            2) delay_seconds=30 ;;
+            3) delay_seconds=60 ;;
+            *) echo "::error::Unexpected retry attempt."; exit 1 ;;
+          esac
+          echo "Fresh runner wave $RIVERSHIFT_RETRY_ATTEMPT will start a new Earthdata authentication and download session after $delay_seconds seconds."
+          sleep "$delay_seconds"
+      - name: Re-authenticate, re-download and re-process this still-failed product
+        shell: micromamba-shell {0}
+        run: python -u tools/river_shift/batched_gcov_job.py
+      - name: Retain this wave's COG and provenance receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rivershift-retry-wave-${{ matrix.retry_attempt }}-product-${{ matrix.granule_name }}
+          path: product-output/
+          if-no-files-found: warn
+          retention-days: 1
+          compression-level: 1
+
+  retry_prepare_3:
+    name: Prepare failed products for fresh-runner retry wave 3
+    needs: [retry_prepare_2, retry_dispatch_2, retry_2]
+    if: >-
+      ${{ !cancelled()
+          && needs.retry_prepare_2.result == 'success'
+          && needs.retry_dispatch_2.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      retry_matrix: ${{ steps.retry.outputs.retry_matrix }}
+      retry_count: ${{ steps.retry.outputs.retry_count }}
+    env:
+      RIVERSHIFT_WORKER_PHASE: prepare-retry
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_RETRY_ATTEMPT: "3"
+      RIVERSHIFT_PREPARED_DIR: prepared
+      RIVERSHIFT_PRODUCT_ARTIFACTS_DIR: product-artifacts
+      RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR: retry-product-artifacts
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rivershift-prepared-${{ inputs.job_id }}
+          path: prepared/
+      - name: Download all first-attempt product receipts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-product-*
+          path: product-artifacts/
+          merge-multiple: true
+      - name: Download every previous retry wave result
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-retry-wave-*-product-*
+          path: retry-product-artifacts/
+          merge-multiple: true
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+      - name: Queue only products still failing after previous attempts
+        id: retry
+        shell: micromamba-shell {0}
+        run: python -u tools/river_shift/batched_gcov_job.py
+
+  retry_dispatch_3:
+    name: Validate retry wave 3 matrix handoff
+    needs: retry_prepare_3
+    if: always() && needs.retry_prepare_3.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      retry_matrix: ${{ steps.validate.outputs.retry_matrix }}
+      retry_count: ${{ steps.validate.outputs.retry_count }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Validate exact retry queue and publish verified matrix
+        id: validate
+        shell: bash
+        env:
+          RIVERSHIFT_RETRY_MATRIX_JSON: ${{ needs.retry_prepare_3.outputs.retry_matrix }}
+          RIVERSHIFT_RETRY_COUNT: ${{ needs.retry_prepare_3.outputs.retry_count }}
+          RIVERSHIFT_EXPECTED_RETRY_ATTEMPT: "3"
+        run: python -u tools/river_shift/validate_retry_matrix.py
+
+  retry_3:
+    name: Delayed retry wave 3 · product ${{ matrix.product_index }}/${{ matrix.total_products }}
+    needs: [retry_prepare_3, retry_dispatch_3]
+    if: >-
+      ${{ !cancelled()
+          && needs.retry_prepare_3.result == 'success'
+          && needs.retry_dispatch_3.result == 'success'
+          && needs.retry_prepare_3.outputs.retry_count != '0' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix: ${{ fromJSON(needs.retry_prepare_3.outputs.retry_matrix) }}
+    env:
+      RIVERSHIFT_WORKER_PHASE: product
+      RIVERSHIFT_JOB_ID: ${{ inputs.job_id }}
+      RIVERSHIFT_REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+      RIVERSHIFT_GRANULE_NAME: ${{ matrix.granule_name }}
+      RIVERSHIFT_ACQUISITION_DATE: ${{ matrix.acquisition_date }}
+      RIVERSHIFT_BATCH_NUMBER: ${{ matrix.batch_number }}
+      RIVERSHIFT_BATCH_COUNT: ${{ matrix.batch_count }}
+      RIVERSHIFT_PRODUCT_INDEX: ${{ matrix.product_index }}
+      RIVERSHIFT_TOTAL_PRODUCTS: ${{ matrix.total_products }}
+      RIVERSHIFT_RETRY_ATTEMPT: ${{ matrix.retry_attempt }}
+      RIVERSHIFT_PREPARED_DIR: prepared
+      RIVERSHIFT_PRODUCT_OUTPUT_DIR: product-output/wave-${{ matrix.retry_attempt }}
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rivershift-prepared-${{ inputs.job_id }}
+          path: prepared/
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+      - name: Verify this fresh runner's HDF5 driver
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          gdalinfo --version
+          gdal_formats="$(gdalinfo --formats)"
+          if ! grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-' <<< "$gdal_formats"; then
+            echo "::error::Required GDAL HDF5 driver is unavailable."
+            exit 1
+          fi
+          python -c "import rasterio, earthaccess; print('RIVERSHIFT_RETRY_RUNTIME=PASS')"
+      - name: Back off before re-establishing Earthdata connections
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RIVERSHIFT_RETRY_ATTEMPT" in
+            1) delay_seconds=15 ;;
+            2) delay_seconds=30 ;;
+            3) delay_seconds=60 ;;
+            *) echo "::error::Unexpected retry attempt."; exit 1 ;;
+          esac
+          echo "Fresh runner wave $RIVERSHIFT_RETRY_ATTEMPT will start a new Earthdata authentication and download session after $delay_seconds seconds."
+          sleep "$delay_seconds"
+      - name: Re-authenticate, re-download and re-process this still-failed product
+        shell: micromamba-shell {0}
+        run: python -u tools/river_shift/batched_gcov_job.py
+      - name: Retain this wave's COG and provenance receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rivershift-retry-wave-${{ matrix.retry_attempt }}-product-${{ matrix.granule_name }}
           path: product-output/
           if-no-files-found: warn
           retention-days: 1
           compression-level: 1
 
   retry_status:
-    name: Reconcile the single delayed retry wave
-    needs: [prepare, batch_1_status, batch_2_status, batch_3_status, batch_4_status, retry_prepare, retry_dispatch, retry]
+    name: Reconcile all fresh-runner retry waves
+    needs: [prepare, batch_1_status, batch_2_status, batch_3_status, batch_4_status, retry_prepare, retry_dispatch, retry, retry_prepare_2, retry_dispatch_2, retry_2, retry_prepare_3, retry_dispatch_3, retry_3]
     if: always() && needs.retry_prepare.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -804,7 +1095,12 @@ jobs:
       RIVERSHIFT_CALLBACK_URL: ${{ inputs.callback_url }}
       RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
       RIVERSHIFT_CALLBACK_SEQUENCE: ${{ needs.batch_4_status.outputs.callback_sequence }}
-      RIVERSHIFT_RETRY_DISPATCH_STATUS: ${{ needs.retry_dispatch.result }}
+      RIVERSHIFT_RETRY_DISPATCH_STATUSES: >-
+        ${{ needs.retry_dispatch.result }},${{ needs.retry_dispatch_2.result }},${{ needs.retry_dispatch_3.result }}
+      RIVERSHIFT_RETRY_PREPARE_STATUSES: >-
+        ${{ needs.retry_prepare.result }},${{ needs.retry_prepare_2.result }},${{ needs.retry_prepare_3.result }}
+      RIVERSHIFT_RETRY_COUNTS: >-
+        ${{ needs.retry_prepare.outputs.retry_count }},${{ needs.retry_prepare_2.outputs.retry_count }},${{ needs.retry_prepare_3.outputs.retry_count }}
       RIVERSHIFT_PREPARED_DIR: prepared
       RIVERSHIFT_PRODUCT_ARTIFACTS_DIR: product-artifacts
       RIVERSHIFT_RETRY_PRODUCT_ARTIFACTS_DIR: retry-product-artifacts
@@ -824,11 +1120,11 @@ jobs:
           pattern: rivershift-product-*
           path: product-artifacts/
           merge-multiple: true
-      - name: Download delayed retry results
+      - name: Download all fresh-runner retry wave results
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          pattern: rivershift-retry-product-*
+          pattern: rivershift-retry-wave-*-product-*
           path: retry-product-artifacts/
           merge-multiple: true
       - uses: mamba-org/setup-micromamba@v3
@@ -836,7 +1132,7 @@ jobs:
           environment-file: tools/river_shift/environment.yml
           cache-environment: true
           generate-run-shell: true
-      - name: Report delayed retry outcomes and publish callback sequence
+      - name: Reconcile latest verified result for every originally failed product
         id: report
         shell: micromamba-shell {0}
         run: python -u tools/river_shift/batched_gcov_job.py
@@ -898,7 +1194,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          pattern: rivershift-retry-product-*
+          pattern: rivershift-retry-wave-*-product-*
           path: retry-product-artifacts/
           merge-multiple: true
       - uses: mamba-org/setup-micromamba@v3
