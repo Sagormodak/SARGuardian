@@ -310,7 +310,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
   const hasCandidateOverlaySource = Boolean(activeJobPreview?.changeLayer || verifiedGeoJSONFiles.length);
   const allCandidateLayersVisible = showErosionOverlay && showDepositionOverlay && showNewWaterOverlay;
   const hasObservedWaterFrames = Boolean(currentTimeSeriesFrame || jobTimeSeriesFrames.length);
-  const hasVerifiedOverlay = Boolean(!hasJobPreviewOverlay && (currentTimeSeriesFrame || verifiedGeoJSONFiles.length));
+  const hasVerifiedOverlay = Boolean(!hasJobPreviewOverlay && ((currentTimeSeriesFrame && showObservedWaterExtent) || verifiedGeoJSONFiles.length));
 
   useEffect(() => {
     if (!user) {
@@ -1188,7 +1188,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
             <div><strong>Optional independent agency comparison</strong><span>Copernicus Sentinel-2 L2A can be compared with a supplied NISAR water mask using clear-sky SCL and B03/B11 MNDWI. This optional screen is not run for this result unless a comparison report is attached, and it is not ground truth.</span></div>
           </div>
           {hasVerifiedOverlay && <p className="rs-muted">Verified layer(s) are drawn; each GeoJSON SHA-256 matches the loaded report. Candidate classes require scientific interpretation and are not field-confirmed land change.</p>}
-          {hasJobPreviewOverlay && !hasVerifiedOverlay && <p className="rs-warning-inline">Provisional map preview is drawn from the checksum-bound full-resolution binary masks using lower-resolution occupancy footprints. The map is for visual orientation only; full-resolution masks and scientific measurements remain authoritative and PROVISIONAL.</p>}
+          {hasJobPreviewOverlay && !hasVerifiedOverlay && <p className="rs-warning-inline">Provisional map preview is derived from checksum-bound full-resolution masks using lower-resolution occupancy footprints. Different classes can appear to overlap at preview scale even when their full-resolution masks do not. The map is for visual orientation only; full-resolution masks and measurements remain authoritative and PROVISIONAL.</p>}
           {report && geoJSONFiles.length > 0 && !hasVerifiedOverlay && <p className="rs-warning-inline" role="status">Loaded GeoJSON is not drawn: the report is not VERIFIED, the checksum does not match, or the complete time-series layer set is missing.</p>}
         </section>
         {!report && !hasLiveJobResult && <div className="rs-empty-state">
