@@ -165,10 +165,7 @@ def test_common_support_fraction_rejects_grid_mismatch(tmp_path) -> None:
 
 def test_independent_reference_alignment_uses_nearest_neighbour_and_preserves_nodata(tmp_path) -> None:
     prediction = np.zeros((4, 4), dtype=np.uint8)
-    reference = np.asarray(
-        [[1, 1, 0, 0], [1, 1, 0, 0], [0, 0, 255, 255], [0, 0, 255, 255]],
-        dtype=np.uint8,
-    )
+    reference = np.asarray([[1, 0], [0, 255]], dtype=np.uint8)
     prediction_path = tmp_path / "prediction.tif"
     reference_path = tmp_path / "reference-source.tif"
     aligned_path = tmp_path / "reference-aligned.tif"
@@ -176,7 +173,7 @@ def test_independent_reference_alignment_uses_nearest_neighbour_and_preserves_no
     _write_mask(
         reference_path,
         reference,
-        transform=from_origin(500000, 2700000, 10, 10),
+        transform=from_origin(500000, 2700000, 20, 20),
     )
 
     details = runner._align_reference_to_prediction(prediction_path, reference_path, aligned_path)
