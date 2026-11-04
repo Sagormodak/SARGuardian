@@ -289,3 +289,20 @@ def test_reference_mosaic_rejects_mixed_absolute_orbits(tmp_path):
         assert "not from the same spacecraft, orbit direction and relative track" in str(exc)
     else:
         raise AssertionError("Mismatched absolute orbits must not be mosaicked")
+
+
+def test_unknown_v1_wtr_class_codes_are_rejected(tmp_path):
+    prediction = _write_wtr(tmp_path / "prediction.tif", [[1, 0], [1, 0]])
+    source = _write_wtr(tmp_path / "unknown-class.tif", [[1, 2], [0, 1]])
+    row = {"tile_id": "45RVM", "observation_date": "2026-08-18", "filename": source.name}
+    try:
+        opera._build_reference_on_nisar_grid(
+            prediction_path=prediction,
+            wtr_paths=[source],
+            selected_records=[row],
+            output_path=tmp_path / "reference.tif",
+        )
+    except opera.OperaReferenceError as exc:
+        assert "Unexpected OPERA WTR classes" in str(exc)
+    else:
+        raise AssertionError("Undocumented WTR class codes must not enter the reference")
