@@ -733,6 +733,31 @@ def test_assembly_finalization_builds_manifest_before_private_drive_upload(
         elif script in {"run_flood_analysis.py", "run_morphology_analysis.py"}:
             filename = "river_shift_result.json"
             payload = {"quality": {"status": "PASS"}, "metrics": {}}
+            import numpy as np
+            import rasterio
+            from rasterio.transform import from_origin
+
+            def write_test_mask(name, positive_cell):
+                values = np.zeros((4, 4), dtype=np.uint8)
+                values[positive_cell] = 1
+                with rasterio.open(
+                    output_dir / name,
+                    "w",
+                    driver="GTiff",
+                    height=4,
+                    width=4,
+                    count=1,
+                    dtype="uint8",
+                    crs="EPSG:32646",
+                    transform=from_origin(500000, 2500000, 10, 10),
+                ) as target:
+                    target.write(values, 1)
+
+            if script == "run_flood_analysis.py":
+                write_test_mask("newly_water_covered_mask.tif", (2, 2))
+            else:
+                write_test_mask("erosion_candidate_mask.tif", (0, 0))
+                write_test_mask("deposition_candidate_mask.tif", (3, 3))
         else:
             raise AssertionError(f"Unexpected assembly processing script: {script}")
         (output_dir / filename).write_text(json.dumps(payload), encoding="utf-8")
@@ -740,7 +765,30 @@ def test_assembly_finalization_builds_manifest_before_private_drive_upload(
     def fake_create_web_previews(work_dir, *_args):
         preview = work_dir / "outputs" / "map" / "river_change_candidates_preview.geojson"
         preview.parent.mkdir(parents=True, exist_ok=True)
-        preview.write_text(json.dumps({"type": "FeatureCollection", "features": []}), encoding="utf-8")
+        preview.write_text(json.dumps({
+            "type": "FeatureCollection",
+            "features": [],
+            "river_shift_preview": {
+                "preview_geometry_overlap": {
+                    "status": "DISPLAY_ONLY_DIAGNOSTIC",
+                    "analysis_crs": "EPSG:32646",
+                    "pairwise": {
+                        "erosion__deposition": {
+                            "intersection_area_km2": 0.0,
+                            "jaccard": 0.0,
+                        },
+                        "erosion__new_water": {
+                            "intersection_area_km2": 0.0,
+                            "jaccard": 0.0,
+                        },
+                        "deposition__new_water": {
+                            "intersection_area_km2": 0.0,
+                            "jaccard": 0.0,
+                        },
+                    },
+                },
+            },
+        }), encoding="utf-8")
         return [{
             "path": preview.relative_to(work_dir).as_posix(),
             "sha256": hashlib.sha256(preview.read_bytes()).hexdigest(),
@@ -806,6 +854,8 @@ def test_assembly_finalization_builds_manifest_before_private_drive_upload(
         assert all(item.get("drive_file_id") for item in artifacts)
         assert ("log", "private_result_publication", "PASS") in events
         assert ("upload", "PASS") in events
+        assert summary["preview_geometry_overlap"]["status"] == "DISPLAY_ONLY_DIAGNOSTIC"
+        assert summary["candidate_overlap_audit"]["status"] == "COMPUTED_DIAGNOSTIC_ONLY"
 
     package_pass = events.index(("log", "result_package_assembly", "PASS"))
     publication_callback = events.index(("callback", "running", "private_result_publication"))

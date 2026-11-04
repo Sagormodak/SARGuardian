@@ -48,6 +48,7 @@ from process_gcov_job import (
     sha256_file,
 )
 from drive_upload_adapter import DriveUploadError, upload_validated_results
+from river_shift.overlap_audit import audit_candidate_mask_overlap
 
 
 BATCH_SIZE = 15
@@ -1508,6 +1509,37 @@ def _assemble_job(
     for label, directory in (("time-series", time_dir), ("flood", flood_dir), ("morphology", morphology_dir)):
         inventory.extend(_copy_result_files([(label, directory)], output_root))
 
+    qa_dir = output_root / "qa"
+    overlap_audit_path = qa_dir / "candidate_overlap_audit.json"
+    try:
+        candidate_overlap_audit = audit_candidate_mask_overlap(
+            {
+                "erosion": morphology_dir / "erosion_candidate_mask.tif",
+                "deposition": morphology_dir / "deposition_candidate_mask.tif",
+                "new_water": flood_dir / "newly_water_covered_mask.tif",
+            },
+            overlap_audit_path,
+            comparison_window=selection.get("comparison_window") or analysis_window,
+        )
+    except (OSError, ValueError) as exc:
+        detail = str(exc).strip() or type(exc).__name__
+        _log_worker_stage("candidate_overlap_audit", "FAIL", error=detail[:240])
+        raise WorkerFailure(
+            "CANDIDATE_OVERLAP_AUDIT_FAILED",
+            f"Full-resolution candidate-mask overlap QA failed: {detail[:240]}",
+        ) from None
+    inventory.append({
+        "path": overlap_audit_path.relative_to(work_dir).as_posix(),
+        "sha256": sha256_file(overlap_audit_path),
+    })
+    _log_worker_stage(
+        "candidate_overlap_audit", "PASS",
+        audit_status=candidate_overlap_audit["status"],
+        pairwise=candidate_overlap_audit["pairwise"],
+        triple_overlap_pixels=candidate_overlap_audit["triple_overlap_pixels_on_common_support"],
+        output_sha256=sha256_file(overlap_audit_path),
+    )
+
     provenance_dir = output_root / "provenance"
     provenance_dir.mkdir(parents=True, exist_ok=True)
     for source_name, target_name in (
@@ -1546,6 +1578,19 @@ def _assemble_job(
     inventory.extend(preview_layers)
     inventory.append({"path": time_report_path.relative_to(work_dir).as_posix(), "sha256": sha256_file(time_report_path)})
 
+    combined_preview_path = output_root / "map" / "river_change_candidates_preview.geojson"
+    combined_preview = _read_json(combined_preview_path, "combined candidate map preview")
+    preview_metadata = combined_preview.get("river_shift_preview")
+    preview_geometry_overlap = (
+        preview_metadata.get("preview_geometry_overlap")
+        if isinstance(preview_metadata, dict) else None
+    )
+    if not isinstance(preview_geometry_overlap, dict):
+        raise WorkerFailure(
+            "PREVIEW_OVERLAP_AUDIT_MISSING",
+            "The combined candidate preview is missing its projected preview-geometry overlap diagnostic.",
+        )
+
     report_digest = sha256_file(time_report_path)
     report_payload = _read_json(time_report_path, "time-series preview report")
     flood_result = _read_json(flood_dir / "river_shift_result.json", "flood result")
@@ -1570,6 +1615,13 @@ def _assemble_job(
         "threshold_db": report_payload["method"].get("threshold_db"),
         "time_series_report_sha256": report_digest,
         "map_preview": "outputs/map/river_change_candidates_preview.geojson",
+        "candidate_overlap_audit": {
+            "path": "outputs/qa/candidate_overlap_audit.json",
+            "status": candidate_overlap_audit["status"],
+            "pairwise": candidate_overlap_audit["pairwise"],
+            "report_sha256": sha256_file(overlap_audit_path),
+        },
+        "preview_geometry_overlap": preview_geometry_overlap,
         "warnings": [
             "NISAR observations occur on actual acquisition dates; no daily raster observations or interpolation were created.",
             "Riverbank erosion and deposition are provisional radar-derived candidates, not field-confirmed changes.",
