@@ -1,4 +1,5 @@
 name: RiverShift retained-run OPERA DSWx-S1 SAR cross-check
+# Also trigger when this retained-reference workflow itself is corrected.
 
 run-name: RiverShift OPERA DSWx-S1 · run ${{ inputs.source_run_id || '41803576163' }}
 
@@ -8,6 +9,7 @@ on:
       - main
     paths:
       - ".github/run-triggers/rivershift-opera-dswx-s1-run36-20261104"
+      - ".github/workflows/river-shift-opera-dswx-s1-retained-replay.yml"
   workflow_dispatch:
     inputs:
       source_run_id:

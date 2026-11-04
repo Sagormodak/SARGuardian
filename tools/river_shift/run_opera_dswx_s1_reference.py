@@ -47,14 +47,14 @@ RTC_FILENAME_RE = re.compile(
     r"^OPERA_L2_RTC-S1_(?P<burst>T[0-9]{3}-[0-9]{6}-IW[0-9])_"
     r"(?P<sensing>[0-9]{8}T[0-9]{6}Z)_"
     r"(?P<generated>[0-9]{8}T[0-9]{6}Z)_"
-    r"(?P<platform>S1[AB])_(?P<pixel_spacing>[0-9]+)_"
+    r"(?P<platform>S1[ABC])_(?P<pixel_spacing>[0-9]+)_"
     r"v(?P<version>[0-9]+\.[0-9]+)_(?P<layer>VV|VH|MASK)\.tif$",
     re.IGNORECASE,
 )
 CMR_UMM_GRANULE_SEARCH_URL = "https://cmr.earthdata.nasa.gov/search/granules.umm_json_v1_6_7"
 CMR_UMM_ACCEPT = "application/vnd.nasa.cmr.umm_results+json; version=1.6.7"
 CMR_PAGE_SIZE = 2000
-PRODUCT_SPEC = "OPERA DSWx-S1A/B Product Specification v1.0.0, JPL D-108761 Rev A"
+PRODUCT_SPEC = "OPERA DSWx-S1 Product Specification v1.0.0, JPL D-108761 Rev A; V1 catalogue granules include Sentinel-1A, Sentinel-1B and Sentinel-1C inputs"
 DATASET_URL = "https://podaac.jpl.nasa.gov/dataset/OPERA_L3_DSWX-S1_V1"
 MAX_REFERENCE_BYTES = 250_000_000
 FILL = 255
@@ -62,7 +62,7 @@ FILENAME_RE = re.compile(
     r"^OPERA_L3_DSWx-S1_T(?P<tile>[0-9]{2}[A-Z]{3})_"
     r"(?P<sensing>[0-9]{8}T[0-9]{6}Z)_"
     r"(?P<generated>[0-9]{8}T[0-9]{6}Z)_"
-    r"(?P<platform>S1[AB])_(?P<pixel_spacing>[0-9]+)_"
+    r"(?P<platform>S1[ABC])_(?P<pixel_spacing>[0-9]+)_"
     r"v(?P<version>[0-9]+\.[0-9]+)_B(?P<layer>[0-9]{2})_"
     r"(?P<layer_name>[A-Z0-9]+)\.tif$",
     re.IGNORECASE,

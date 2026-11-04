@@ -35,10 +35,10 @@ def _write_wtr(path, values, *, transform=None, tags=None):
     return path
 
 
-def _name(tile, sensing, generated, layer="WTR", version="1.0"):
+def _name(tile, sensing, generated, layer="WTR", version="1.0", platform="S1A"):
     return (
         f"OPERA_L3_DSWx-S1_T{tile}_{sensing}_{generated}_"
-        f"S1A_30_v{version}_B01_{layer}.tif"
+        f"{platform}_30_v{version}_B01_{layer}.tif"
     )
 
 
@@ -56,6 +56,28 @@ def test_filename_metadata_uses_sensing_time_not_generation_time():
     assert result["layer_name"] == "WTR"
     assert result["platform"] == "S1A"
     assert opera._file_metadata(name.replace("_WTR.tif", "_BWTR.tif"))["layer_name"] == "BWTR"
+
+
+def test_filename_metadata_accepts_live_catalog_sentinel1c_granule():
+    # Exact platform/date/generation tuple observed in the NASA/JPL PO.DAAC
+    # virtual directory for 2026-08-18. The WTR asset is linked as a COG.
+    name = _name(
+        "46UCG",
+        "20260818T001104Z",
+        "20260818T131526Z",
+        platform="S1C",
+    )
+    result = opera._file_metadata(
+        "https://archive.podaac.earthdata.nasa.gov/podaac-ops-cumulus-protected/"
+        + name
+    )
+    assert result is not None
+    assert result["tile_id"] == "46UCG"
+    assert result["observation_date"] == "2026-08-18"
+    assert result["generation_time_utc"] == "2026-08-18T13:15:26Z"
+    assert result["platform"] == "S1C"
+    assert result["layer_number"] == 1
+    assert result["layer_name"] == "WTR"
 
 
 def test_wtr_reference_labels_only_open_water_and_not_water():
@@ -572,6 +594,18 @@ def test_rtc_filename_metadata_parses_burst_and_layer():
     assert parsed["pixel_spacing_m"] == 30
     assert parsed["layer_name"] == "VV"
     assert opera._rtc_file_metadata(base.replace("_VV.tif", "_BROWSE.png")) is None
+
+
+def test_rtc_filename_metadata_accepts_sentinel1c_platform():
+    filename = (
+        "OPERA_L2_RTC-S1_T069-147170-IW1_20260818T232134Z_"
+        "20260819T010203Z_S1C_30_v1.0_VV.tif"
+    )
+    parsed = opera._rtc_file_metadata(filename)
+    assert parsed is not None
+    assert parsed["platform"] == "S1C"
+    assert parsed["layer_name"] == "VV"
+    assert parsed["observation_date"] == "2026-08-18"
 
 
 def test_rtc_inventory_discovers_same_aoi_sentinel1_bursts_without_water_labels(monkeypatch):
