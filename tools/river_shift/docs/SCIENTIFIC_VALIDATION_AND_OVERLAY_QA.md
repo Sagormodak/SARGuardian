@@ -49,7 +49,7 @@ Erosion and deposition are mutually exclusive by construction for one morphology
 
 New-water may overlap with erosion or deposition because it is derived from a different date comparison. That overlap is not automatically an error; it must be interpreted with its acquisition dates.
 
-The map preview is a lower-resolution display representation. The current preview uses average occupancy and retains any positive occupancy. It can expand sparse patches and create apparent cross-class overlap. Never calculate area, displacement or validation metrics from preview GeoJSON. Compare preview rendering against the full-resolution overlap audit.
+The map preview is a lower-resolution display representation. The current preview uses average occupancy and retains any positive occupancy. It can expand sparse patches and create apparent cross-class overlap. The combined preview metadata now records pairwise geometry intersection areas, Jaccard and intersection fraction of the smaller preview class in the projected analysis CRS. Compare those preview-scale statistics with the full-resolution mask overlap report to identify overlap introduced by generalisation. Never calculate area, displacement or validation metrics from preview GeoJSON.
 
 ## 4. Water classification validation
 
