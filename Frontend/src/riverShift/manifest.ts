@@ -62,9 +62,13 @@ export function getRiverShiftEventObservationNote(value: unknown): string | null
   const eventDate = value.event_date;
   const observationDate = value.first_post_event_observation;
   const offsetDays = value.offset_days;
-  if (typeof eventDate !== 'string' || !/^\\d{4}-\\d{2}-\\d{2}$/.test(eventDate)
-      || typeof observationDate !== 'string' || !/^\\d{4}-\\d{2}-\\d{2}$/.test(observationDate)
+  if (typeof eventDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(eventDate)
+      || typeof observationDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(observationDate)
       || typeof offsetDays !== 'number' || !Number.isInteger(offsetDays) || offsetDays <= 0) return null;
+  const eventTime = Date.parse(`${eventDate}T00:00:00Z`);
+  const observationTime = Date.parse(`${observationDate}T00:00:00Z`);
+  const calculatedOffset = (observationTime - eventTime) / 86_400_000;
+  if (!Number.isFinite(calculatedOffset) || calculatedOffset !== offsetDays) return null;
   return `First post-event NISAR observation: ${observationDate} (${offsetDays} days after the supplied event date). This is not a measured event-peak or same-stage observation.`;
 }
 
