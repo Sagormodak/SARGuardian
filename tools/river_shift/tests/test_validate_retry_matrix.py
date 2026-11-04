@@ -58,10 +58,11 @@ def test_matrix_rejects_count_mismatch():
 
 
 def test_matrix_rejects_non_contiguous_product_indexes():
-    matrix = _matrix(3, ["NISAR_L2_PR_GCOV_025"])
+    matrix = _matrix(3, ["NISAR_L2_PR_GCOV_025", "NISAR_L2_PR_GCOV_026"])
     matrix["include"][0]["product_index"] = 2
+    matrix["include"][1]["product_index"] = 1
     with pytest.raises(ValueError, match="not contiguous"):
-        validate_retry_matrix(json.dumps(matrix), "1", 3)
+        validate_retry_matrix(json.dumps(matrix), "2", 3)
 
 
 def test_matrix_rejects_invalid_numeric_field_types():
