@@ -413,3 +413,33 @@ def test_unknown_v1_wtr_class_codes_are_rejected(tmp_path):
         assert "Unexpected OPERA WTR classes" in str(exc)
     else:
         raise AssertionError("Undocumented WTR class codes must not enter the reference")
+
+
+def test_selected_wtr_download_uses_authenticated_https_urls_and_pocloud_provider(tmp_path, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    captured = {}
+
+    def fake_download(urls, *, local_path, provider, threads):
+        captured.update({"urls": list(urls), "local_path": local_path, "provider": provider, "threads": threads})
+        target = Path(local_path) / Path(urls[0]).name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"test-opera-wtr")
+        return [target]
+
+    monkeypatch.setitem(sys.modules, "earthaccess", SimpleNamespace(download=fake_download))
+    filename = (
+        "OPERA_L3_DSWx-S1_T45RVM_20260818T120000Z_"
+        "20260819T010203Z_S1A_30_v1.0_B01_WTR.tif"
+    )
+    url = f"https://archive.example.test/{filename}"
+    paths = opera._download_selected(
+        [{"filename": filename, "wtr_download_url": url}],
+        tmp_path / "downloads",
+    )
+    assert captured["urls"] == [url]
+    assert captured["provider"] == "POCLOUD"
+    assert captured["threads"] == 4
+    assert paths == [tmp_path / "downloads" / filename]
+    assert paths[0].read_bytes() == b"test-opera-wtr"
