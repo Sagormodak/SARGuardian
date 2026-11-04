@@ -123,9 +123,9 @@ def test_worker_overlap_audit_reads_all_three_source_masks_and_retains_report(tm
     erosion[1:3, 1:3] = 1
     deposition[5:7, 5:7] = 1
     new_water[3:5, 3:5] = 1
-    raster_writer("erosion_candidate_mask.tif", erosion, path=morphology_dir / "erosion_candidate_mask.tif")
-    raster_writer("deposition_candidate_mask.tif", deposition, path=morphology_dir / "deposition_candidate_mask.tif")
-    raster_writer("newly_water_covered_mask.tif", new_water, path=flood_dir / "newly_water_covered_mask.tif")
+    raster_writer("morphology/erosion_candidate_mask.tif", erosion)
+    raster_writer("morphology/deposition_candidate_mask.tif", deposition)
+    raster_writer("flood/newly_water_covered_mask.tif", new_water)
 
     output = tmp_path / "quality-assurance" / "candidate_mask_overlap_audit.json"
     result = run_candidate_mask_overlap_audit(
