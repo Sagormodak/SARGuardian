@@ -1,5 +1,6 @@
 import type { User } from 'firebase/auth';
 import type { Coordinate } from '../../landslide/engine/types';
+import { resolveApiBaseUrl } from './apiOrigin';
 
 export type NisarProductType = 'GUNW' | 'GOFF' | 'BOTH';
 
@@ -108,8 +109,10 @@ export type DisplacementJob = Partial<DisplacementProcessingOptions> & {
   updated_at: string;
 };
 
-const configuredApiUrl = (import.meta.env.VITE_SARGUARDIAN_API_URL as string | undefined)?.trim();
-const API_BASE = (configuredApiUrl || 'http://localhost:8000').replace(/\/+$/, '');
+const API_BASE = resolveApiBaseUrl(
+  import.meta.env.VITE_SARGUARDIAN_API_URL as string | undefined,
+  import.meta.env.DEV,
+);
 
 type ProcessingServiceStatusHandler = (message: string) => void;
 

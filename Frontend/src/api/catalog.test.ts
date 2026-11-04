@@ -1,3 +1,4 @@
+import { resolveApiBaseUrl } from './apiOrigin';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createQueuedJob,
@@ -483,4 +484,24 @@ describe('NISAR catalogue preflight API contract', () => {
     });
   });
 
+});
+
+
+describe('API base URL environment fallback', () => {
+  it('keeps the local API origin for development when no override exists', () => {
+    expect(resolveApiBaseUrl(undefined, true)).toBe('http://localhost:8000');
+  });
+
+  it('uses the deployed API origin outside development when no override exists', () => {
+    expect(resolveApiBaseUrl(undefined, false)).toBe('https://sarguardian-backend-api.vercel.app');
+  });
+
+  it('prefers an explicit project environment override in every environment', () => {
+    expect(resolveApiBaseUrl('https://api.example.test///', false)).toBe('https://api.example.test');
+    expect(resolveApiBaseUrl(' https://api.example.test/ ', true)).toBe('https://api.example.test');
+  });
+
+  it('rejects an explicitly configured empty or whitespace-only URL by using the environment fallback', () => {
+    expect(resolveApiBaseUrl('   ', false)).toBe('https://sarguardian-backend-api.vercel.app');
+  });
 });
