@@ -63,6 +63,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
+      RIVERSHIFT_SOURCE_JOB_ID: ${{ inputs.source_job_id }}
       RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
       GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
       GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
@@ -125,7 +126,7 @@ jobs:
           {
             echo "## RiverShift independent reference validation"
             echo
-            echo "- Source job: $RIVERSHIFT_SOURCE_JOB_ID"
+            echo "- Source job: ${{ inputs.source_job_id }}"
             echo "- The original processing job is unchanged."
             echo "- Metrics are review evidence, not release approval."
             echo "- Release remains PROVISIONAL until an independent reviewer accepts reference quality and suitability."
