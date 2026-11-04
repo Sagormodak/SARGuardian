@@ -282,12 +282,33 @@ def _build_reference_on_nisar_grid(
     conflict_mask = np.zeros((height, width), dtype=bool)
 
     tile_audits: list[dict[str, Any]] = []
+    shared_geometry: dict[str, str] | None = None
     for path, metadata in zip(wtr_paths, selected_records, strict=True):
         with rasterio.open(path) as src:
             if src.count != 1 or src.crs is None:
                 raise OperaReferenceError(f"Invalid OPERA WTR GeoTIFF metadata: {path.name}")
             if src.dtypes[0] != "uint8":
                 raise OperaReferenceError(f"OPERA WTR must be UInt8: {path.name}")
+            source_tags = {str(key).upper(): str(value).strip() for key, value in src.tags().items()}
+            geometry_fields = {
+                "SPACECRAFT_NAME": source_tags.get("SPACECRAFT_NAME"),
+                "RTC_ORBIT_PASS_DIRECTION": source_tags.get("RTC_ORBIT_PASS_DIRECTION"),
+                "RTC_TRACK_NUMBER": source_tags.get("RTC_TRACK_NUMBER"),
+            }
+            missing_geometry = [key for key, value in geometry_fields.items() if not value]
+            if missing_geometry:
+                raise OperaReferenceError(
+                    f"Required OPERA source geometry metadata is missing from {path.name}: "
+                    + ", ".join(missing_geometry)
+                )
+            if shared_geometry is None:
+                shared_geometry = {key: str(value) for key, value in geometry_fields.items()}
+            elif geometry_fields != shared_geometry:
+                raise OperaReferenceError(
+                    "Adjacent OPERA WTR tiles are not from the same spacecraft, orbit direction "
+                    "and relative track; refusing to mosaic incomparable acquisitions. "
+                    f"first={shared_geometry}; current={geometry_fields}."
+                )
             raw = src.read(1)
             valid = src.read_masks(1) > 0
             classes = set(int(value) for value in np.unique(raw))
@@ -323,6 +344,11 @@ def _build_reference_on_nisar_grid(
                 "filename": path.name,
                 "tile_id": metadata["tile_id"],
                 "source_crs": src.crs.to_string(),
+                "source_geometry": geometry_fields,
+                "absolute_orbit_number": source_tags.get("RTC_ABSOLUTE_ORBIT_NUMBER"),
+                "sensing_start_time": source_tags.get("RTC_SENSING_START_TIME"),
+                "sensing_end_time": source_tags.get("RTC_SENSING_END_TIME"),
+                "polarization": source_tags.get("POLARIZATION"),
                 "source_width": src.width,
                 "source_height": src.height,
                 "source_transform": list(src.transform)[:6],
