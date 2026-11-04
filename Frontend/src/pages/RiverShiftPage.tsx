@@ -803,10 +803,11 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     map.data.setStyle((feature) => {
       const geometryType = feature.getGeometry()?.getType();
       const name = String(feature.getProperty('marker_change_type') || feature.getProperty('river_shift_layer') || feature.getProperty('class') || feature.getProperty('change_type') || '').toLowerCase();
+      const isObservedOpenWater = name.includes('open_water') && !name.includes('new');
       const colour = name.includes('erosion') ? '#f07462'
         : name.includes('deposition') || name.includes('accretion') ? '#5fd7a5'
-          : name.includes('new_water') || name.includes('newly_water') || name.includes('water_covered') || name.includes('open_water') ? '#53b9f4'
-            : '#9aafbb';
+          : name.includes('new_water') || name.includes('newly_water') || name.includes('water_covered') ? '#53b9f4'
+            : isObservedOpenWater ? '#73b3df' : '#9aafbb';
       if (geometryType === 'Point' && feature.getProperty('general_change_marker') === true) {
         return {
           icon: {
@@ -823,9 +824,9 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       return {
         fillColor: colour,
         strokeColor: colour,
-        fillOpacity: isGeneralScanJob ? 0.42 : 0.34,
-        strokeOpacity: 0.95,
-        strokeWeight: isGeneralScanJob ? 2.4 : 2,
+        fillOpacity: isObservedOpenWater ? 0.14 : isGeneralScanJob ? 0.42 : 0.34,
+        strokeOpacity: isObservedOpenWater ? 0.72 : 0.95,
+        strokeWeight: isObservedOpenWater ? 1.2 : isGeneralScanJob ? 2.4 : 2,
       };
     });
     const bounds = new google.maps.LatLngBounds();
@@ -1209,7 +1210,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
           <div className="rs-section-heading"><div><p className="rs-kicker">GEOSPATIAL OUTPUT</p><h3>Change map</h3></div></div>
           {mapError && <p className="rs-warning-inline">{mapError}</p>}
           <div className="rs-map" ref={resultMapElement} role="img" aria-label="Google satellite basemap with checksum-checked RiverShift result overlays" />
-          <div className="rs-legend"><span><i className="rs-swatch rs-erosion" />Erosion candidate</span><span><i className="rs-swatch rs-deposition" />Deposition candidate</span><span><i className="rs-swatch rs-water" />New water / observed water candidate</span></div>
+          <div className="rs-legend"><span><i className="rs-swatch rs-erosion" />Erosion candidate</span><span><i className="rs-swatch rs-deposition" />Deposition candidate</span><span><i className="rs-swatch rs-water" />New-water candidate</span><span><i className="rs-swatch rs-observed-water" />Observed-date water extent</span></div>
           {(hasCandidateOverlaySource || hasObservedWaterFrames) && (
             <div className="rs-overlay-controls" aria-label="RiverShift map overlay visibility">
               {hasCandidateOverlaySource && (
