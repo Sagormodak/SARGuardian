@@ -3,7 +3,7 @@ import type { User } from 'firebase/auth';
 import { importLibrary, setOptions } from '@googlemaps/js-api-loader';
 import { createRiverShiftJob, downloadRiverShiftArtifact, getRiverShiftJob, listRiverShiftJobs, type RiverShiftJob } from '../api/catalog';
 import type { RiverShiftGeoJSON, RiverShiftReport, RiverShiftTimeSeriesFrame } from '../riverShift/manifest';
-import { isRiverShiftGeoJSONApproved, isRiverShiftReportVerified, isRiverShiftTimeSeriesGeoJSONApproved, parseRiverShiftGeoJSON, parseRiverShiftReport } from '../riverShift/manifest';
+import { countRiverShiftCandidateLayers, filterRiverShiftCandidateGeoJSON, isRiverShiftGeoJSONApproved, isRiverShiftReportVerified, isRiverShiftTimeSeriesGeoJSONApproved, parseRiverShiftGeoJSON, parseRiverShiftReport } from '../riverShift/manifest';
 import { formatWktPolygon, parseWktPolygon, type Wgs84Point } from '../riverShift/aoi';
 import { deriveGeneralChangeMarkers } from '../riverShift/generalChangeMarkers';
 import './river-shift.css';
@@ -234,6 +234,10 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
   const [jobTimeSeriesIndex, setJobTimeSeriesIndex] = useState(0);
   const [jobTimeSeriesPlaying, setJobTimeSeriesPlaying] = useState(false);
   const [showGeneralChangeMarkers, setShowGeneralChangeMarkers] = useState(false);
+  const [showErosionOverlay, setShowErosionOverlay] = useState(true);
+  const [showDepositionOverlay, setShowDepositionOverlay] = useState(true);
+  const [showNewWaterOverlay, setShowNewWaterOverlay] = useState(true);
+  const [showObservedWaterExtent, setShowObservedWaterExtent] = useState(true);
   const aoiMapElement = useRef<HTMLDivElement>(null);
   const resultMapElement = useRef<HTMLDivElement>(null);
   const aoiMapInstance = useRef<google.maps.Map | null>(null);
@@ -284,6 +288,28 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     if (!report || report.analysis_type === 'water_timeseries_screening') return [];
     return geoJSONFiles.filter((file) => isRiverShiftGeoJSONApproved(report, file.sha256));
   }, [report, geoJSONFiles]);
+  const candidateOverlayVisibility = useMemo(() => ({
+    erosion: showErosionOverlay,
+    deposition: showDepositionOverlay,
+    newWater: showNewWaterOverlay,
+  }), [showErosionOverlay, showDepositionOverlay, showNewWaterOverlay]);
+  const candidateOverlayCounts = useMemo(() => {
+    const sources = activeJobPreview?.changeLayer
+      ? [activeJobPreview.changeLayer.data]
+      : verifiedGeoJSONFiles.map((file) => file.data);
+    return sources.reduce((total, source) => {
+      const counts = countRiverShiftCandidateLayers(source);
+      return {
+        erosion: total.erosion + counts.erosion,
+        deposition: total.deposition + counts.deposition,
+        newWater: total.newWater + counts.newWater,
+        unclassified: total.unclassified + counts.unclassified,
+      };
+    }, { erosion: 0, deposition: 0, newWater: 0, unclassified: 0 });
+  }, [activeJobPreview?.changeLayer, verifiedGeoJSONFiles]);
+  const hasCandidateOverlaySource = Boolean(activeJobPreview?.changeLayer || verifiedGeoJSONFiles.length);
+  const allCandidateLayersVisible = showErosionOverlay && showDepositionOverlay && showNewWaterOverlay;
+  const hasObservedWaterFrames = Boolean(currentTimeSeriesFrame || jobTimeSeriesFrames.length);
   const hasVerifiedOverlay = Boolean(!hasJobPreviewOverlay && (currentTimeSeriesFrame || verifiedGeoJSONFiles.length));
 
   useEffect(() => {
@@ -675,10 +701,15 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     if (!map) return;
     map.data.forEach((feature) => map.data.remove(feature));
     const displayLayers = hasJobPreviewOverlay && jobPreview && riverJobId && jobPreview.jobId === riverJobId
-      ? [jobPreview.changeLayer?.data, currentJobFrame].filter((layer): layer is RiverShiftGeoJSON => Boolean(layer))
+      ? [
+        jobPreview.changeLayer
+          ? filterRiverShiftCandidateGeoJSON(jobPreview.changeLayer.data, candidateOverlayVisibility)
+          : null,
+        showObservedWaterExtent ? currentJobFrame : null,
+      ].filter((layer): layer is RiverShiftGeoJSON => Boolean(layer && layer.features.length))
       : currentTimeSeriesFrame
-        ? [currentTimeSeriesFrame.data]
-        : verifiedGeoJSONFiles.map((file) => file.data);
+        ? (showObservedWaterExtent ? [currentTimeSeriesFrame.data] : [])
+        : verifiedGeoJSONFiles.map((file) => filterRiverShiftCandidateGeoJSON(file.data, candidateOverlayVisibility));
     displayLayers.forEach((layer) => map.data.addGeoJson(layer as unknown as object));
     if (isGeneralScanJob && showGeneralChangeMarkers && generalChangeMarkers.length > 0) {
       map.data.addGeoJson({
@@ -698,8 +729,9 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       const geometryType = feature.getGeometry()?.getType();
       const name = String(feature.getProperty('marker_change_type') || feature.getProperty('river_shift_layer') || feature.getProperty('class') || feature.getProperty('change_type') || '').toLowerCase();
       const colour = name.includes('erosion') ? '#f07462'
-        : name.includes('deposition') ? '#5fd7a5'
-          : '#53b9f4';
+        : name.includes('deposition') || name.includes('accretion') ? '#5fd7a5'
+          : name.includes('new_water') || name.includes('newly_water') || name.includes('water_covered') ? '#53b9f4'
+            : '#9aafbb';
       if (geometryType === 'Point' && feature.getProperty('general_change_marker') === true) {
         return {
           icon: {
@@ -743,7 +775,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       resultMapFitKey.current = overlayFitKey;
     }
 
-  }, [mapReady, currentTimeSeriesFrame, verifiedGeoJSONFiles, jobPreview, currentJobFrame, riverJobId, hasJobPreviewOverlay, report, isGeneralScanJob, riverJob?.aoi_wkt, showGeneralChangeMarkers, generalChangeMarkers]);
+  }, [mapReady, currentTimeSeriesFrame, verifiedGeoJSONFiles, jobPreview, currentJobFrame, riverJobId, hasJobPreviewOverlay, report, isGeneralScanJob, riverJob?.aoi_wkt, showGeneralChangeMarkers, generalChangeMarkers, candidateOverlayVisibility, showObservedWaterExtent]);
 
   useEffect(() => {
     if (!timeSeriesPlaying || playbackFrames.length < 2) return;
@@ -1100,6 +1132,55 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
           {mapError && <p className="rs-warning-inline">{mapError}</p>}
           <div className="rs-map" ref={resultMapElement} role="img" aria-label="Google satellite basemap with checksum-checked RiverShift result overlays" />
           <div className="rs-legend"><span><i className="rs-swatch rs-erosion" />Erosion candidate</span><span><i className="rs-swatch rs-deposition" />Deposition candidate</span><span><i className="rs-swatch rs-water" />New water / observed water candidate</span></div>
+          {(hasCandidateOverlaySource || hasObservedWaterFrames) && (
+            <div className="rs-overlay-controls" aria-label="RiverShift map overlay visibility">
+              {hasCandidateOverlaySource && (
+                <>
+                  <label className="rs-overlay-toggle rs-overlay-toggle-all">
+                    <input
+                      type="checkbox"
+                      checked={allCandidateLayersVisible}
+                      onChange={(event) => {
+                        setShowErosionOverlay(event.target.checked);
+                        setShowDepositionOverlay(event.target.checked);
+                        setShowNewWaterOverlay(event.target.checked);
+                      }}
+                    />
+                    <span><strong>All candidate overlays</strong><small>Show or hide all implemented change classes.</small></span>
+                  </label>
+                  <div className="rs-overlay-class-grid">
+                    <label className="rs-overlay-toggle">
+                      <input type="checkbox" checked={showErosionOverlay} disabled={candidateOverlayCounts.erosion === 0}
+                        onChange={(event) => setShowErosionOverlay(event.target.checked)} />
+                      <span><strong>Erosion</strong><small>{candidateOverlayCounts.erosion} feature(s)</small></span>
+                    </label>
+                    <label className="rs-overlay-toggle">
+                      <input type="checkbox" checked={showDepositionOverlay} disabled={candidateOverlayCounts.deposition === 0}
+                        onChange={(event) => setShowDepositionOverlay(event.target.checked)} />
+                      <span><strong>Deposition</strong><small>{candidateOverlayCounts.deposition} feature(s)</small></span>
+                    </label>
+                    <label className="rs-overlay-toggle">
+                      <input type="checkbox" checked={showNewWaterOverlay} disabled={candidateOverlayCounts.newWater === 0}
+                        onChange={(event) => setShowNewWaterOverlay(event.target.checked)} />
+                      <span><strong>New water</strong><small>{candidateOverlayCounts.newWater} feature(s)</small></span>
+                    </label>
+                    <label className="rs-overlay-toggle rs-overlay-unavailable">
+                      <input type="checkbox" disabled />
+                      <span><strong>Exposed bar / char</strong><small>Unavailable — detection method not yet validated or implemented.</small></span>
+                    </label>
+                  </div>
+                </>
+              )}
+              {hasObservedWaterFrames && (
+                <label className="rs-overlay-toggle rs-overlay-observed">
+                  <input type="checkbox" checked={showObservedWaterExtent}
+                    onChange={(event) => setShowObservedWaterExtent(event.target.checked)} />
+                  <span><strong>Observed-date open-water extent</strong><small>Current acquired-date water layer; separate from date-window change candidates.</small></span>
+                </label>
+              )}
+              <p className="rs-overlay-note">Visibility controls affect the map only. Full-resolution masks and scientific metrics are unchanged. Preview geometry is display-only and may generalise or visually overlap separate classes.</p>
+            </div>
+          )}
           <div className="rs-data-sources" aria-label="RiverShift data sources and roles">
             <div><strong>NASA measurement data</strong><span>NASA–ISRO NISAR Level-2 GCOV radar observations drive the water and land-transition screening.</span></div>
             <div><strong>NASA data access</strong><span>NASA Earthdata and ASF DAAC provide the exact NISAR granules; product identities and checksums are retained with the result.</span></div>
