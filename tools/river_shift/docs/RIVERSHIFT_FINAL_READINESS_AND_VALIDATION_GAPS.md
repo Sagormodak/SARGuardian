@@ -16,7 +16,7 @@ Do not claim field validation, VERIFIED status, or a full accuracy score. CI suc
 
 ### Backend — `moshiour0/SARGuardian-backend`
 
-Latest backend main documentation commit: `07d460780aa54b14e26bdef9ccf001842cb89c86`. Latest RiverShift worker/code merge: `3ce722233f2177d36762b62127df527d1351ddc8`.
+Latest RiverShift worker/code merge: `3ce722233f2177d36762b62127df527d1351ddc8`. The judge guide and this readiness report were updated after that code merge.
 
 | PR | Merge commit | Effect |
 |---|---|---|
@@ -94,7 +94,7 @@ Evidence: [Backend Action Run 41926490047](https://github.com/moshiour0/SARGuard
 
 **Current preview QA:** all three classes used one 293×384 grid with 89.557 m display cells. Erosion/deposition polygon intersection was **0 km²** (Jaccard 0). Erosion/new-water preview polygons intersect by 0.48794 km²; this is display-only and reflects the separate temporal/threshold basis. Deposition/new-water polygon intersection is numerical round-off (~4.2×10⁻¹⁴ km², effectively zero). Each class rendered 8,000 sparse marker points; the remaining sparse cells were counted as omitted from display (erosion 23,176; deposition 36,262; new-water 28,751). The full-resolution masks and pixel counts were not reduced or changed.
 
-Downloadable evidence: [Retrospective Run #36 source-mask and preview QA ZIP](sandbox:/mnt/data/run36-retrospective-common-grid-final.zip).
+Downloadable evidence: [Retrospective Run #36 source-mask and preview QA ZIP (workflow artifact)](https://github.com/moshiour0/SARGuardian-backend/actions/runs/41926490047).
 
 ## Retained real-data example — Run #36
 
