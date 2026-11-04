@@ -33,9 +33,9 @@ If a provenance or exact-grid requirement fails, stop the affected comparison. D
 
 ## 3. Candidate overlap audit
 
-The full-resolution binary masks are authoritative. The worker writes:
+The full-resolution binary masks are authoritative. Since backend commit `f6b919e33e612fdeea2641d9ee771c9257e11c4b` (PR #151), every new GCOV worker run calls the full-resolution audit on the authoritative source masks and retains:
 
-`outputs/qa/candidate_overlap_audit.json`
+`outputs/quality-assurance/candidate_mask_overlap_audit.json`
 
 It records:
 
