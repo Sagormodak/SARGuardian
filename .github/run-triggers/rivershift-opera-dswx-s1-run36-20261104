@@ -8,3 +8,4 @@ Replay attempt 4: direct authenticated CMR UMM query by exact collection concept
 Search nearest OPERA WTR scene within ±14 days of 2026-08-17, but retain strict ±3-day scoring gate and 80% common-support gate. Out-of-gate scene is candidate-only, NO_SCORE.
 Use complete AOI-only CMR inventory and local ±30-day discovery filtering for Run #36; keep strict ±3-day score and 80% support gates unchanged.
 Trigger retained Run #36 RTC-S1 AOI inventory fallback after PR #146; NISAR observation 2026-08-17; discovery ±30 days; strict ±3-day score gate unchanged.
+Fix OPERA V1 WTR and RTC filename matching for Sentinel-1C; real PO.DAAC granules use platform token S1C. Trigger retained Run #36 replay from the PR merge push only; preserve discovery ±30 days, strict score ±3 days and ≥80% support; do not rerun NISAR processing.
