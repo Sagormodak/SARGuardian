@@ -1130,17 +1130,17 @@ def _report_retry_wave() -> None:
     _write_output("retry_success_count", str(passed))
     _write_output("retry_failure_count", str(failed))
 
-    detail_rows = "\\n".join(
+    detail_rows = "\n".join(
         f"| {name} | {reason} |" for name, reason in failure_details[:30]
     ) or "| — | No retry required |"
     _write_step_summary(
-        "## Fresh-runner retry outcome\\n\\n"
-        f"- Maximum retry waves: **3**\\n"
-        f"- Original retry queue: **{len(original_retry_rows)}**\\n"
-        f"- Recovered: **{passed}**\\n"
-        f"- Still failed/unverifiable: **{failed}**\\n"
-        f"- Dispatch checks: **{', '.join(dispatch_statuses)}**\\n\\n"
-        "| Product / stage | Final outcome |\\n|---|---|\\n" + detail_rows
+        "## Fresh-runner retry outcome\n\n"
+        f"- Maximum retry waves: **3**\n"
+        f"- Original retry queue: **{len(original_retry_rows)}**\n"
+        f"- Recovered: **{passed}**\n"
+        f"- Still failed/unverifiable: **{failed}**\n"
+        f"- Dispatch checks: **{', '.join(dispatch_statuses)}**\n\n"
+        "| Product / stage | Final outcome |\n|---|---|\n" + detail_rows
     )
     if callback_state == "failed":
         print(f"::error::Fresh-runner retry processing failed: {error_code} · {error_message}", flush=True)
