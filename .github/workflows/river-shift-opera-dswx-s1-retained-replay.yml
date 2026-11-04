@@ -154,6 +154,34 @@ jobs:
                   f"- Independent review required: {status.get('review_required', True)}",
                   "",
               ])
+              rtc = report.get("rtc_s1_alternative") or {}
+              if rtc:
+                  rtc_inventory = rtc.get("inventory") or {}
+                  lines.extend([
+                      f"- RTC-S1 fallback inventory: **{rtc.get('status', 'not queried')}**",
+                      f"- RTC-S1 CMR AOI granules: {rtc_inventory.get('cmr_aoi_inventory_hits', 'not available')}",
+                      f"- RTC-S1 VV burst groups: {rtc_inventory.get('parsed_rtc_burst_groups_with_vv', 'not available')}",
+                      f"- RTC-S1 bursts inside discovery window: {rtc_inventory.get('bursts_within_discovery_window', 'not available')}",
+                      f"- RTC-S1 bursts inside strict ±3-day score window: {rtc_inventory.get('bursts_within_strict_score_window', 'not available')}",
+                      "",
+                  ])
+                  date_rows = rtc_inventory.get("nearest_available_acquisition_dates") or []
+                  if date_rows:
+                      lines.extend([
+                          "| Nearest RTC-S1 date | Offset (days) | Burst groups | VV | VH | Mask |",
+                          "|---|---:|---:|---:|---:|---:|",
+                      ])
+                      for row in date_rows[:5]:
+                          lines.append(
+                              f"| {row.get('observation_date')} | {row.get('date_offset_days')} | "
+                              f"{row.get('burst_count')} | {row.get('vv_available_bursts')} | "
+                              f"{row.get('vh_available_bursts')} | {row.get('mask_available_bursts')} |"
+                          )
+                      lines.append("")
+                  lines.extend([
+                      "RTC-S1 is backscatter only; this fallback inventory has not generated water labels or agreement metrics.",
+                      "",
+                  ])
               metrics = ((report.get("validation") or {}).get("metrics") or {})
               if metrics:
                   lines.extend(["| Metric | Value |", "|---|---:|"])

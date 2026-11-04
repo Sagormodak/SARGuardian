@@ -39,6 +39,18 @@ from validate_independent_reference import (
 COLLECTION_SHORT_NAME = "OPERA_L3_DSWX-S1_V1"
 COLLECTION_CONCEPT_ID = "C2949811996-POCLOUD"
 COLLECTION_DOI = "10.5067/OPDSWS1-L3V1"
+RTC_COLLECTION_SHORT_NAME = "OPERA_L2_RTC-S1_V1"
+RTC_COLLECTION_CONCEPT_ID = "C2777436413-ASF"
+RTC_COLLECTION_IDENTIFIER = "10.5067/SNWG/OPERA_L2_RTC-S1_V1"
+RTC_DATASET_URL = "https://www.earthdata.nasa.gov/data/catalog/asf-opera-l2-rtc-s1-v1-1"
+RTC_FILENAME_RE = re.compile(
+    r"^OPERA_L2_RTC-S1_(?P<burst>T[0-9]{3}-[0-9]{6}-IW[0-9])_"
+    r"(?P<sensing>[0-9]{8}T[0-9]{6}Z)_"
+    r"(?P<generated>[0-9]{8}T[0-9]{6}Z)_"
+    r"(?P<platform>S1[AB])_(?P<pixel_spacing>[0-9]+)_"
+    r"v(?P<version>[0-9]+\.[0-9]+)_(?P<layer>VV|VH|MASK)\.tif$",
+    re.IGNORECASE,
+)
 CMR_UMM_GRANULE_SEARCH_URL = "https://cmr.earthdata.nasa.gov/search/granules.umm_json_v1_6_7"
 CMR_UMM_ACCEPT = "application/vnd.nasa.cmr.umm_results+json; version=1.6.7"
 CMR_PAGE_SIZE = 2000
@@ -235,6 +247,209 @@ def _granule_umm(granule: Any) -> dict[str, Any]:
     except Exception:
         value = {}
     return value if isinstance(value, dict) else {}
+
+
+def _rtc_file_metadata(value: str) -> dict[str, Any] | None:
+    name = Path(unquote(urlsplit(value).path)).name or Path(value).name
+    match = RTC_FILENAME_RE.fullmatch(name)
+    if not match:
+        return None
+    groups = match.groupdict()
+    sensing_time = datetime.strptime(groups["sensing"], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    generation_time = datetime.strptime(groups["generated"], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    return {
+        "filename": name,
+        "burst_id": groups["burst"].upper(),
+        "sensing_time_utc": sensing_time.isoformat().replace("+00:00", "Z"),
+        "observation_date": sensing_time.date().isoformat(),
+        "generation_time_utc": generation_time.isoformat().replace("+00:00", "Z"),
+        "platform": groups["platform"].upper(),
+        "pixel_spacing_m": int(groups["pixel_spacing"]),
+        "product_version": groups["version"],
+        "layer_name": groups["layer"].upper(),
+    }
+
+
+def _discover_opera_rtc_s1_inventory(
+    *,
+    aoi_wkt: str,
+    requested_date: date,
+    discovery_window_days: int,
+    strict_score_maximum_date_offset_days: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Inventory OPERA RTC-S1 bursts for the AOI and filter sensing dates locally.
+
+    RTC-S1 is calibrated Sentinel-1 gamma0 backscatter, not a water-class
+    reference. This function only discovers candidate acquisitions and assets.
+    It deliberately computes no water labels, agreement scores, or accuracy
+    metrics.
+    """
+    import earthaccess
+    from shapely import wkt as shapely_wkt
+
+    if not strict_score_maximum_date_offset_days <= discovery_window_days <= 60:
+        raise OperaReferenceError(
+            "RTC-S1 discovery_window_days must be at least the strict score gate and at most 60 days."
+        )
+    geometry = shapely_wkt.loads(aoi_wkt)
+    if geometry.is_empty or not geometry.is_valid:
+        raise OperaReferenceError("The retained RiverShift AOI WKT is empty or invalid.")
+    west, south, east, north = geometry.bounds
+    bbox = (west, south, east, north)
+    start = requested_date - timedelta(days=discovery_window_days)
+    end = requested_date + timedelta(days=discovery_window_days)
+    temporal = (f"{start.isoformat()}T00:00:00Z", f"{end.isoformat()}T23:59:59Z")
+
+    print(
+        "RIVERSHIFT_OPERA_RTC_S1_CMR_QUERY="
+        + json.dumps({
+            "collection_short_name": RTC_COLLECTION_SHORT_NAME,
+            "collection_concept_id": RTC_COLLECTION_CONCEPT_ID,
+            "collection_identifier": RTC_COLLECTION_IDENTIFIER,
+            "query_method": "direct authenticated CMR UMM JSON; AOI inventory; local sensing-date filter",
+            "bounding_box_wgs84": list(bbox),
+            "local_temporal_filter_utc": list(temporal),
+            "discovery_window_days": discovery_window_days,
+            "strict_score_maximum_date_offset_days": strict_score_maximum_date_offset_days,
+        }, sort_keys=True),
+        flush=True,
+    )
+    earthaccess.login(strategy="environment")
+    session = earthaccess.get_requests_https_session()
+    result = _cmr_umm_search(
+        session,
+        collection_concept_id=RTC_COLLECTION_CONCEPT_ID,
+        bounding_box=bbox,
+    )
+
+    grouped: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    non_rtc_assets = 0
+    for item in result["items"]:
+        umm = item.get("umm") or {}
+        meta = item.get("meta") or {}
+        granule_ur = str(umm.get("GranuleUR") or "")
+        urls = _cmr_related_get_data_urls(item)
+        candidates = [granule_ur, *urls]
+        parsed_assets = [
+            (parsed, url)
+            for url in candidates
+            if (parsed := _rtc_file_metadata(url)) is not None
+        ]
+        if not parsed_assets:
+            non_rtc_assets += 1
+            continue
+        for parsed, url in parsed_assets:
+            key = (
+                parsed["burst_id"],
+                parsed["sensing_time_utc"],
+                parsed["generation_time_utc"],
+                parsed["platform"],
+                parsed["product_version"],
+            )
+            row = grouped.setdefault(key, {
+                "burst_id": parsed["burst_id"],
+                "sensing_time_utc": parsed["sensing_time_utc"],
+                "observation_date": parsed["observation_date"],
+                "generation_time_utc": parsed["generation_time_utc"],
+                "platform": parsed["platform"],
+                "pixel_spacing_m": parsed["pixel_spacing_m"],
+                "product_version": parsed["product_version"],
+                "concept_ids": [],
+                "assets": {},
+            })
+            concept_id = str(meta.get("concept-id") or "")
+            if concept_id and concept_id not in row["concept_ids"]:
+                row["concept_ids"].append(concept_id)
+            layer = parsed["layer_name"]
+            row["assets"].setdefault(layer, {
+                "filename": parsed["filename"],
+                "https_get_data_url": url,
+            })
+
+    all_bursts: list[dict[str, Any]] = []
+    missing_vv = 0
+    for row in grouped.values():
+        assets = row["assets"]
+        if "VV" not in assets:
+            missing_vv += 1
+            continue
+        all_bursts.append({
+            **{key: value for key, value in row.items() if key != "assets"},
+            "available_layers": sorted(assets),
+            "vv_url": assets["VV"]["https_get_data_url"],
+            "vh_url": assets.get("VH", {}).get("https_get_data_url"),
+            "mask_url": assets.get("MASK", {}).get("https_get_data_url"),
+            "has_validity_mask": "MASK" in assets,
+        })
+
+    all_bursts.sort(key=lambda row: (
+        abs((date.fromisoformat(row["observation_date"]) - requested_date).days),
+        row["observation_date"],
+        row["burst_id"],
+    ))
+    candidate_bursts = [
+        row for row in all_bursts
+        if abs((date.fromisoformat(row["observation_date"]) - requested_date).days)
+        <= discovery_window_days
+    ]
+    strict_bursts = [
+        row for row in candidate_bursts
+        if abs((date.fromisoformat(row["observation_date"]) - requested_date).days)
+        <= strict_score_maximum_date_offset_days
+    ]
+
+    def _date_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        by_date: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            entry = by_date.setdefault(row["observation_date"], {
+                "observation_date": row["observation_date"],
+                "date_offset_days": abs(
+                    (date.fromisoformat(row["observation_date"]) - requested_date).days
+                ),
+                "burst_count": 0,
+                "vv_available_bursts": 0,
+                "vh_available_bursts": 0,
+                "mask_available_bursts": 0,
+                "platforms": [],
+            })
+            entry["burst_count"] += 1
+            entry["vv_available_bursts"] += int("VV" in row["available_layers"])
+            entry["vh_available_bursts"] += int("VH" in row["available_layers"])
+            entry["mask_available_bursts"] += int(row["has_validity_mask"])
+            if row["platform"] not in entry["platforms"]:
+                entry["platforms"].append(row["platform"])
+        return sorted(by_date.values(), key=lambda item: (
+            item["date_offset_days"], item["observation_date"]
+        ))
+
+    query = {
+        "collection_short_name": RTC_COLLECTION_SHORT_NAME,
+        "collection_concept_id": RTC_COLLECTION_CONCEPT_ID,
+        "collection_identifier": RTC_COLLECTION_IDENTIFIER,
+        "dataset_url": RTC_DATASET_URL,
+        "query_method": "direct authenticated CMR UMM JSON by collection_concept_id",
+        "bounding_box_wgs84": list(bbox),
+        "cmr_temporal_filter_applied": False,
+        "local_temporal_filter_utc": list(temporal),
+        "discovery_window_days": discovery_window_days,
+        "strict_score_maximum_date_offset_days": strict_score_maximum_date_offset_days,
+        "cmr_aoi_inventory_hits": result["hits"],
+        "cmr_items_loaded": len(result["items"]),
+        "parsed_rtc_burst_groups_with_vv": len(all_bursts),
+        "non_rtc_assets_or_unparsed_items": non_rtc_assets,
+        "burst_groups_without_vv_asset": missing_vv,
+        "bursts_within_discovery_window": len(candidate_bursts),
+        "bursts_within_strict_score_window": len(strict_bursts),
+        "nearest_available_acquisition_dates": _date_summary(all_bursts)[:10],
+        "acquisition_dates_within_discovery_window": _date_summary(candidate_bursts),
+        "acquisition_dates_within_strict_score_window": _date_summary(strict_bursts),
+        "cmr_pages": result["pages"],
+    }
+    print(
+        "RIVERSHIFT_OPERA_RTC_S1_RESULT=" + json.dumps(query, sort_keys=True),
+        flush=True,
+    )
+    return candidate_bursts, query
 
 
 def _discover_records(
@@ -795,6 +1010,64 @@ def run_pipeline(
     reference_path = output_dir / "reference-opera-dswx-s1-water.tif"
 
     if not selected:
+        rtc_wkt = str(
+            prepared.get("request", {}).get("aoi_wkt")
+            or prepared.get("selection", {}).get("aoi_wkt")
+            or ""
+        )
+        try:
+            rtc_candidates, rtc_query = _discover_opera_rtc_s1_inventory(
+                aoi_wkt=rtc_wkt,
+                requested_date=requested_date,
+                discovery_window_days=discovery_window_days,
+                strict_score_maximum_date_offset_days=maximum_date_offset_days,
+            )
+            if rtc_query["bursts_within_strict_score_window"] > 0:
+                rtc_status = "RTC_S1_SCENES_WITHIN_STRICT_DATE_GATE_CANDIDATE_ONLY"
+            elif rtc_candidates:
+                rtc_status = "RTC_S1_SCENES_OUTSIDE_STRICT_DATE_GATE_CANDIDATE_ONLY"
+            else:
+                rtc_status = "NO_RTC_S1_BURSTS_WITHIN_DISCOVERY_WINDOW"
+            rtc_summary = {
+                "status": rtc_status,
+                "inventory": rtc_query,
+                "candidate_bursts": [
+                    {
+                        "burst_id": row["burst_id"],
+                        "observation_date": row["observation_date"],
+                        "date_offset_days": abs(
+                            (date.fromisoformat(row["observation_date"]) - requested_date).days
+                        ),
+                        "platform": row["platform"],
+                        "available_layers": row["available_layers"],
+                        "has_validity_mask": row["has_validity_mask"],
+                        "pixel_spacing_m": row["pixel_spacing_m"],
+                    }
+                    for row in rtc_candidates[:100]
+                ],
+                "water_labels_generated": False,
+                "agreement_metrics_computed": False,
+                "note": (
+                    "RTC-S1 contains gamma0 backscatter, not water/non-water labels. "
+                    "This inventory is a scene-availability diagnostic only; it is not "
+                    "an independent water reference or a validation score."
+                ),
+            }
+        except Exception as exc:
+            rtc_status = "RTC_S1_INVENTORY_UNAVAILABLE"
+            rtc_summary = {
+                "status": rtc_status,
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:700],
+                "water_labels_generated": False,
+                "agreement_metrics_computed": False,
+                "note": "RTC-S1 fallback discovery failed; no scene availability or accuracy claim is made.",
+            }
+            print(
+                "RIVERSHIFT_OPERA_RTC_S1_FALLBACK=FAIL "
+                f"error_type={type(exc).__name__} detail={str(exc)[:500]}",
+                flush=True,
+            )
         report = {
             "schema_version": 1,
             "status": "NO_MATCH_NO_SCORE",
@@ -802,6 +1075,7 @@ def run_pipeline(
             "source_github_run_id": target_manifest.get("github_run_id"),
             "requested_nisar_observation_date": requested_date.isoformat(),
             "query": query,
+            "rtc_s1_alternative": rtc_summary,
             "discovery_window_days": discovery_window_days,
             "strict_score_maximum_date_offset_days": maximum_date_offset_days,
             "selected_observation_date": None,

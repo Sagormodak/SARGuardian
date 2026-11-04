@@ -525,3 +525,138 @@ def test_aoi_inventory_is_filtered_locally_by_discovery_window(monkeypatch):
     assert query["records_outside_local_discovery_window"] == 1
     assert query["discovery_window_days"] == 14
     assert query["strict_score_maximum_date_offset_days"] == 3
+
+
+def _rtc_cmr_item(
+    burst="T069-147170-IW1",
+    sensing="20260818T232134Z",
+    generated="20260819T010203Z",
+    platform="S1A",
+    concept="RTC123456-ASF",
+    layers=("VV", "VH", "MASK"),
+):
+    base = (
+        f"OPERA_L2_RTC-S1_{burst}_{sensing}_{generated}_"
+        f"{platform}_30_v1.0"
+    )
+    related = [
+        {
+            "Type": "GET DATA",
+            "URL": f"https://datapool.asf.alaska.edu/OPERA-S1/{base}_{layer}.tif",
+        }
+        for layer in layers
+    ]
+    related.append({
+        "Type": "GET DATA",
+        "URL": f"https://datapool.asf.alaska.edu/OPERA-S1/{base}.h5",
+    })
+    return {
+        "meta": {"concept-id": concept},
+        "umm": {
+            "GranuleUR": f"{base}.h5",
+            "RelatedUrls": related,
+        },
+    }
+
+
+def test_rtc_filename_metadata_parses_burst_and_layer():
+    base = (
+        "OPERA_L2_RTC-S1_T069-147170-IW1_20260818T232134Z_"
+        "20260819T010203Z_S1A_30_v1.0_VV.tif"
+    )
+    parsed = opera._rtc_file_metadata(f"https://datapool.example.test/{base}")
+    assert parsed is not None
+    assert parsed["burst_id"] == "T069-147170-IW1"
+    assert parsed["observation_date"] == "2026-08-18"
+    assert parsed["platform"] == "S1A"
+    assert parsed["pixel_spacing_m"] == 30
+    assert parsed["layer_name"] == "VV"
+    assert opera._rtc_file_metadata(base.replace("_VV.tif", "_BROWSE.png")) is None
+
+
+def test_rtc_inventory_discovers_same_aoi_sentinel1_bursts_without_water_labels(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    near = _rtc_cmr_item(
+        burst="T069-147170-IW1",
+        sensing="20260818T232134Z",
+        generated="20260819T010203Z",
+        concept="RTC-NEAR-ASF",
+    )
+    outside = _rtc_cmr_item(
+        burst="T069-147171-IW1",
+        sensing="20260710T232134Z",
+        generated="20260711T010203Z",
+        concept="RTC-OUTSIDE-ASF",
+        layers=("VV", "MASK"),
+    )
+    session = _FakeCMRSession([_FakeCMRResponse([near, outside], 2)])
+    monkeypatch.setitem(
+        sys.modules,
+        "earthaccess",
+        SimpleNamespace(
+            login=lambda **kwargs: None,
+            get_requests_https_session=lambda: session,
+        ),
+    )
+
+    candidates, query = opera._discover_opera_rtc_s1_inventory(
+        aoi_wkt="POLYGON((89.6 24.0,89.8 24.0,89.8 24.2,89.6 24.2,89.6 24.0))",
+        requested_date=date.fromisoformat("2026-08-17"),
+        discovery_window_days=30,
+        strict_score_maximum_date_offset_days=3,
+    )
+
+    assert len(session.calls) == 1
+    params = dict(session.calls[0]["params"])
+    assert params["collection_concept_id"] == opera.RTC_COLLECTION_CONCEPT_ID
+    assert params["bounding_box"] == "89.6,24,89.8,24.2"
+    assert "temporal[]" not in params
+    assert len(candidates) == 1
+    assert candidates[0]["burst_id"] == "T069-147170-IW1"
+    assert candidates[0]["available_layers"] == ["MASK", "VH", "VV"]
+    assert candidates[0]["has_validity_mask"] is True
+    assert query["cmr_aoi_inventory_hits"] == 2
+    assert query["parsed_rtc_burst_groups_with_vv"] == 2
+    assert query["bursts_within_discovery_window"] == 1
+    assert query["bursts_within_strict_score_window"] == 1
+    assert query["acquisition_dates_within_strict_score_window"][0]["observation_date"] == "2026-08-18"
+    assert "water_labels_generated" not in query
+    assert query["collection_concept_id"] == "C2777436413-ASF"
+
+
+def test_rtc_inventory_separates_wide_discovery_from_strict_score_window(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    scene = _rtc_cmr_item(
+        burst="T069-147170-IW1",
+        sensing="20260825T232134Z",
+        generated="20260826T010203Z",
+        concept="RTC-OUTSIDE-STRICT-ASF",
+    )
+    session = _FakeCMRSession([_FakeCMRResponse([scene], 1)])
+    monkeypatch.setitem(
+        sys.modules,
+        "earthaccess",
+        SimpleNamespace(
+            login=lambda **kwargs: None,
+            get_requests_https_session=lambda: session,
+        ),
+    )
+
+    candidates, query = opera._discover_opera_rtc_s1_inventory(
+        aoi_wkt="POLYGON((89.6 24.0,89.8 24.0,89.8 24.2,89.6 24.2,89.6 24.0))",
+        requested_date=date.fromisoformat("2026-08-17"),
+        discovery_window_days=30,
+        strict_score_maximum_date_offset_days=3,
+    )
+
+    assert len(candidates) == 1
+    assert query["bursts_within_discovery_window"] == 1
+    assert query["bursts_within_strict_score_window"] == 0
+    assert candidates[0]["observation_date"] == "2026-08-25"
+    assert query["acquisition_dates_within_discovery_window"][0]["date_offset_days"] == 8
+
+
