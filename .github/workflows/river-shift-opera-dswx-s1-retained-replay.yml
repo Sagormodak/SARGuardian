@@ -1,0 +1,167 @@
+name: RiverShift retained-run OPERA DSWx-S1 SAR cross-check
+
+run-name: RiverShift OPERA DSWx-S1 · run ${{ inputs.source_run_id || '41803576163' }
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/run-triggers/rivershift-opera-dswx-s1-run36-20261104"
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Completed RiverShift run containing the retained prepared selection manifest
+        required: true
+        type: string
+        default: "41803576163"
+      maximum_date_offset_days:
+        description: Maximum absolute OPERA sensing-date offset from the exact NISAR observation
+        required: true
+        type: choice
+        options: ["0", "1", "2", "3", "5", "7"]
+        default: "3"
+      minimum_common_support_fraction:
+        description: Minimum labelled OPERA WTR support over NISAR-valid pixels
+        required: true
+        type: choice
+        options: ["0.80", "0.85", "0.90", "0.95", "0.99"]
+        default: "0.80"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: river-shift-opera-dswx-s1-${{ inputs.source_run_id || '41803576163' }
+  cancel-in-progress: false
+
+jobs:
+  reference:
+    name: Build OPERA DSWx-S1 reference and compare with retained NISAR water mask
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }
+      RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: ${{ github.workspace }}/tools/river_shift
+    steps:
+      - name: Check out RiverShift science tools
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }
+
+      - name: Download the exact retained RiverShift prepared manifest
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-prepared-*
+          path: prepared/
+          run-id: ${{ inputs.source_run_id || '41803576163' }
+          github-token: ${{ secrets.GITHUB_TOKEN }
+          merge-multiple: false
+
+      - name: Install pinned RiverShift geospatial runtime
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+
+      - name: Verify retained selection and run OPERA DSWx-S1 SAR cross-check
+        shell: micromamba-shell {0}
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id || '41803576163' }
+          MAXIMUM_DATE_OFFSET_DAYS: ${{ inputs.maximum_date_offset_days || '3' }
+          MINIMUM_COMMON_SUPPORT_FRACTION: ${{ inputs.minimum_common_support_fraction || '0.80' }
+        run: |
+          set -euo pipefail
+          echo "::group::RiverShift OPERA DSWx-S1 reference replay"
+          python --version
+          gdalinfo --version
+          python -c "import earthaccess, rasterio, numpy, shapely, pyproj; print('RIVERSHIFT_OPERA_RUNTIME=PASS')"
+          python -u tools/river_shift/run_opera_dswx_s1_reference.py \
+            --prepared-dir prepared \
+            --api-base-url https://sarguardian-backend-api.vercel.app \
+            --output-dir opera-output \
+            --maximum-date-offset-days "$MAXIMUM_DATE_OFFSET_DAYS" \
+            --minimum-common-support-fraction "$MINIMUM_COMMON_SUPPORT_FRACTION" \
+            --block-size-pixels 64 \
+            --bootstrap-replicates 500
+          echo "RIVERSHIFT_OPERA_SOURCE_RUN=$SOURCE_RUN_ID"
+          echo "::endgroup::"
+
+      - name: Retain OPERA reference and independent comparison evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: river-shift-opera-dswx-s1-reference-${{ inputs.source_run_id || '41803576163' }
+          path: |
+            opera-output/opera_dswx_s1_reference_report.json
+            opera-output/opera_dswx_s1_independent_validation.json
+            opera-output/opera_dswx_s1_validation_status.json
+            opera-output/reference-opera-dswx-s1-water.tif
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 1
+
+      - name: Publish privacy-safe scientific outcome
+        if: always()
+        shell: bash
+        env:
+          REPORT: opera-output/opera_dswx_s1_reference_report.json
+          STATUS: opera-output/opera_dswx_s1_validation_status.json
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report_path = Path(os.environ["REPORT"])
+          status_path = Path(os.environ["STATUS"])
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          lines = ["## RiverShift — OPERA DSWx-S1 SAR cross-sensor reference", ""]
+          if not report_path.is_file() or not status_path.is_file():
+              lines.extend([
+                  "**Pipeline did not produce a complete scientific report.** Review the preceding logs.",
+                  "",
+                  "The original RiverShift processing result was not modified.",
+              ])
+          else:
+              report = json.loads(report_path.read_text(encoding="utf-8"))
+              status = json.loads(status_path.read_text(encoding="utf-8"))
+              lines.extend([
+                  f"- Status: **{status.get('status')}**",
+                  f"- Source job: {status.get('source_job_id')}",
+                  f"- NISAR observation: {status.get('requested_nisar_observation_date')}",
+                  f"- OPERA DSWx-S1 observation: {status.get('selected_opera_observation_date') or 'no eligible scene'}",
+                  f"- Common valid support: {status.get('common_support_fraction') if status.get('common_support_fraction') is not None else 'not calculated'}",
+                  f"- Release status: **{status.get('release_status', 'PROVISIONAL')}**",
+                  f"- Independent review required: {status.get('review_required', True)}",
+                  "",
+              ])
+              metrics = ((report.get("validation") or {}).get("metrics") or {})
+              if metrics:
+                  lines.extend(["| Metric | Value |", "|---|---:|"])
+                  for key in ("accuracy", "precision_user_accuracy", "recall_producer_accuracy",
+                              "f1_score", "intersection_over_union", "specificity", "cohen_kappa",
+                              "area_bias_percent"):
+                      value = metrics.get(key)
+                      lines.append(f"| {key} | {'not available' if value is None else f'{float(value):.4f}'} |")
+                  lines.append("")
+              else:
+                  lines.extend(["No accuracy metrics were calculated or published.", ""])
+              lines.extend([
+                  "**Interpretation:** OPERA DSWx-S1 is a Sentinel-1 C-band SAR-derived open-water cross-check, not field truth. Only OPERA WTR classes 0 and 1 are labelled; inundated vegetation and masked classes remain NoData. Do not use this water agreement score to claim validated erosion, deposition, bankline migration, sediment volume or flood causality.",
+                  "",
+                  "The original RiverShift source run and result remain unchanged and PROVISIONAL.",
+              ])
+          with summary.open("a", encoding="utf-8") as stream:
+              stream.write("\n".join(lines) + "\n")
+          PY
