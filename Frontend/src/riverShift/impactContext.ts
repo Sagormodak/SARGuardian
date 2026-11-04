@@ -127,15 +127,17 @@ type CandidatePolygon = {
 
 function indexCandidatePolygon(rings: PolygonRings): CandidatePolygon {
   const outer = rings[0];
-  const longitudes = outer.map(([longitude]) => longitude);
-  const latitudes = outer.map(([, latitude]) => latitude);
-  return {
-    rings,
-    minLongitude: Math.min(...longitudes),
-    maxLongitude: Math.max(...longitudes),
-    minLatitude: Math.min(...latitudes),
-    maxLatitude: Math.max(...latitudes),
-  };
+  let minLongitude = Infinity;
+  let maxLongitude = -Infinity;
+  let minLatitude = Infinity;
+  let maxLatitude = -Infinity;
+  outer.forEach(([longitude, latitude]) => {
+    minLongitude = Math.min(minLongitude, longitude);
+    maxLongitude = Math.max(maxLongitude, longitude);
+    minLatitude = Math.min(minLatitude, latitude);
+    maxLatitude = Math.max(maxLatitude, latitude);
+  });
+  return { rings, minLongitude, maxLongitude, minLatitude, maxLatitude };
 }
 
 function candidateClass(properties: Record<string, unknown> | undefined): CandidateClass | null {
@@ -342,27 +344,60 @@ export function deriveImpactMapPoints(
   if (!Number.isInteger(maximumPoints) || maximumPoints < 0) {
     throw new Error('Maximum impact-map point count must be a non-negative integer.');
   }
-  const result: ImpactMapPoint[] = [];
-  for (let featureIndex = 0; featureIndex < exposure.features.length; featureIndex += 1) {
-    const feature = exposure.features[featureIndex];
+  if (maximumPoints === 0) return [];
+  const totalPoints = exposure.features.reduce((total, feature) => (
+    total + (feature.geometry.type === 'Point' ? 1 : feature.geometry.coordinates.length)
+  ), 0);
+  if (totalPoints <= maximumPoints) {
+    const all: ImpactMapPoint[] = [];
+    exposure.features.forEach((feature, featureIndex) => {
+      const positions = feature.geometry.type === 'Point'
+        ? [feature.geometry.coordinates]
+        : feature.geometry.coordinates;
+      const kind: ImpactMapPoint['kind'] = feature.properties.public_facility === true
+        ? 'public_facility'
+        : typeof feature.properties.building === 'string' ? 'building' : 'other';
+      positions.forEach(([longitude, latitude], pointIndex) => {
+        all.push({
+          id: String(feature.id ?? 'feature-' + featureIndex) + '-point-' + pointIndex,
+          longitude,
+          latitude,
+          kind,
+        });
+      });
+    });
+    return all;
+  }
+
+  // Evenly sample the full feature order rather than taking the first N OSM IDs.
+  // This keeps the map overview less biased while leaving the full exposure
+  // collection untouched for the actual polygon-intersection counts.
+  const step = totalPoints / maximumPoints;
+  let nextTarget = 0;
+  let globalIndex = 0;
+  const sampled: ImpactMapPoint[] = [];
+  exposure.features.forEach((feature, featureIndex) => {
+    if (sampled.length >= maximumPoints) return;
     const positions = feature.geometry.type === 'Point'
       ? [feature.geometry.coordinates]
       : feature.geometry.coordinates;
     const kind: ImpactMapPoint['kind'] = feature.properties.public_facility === true
       ? 'public_facility'
       : typeof feature.properties.building === 'string' ? 'building' : 'other';
-    for (let pointIndex = 0; pointIndex < positions.length; pointIndex += 1) {
-      if (result.length >= maximumPoints) return result;
-      const [longitude, latitude] = positions[pointIndex];
-      result.push({
-        id: String(feature.id ?? 'feature-' + featureIndex) + '-point-' + pointIndex,
-        longitude,
-        latitude,
-        kind,
-      });
-    }
-  }
-  return result;
+    positions.forEach(([longitude, latitude], pointIndex) => {
+      if (sampled.length < maximumPoints && globalIndex >= nextTarget) {
+        sampled.push({
+          id: String(feature.id ?? 'feature-' + featureIndex) + '-point-' + pointIndex,
+          longitude,
+          latitude,
+          kind,
+        });
+        nextTarget += step;
+      }
+      globalIndex += 1;
+    });
+  });
+  return sampled;
 }
 
 export type OpenStreetMapImpactResult = {
