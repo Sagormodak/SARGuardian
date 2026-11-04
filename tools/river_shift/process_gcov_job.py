@@ -42,6 +42,7 @@ MAX_SELECTED_DATES = 12
 MAX_SELECTED_GRANULES = 48
 MAX_GRANULES_PER_DATE = 4
 MAX_WEB_PREVIEW_BYTES = 3_500_000
+MAX_SPARSE_PREVIEW_MARKERS = 8_000
 
 from drive_upload_adapter import (
     DriveClient,
@@ -1059,8 +1060,21 @@ def write_mask_web_preview(
                         "geometry": mapping(geographic),
                     })
 
+                sparse_marker_points_omitted = 0
+                sparse_marker_points_rendered = 0
                 if sparse_cells:
                     sparse_rows, sparse_columns = np.nonzero(sparse)
+                    if sparse_cells > MAX_SPARSE_PREVIEW_MARKERS:
+                        sample_indices = np.linspace(
+                            0,
+                            sparse_cells - 1,
+                            num=MAX_SPARSE_PREVIEW_MARKERS,
+                            dtype=np.int64,
+                        )
+                        sparse_rows = sparse_rows[sample_indices]
+                        sparse_columns = sparse_columns[sample_indices]
+                    sparse_marker_points_rendered = int(len(sparse_rows))
+                    sparse_marker_points_omitted = sparse_cells - sparse_marker_points_rendered
                     sparse_coordinates = []
                     for row, column in zip(sparse_rows.tolist(), sparse_columns.tolist()):
                         x, y = preview_transform * (column + 0.5, row + 0.5)
@@ -1074,6 +1088,8 @@ def write_mask_web_preview(
                             "preview_geometry": "sparse_candidate_cell_centres",
                             "preview_sparse_marker": True,
                             "sparse_preview_cell_count": sparse_cells,
+                            "sparse_marker_points_rendered": sparse_marker_points_rendered,
+                            "sparse_marker_points_omitted": sparse_marker_points_omitted,
                         },
                         "geometry": mapping(MultiPoint(sparse_coordinates)),
                     })
@@ -1098,6 +1114,9 @@ def write_mask_web_preview(
                         "preview_candidate_cells": candidate_cells,
                         "preview_polygon_cells": polygon_cells,
                         "preview_sparse_marker_cells": sparse_cells,
+                        "preview_sparse_marker_points_rendered": sparse_marker_points_rendered,
+                        "preview_sparse_marker_points_omitted": sparse_marker_points_omitted,
+                        "maximum_sparse_marker_points": MAX_SPARSE_PREVIEW_MARKERS,
                         "minimum_polygon_occupancy_fraction": 0.5,
                         "source_candidate_pixels": source_candidate_pixels,
                         "display_pixel_size_m": round(display_pixel_size_m, 3),
@@ -1165,6 +1184,11 @@ def preview_geometry_overlap_metrics(
         "deposition": 0,
         "new_water": 0,
     }
+    sparse_marker_point_omissions: dict[str, int] = {
+        "erosion": 0,
+        "deposition": 0,
+        "new_water": 0,
+    }
     project = Transformer.from_crs("EPSG:4326", analysis_crs, always_xy=True).transform
     for feature in features:
         properties = feature.get("properties") if isinstance(feature, dict) else None
@@ -1181,6 +1205,9 @@ def preview_geometry_overlap_metrics(
                     sparse_marker_point_counts[layer] += 1
                 elif geographic.geom_type == "MultiPoint":
                     sparse_marker_point_counts[layer] += len(geographic.geoms)
+                omitted_points = properties.get("sparse_marker_points_omitted", 0)
+                if isinstance(omitted_points, int) and not isinstance(omitted_points, bool) and omitted_points > 0:
+                    sparse_marker_point_omissions[layer] += omitted_points
                 continue
             # Overlap area/Jaccard is polygon-footprint-only. Sparse marker
             # points are counted separately and never buffered into area.
@@ -1257,11 +1284,13 @@ def preview_geometry_overlap_metrics(
             name: area / 1_000_000.0 for name, area in class_area.items()
         },
         "per_class_sparse_marker_points": sparse_marker_point_counts,
+        "per_class_sparse_marker_points_omitted": sparse_marker_point_omissions,
         "pairwise": pairwise,
         "pairwise_polygon_footprints": pairwise,
         "warning": (
             "Polygon-footprint overlap is a display-only diagnostic and excludes sparse MultiPoint markers. "
-            "Sparse marker counts are reported separately and are not buffered into area. Never use preview "
+            "Sparse marker counts and display-size omissions are reported separately and are not buffered into area. "
+            "Sparse markers are a deterministic sample capped per class for map readability. Never use preview "
             "areas for measurements; use full-resolution masks and the candidate_overlap_audit report."
         ),
     }
