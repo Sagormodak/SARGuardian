@@ -716,7 +716,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       return {
         fillColor: colour,
         strokeColor: colour,
-        fillOpacity: isGeneralScanJob ? 0 : 0.34,
+        fillOpacity: isGeneralScanJob ? 0.42 : 0.34,
         strokeOpacity: 0.95,
         strokeWeight: isGeneralScanJob ? 2.4 : 2,
       };
@@ -1029,6 +1029,16 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
                   ? `${generalChangeMarkers.length} representative marker(s) shown (up to 24 per class). They remain visible across observed-date steps; they are window-level candidates, not date-specific measurements.`
                   : 'No erosion, deposition or new-water candidate footprints are available for markers in this result.'}</p>
               </div>
+            )}
+            {riverJob.analysis_mode === 'general_scan' && (
+              <>
+                <div className="rs-change-legend" aria-label="General Scan candidate map legend">
+                  <span><i className="rs-change-swatch rs-change-swatch-erosion" aria-hidden="true" />Erosion candidate</span>
+                  <span><i className="rs-change-swatch rs-change-swatch-deposition" aria-hidden="true" />Deposition candidate</span>
+                  <span><i className="rs-change-swatch rs-change-swatch-new-water" aria-hidden="true" />New-water candidate</span>
+                </div>
+                <p className="rs-change-legend-note">Translucent areas show the retained date-window candidate footprints. The AOI remains outline-only; candidate colours do not imply field confirmation.</p>
+              </>
             )}
             {currentJobFrameMetadata && <p className="rs-info-banner">NISAR observation {currentJobFrameMetadata.date} · frame {jobTimeSeriesIndex + 1}/{jobTimeSeriesFrames.length} · open-water candidate area {currentJobFrameMetadata.water_area_km2.toFixed(3)} km² · valid common-support pixels {(currentJobFrameMetadata.valid_pixel_fraction * 100).toFixed(1)}% · source {currentJobFrameMetadata.granule_name || 'granule ID recorded in source report'}{!currentJobFrame ? ' · loading checksum-verified map layer…' : ''}</p>}
           </section>
