@@ -201,7 +201,7 @@ def test_workflow_hdf5_checks_are_safe_with_pipefail():
     # pipeline can terminate gdalinfo early and produce SIGPIPE (141) under
     # set -o pipefail even when GDAL has the HDF5 driver installed.
     assert "gdalinfo --formats | grep" not in workflow
-    assert workflow.count('gdal_formats="$(gdalinfo --formats)"') == 6
+    assert workflow.count('gdal_formats="$(gdalinfo --formats)"') == 8
     assert workflow.count("grep -Eiq '^[[:space:]]*HDF5[[:space:]]+-' <<< \"$gdal_formats\"") == 5
 
 
