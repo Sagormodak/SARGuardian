@@ -266,3 +266,26 @@ def test_preview_overlap_area_excludes_sparse_point_markers_and_reports_them_sep
     assert result["per_class_sparse_marker_points"]["erosion"] == 2
     assert result["pairwise"]["erosion__deposition"]["intersection_area_km2"] == pytest.approx(0.005, rel=1e-5)
     assert result["pairwise_polygon_footprints"] == result["pairwise"]
+
+
+def test_sparse_preview_marker_cap_is_explicit_and_does_not_change_source_pixels(tmp_path):
+    source = np.zeros((512, 512), dtype=np.uint8)
+    source[0::2, 0::2] = 1  # 65,536 low-occupancy preview cells at 256x256.
+    source_path = _write_mask(tmp_path / "many_sparse_candidates.tif", source)
+    original_digest = sha256_file(source_path)
+
+    preview = write_mask_web_preview(
+        source_path,
+        tmp_path / "many_sparse_preview.geojson",
+        class_name="new_water",
+        max_dimension=256,
+    )
+
+    diagnostics = preview["river_shift_preview"]
+    marker_feature = next(feature for feature in preview["features"] if feature["properties"].get("preview_sparse_marker"))
+    assert diagnostics["source_candidate_pixels"] == 65_536
+    assert diagnostics["preview_sparse_marker_cells"] == 65_536
+    assert diagnostics["preview_sparse_marker_points_rendered"] == 8_000
+    assert diagnostics["preview_sparse_marker_points_omitted"] == 57_536
+    assert len(marker_feature["geometry"]["coordinates"]) == 8_000
+    assert sha256_file(source_path) == original_digest
