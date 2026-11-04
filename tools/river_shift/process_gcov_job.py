@@ -1154,7 +1154,7 @@ def preview_geometry_overlap_metrics(
     features: list[dict[str, Any]],
     analysis_crs: CRS,
 ) -> dict[str, Any]:
-    """Quantify apparent overlap between display-only class footprints in a metric CRS."""
+    """Quantify polygon-footprint overlap; sparse MultiPoint markers are counted, not buffered."""
     class_geometries: dict[str, list[Any]] = {
         "erosion": [],
         "deposition": [],
@@ -1241,14 +1241,14 @@ def preview_geometry_overlap_metrics(
                 intersection_area / smaller_area if smaller_area > 0 else None
             ),
             "interpretation": (
-                "Display-only geometry overlap. Compare with the full-resolution candidate-mask "
-                "overlap audit; downsampling can expand footprints and create apparent overlap."
+                "Display-only polygon-footprint overlap. Sparse MultiPoint markers are excluded from area. "
+                "Compare with full-resolution masks; reduced-grid polygon cells can still generalise boundaries."
             ),
         }
 
     return {
         "status": "DISPLAY_ONLY_DIAGNOSTIC",
-        "method": "projected_geometry_intersection_per_display_class",
+        "method": "projected_polygon_footprint_intersection_per_display_class",
         "analysis_crs": analysis_crs.to_string(),
         "per_class_area_km2": {
             name: area / 1_000_000.0 for name, area in class_area.items()
@@ -1372,7 +1372,7 @@ def create_web_previews(
         },
         "river_shift_preview": {
             "status": "DISPLAY_ONLY",
-            "method": "separate_average_aggregated_mask_footprints_per_class",
+            "method": "majority_occupancy_polygons_plus_sparse_cell_centres_per_class",
             "class_count": len({feature["properties"]["river_shift_layer"] for feature in change_features}),
             "feature_count": len(change_features),
             "features_omitted_for_size": 0,
