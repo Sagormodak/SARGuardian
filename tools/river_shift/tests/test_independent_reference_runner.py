@@ -150,7 +150,7 @@ def test_common_support_fraction_uses_prediction_valid_footprint(tmp_path) -> No
     ref_path = tmp_path / "reference.tif"
     _write_mask(pred_path, prediction)
     _write_mask(ref_path, reference)
-    assert runner._common_support_fraction(pred_path, ref_path) == pytest.approx(6 / 6)
+    assert runner._common_support_fraction(pred_path, ref_path) == pytest.approx(6 / 8)
 
 
 def test_common_support_fraction_rejects_grid_mismatch(tmp_path) -> None:
