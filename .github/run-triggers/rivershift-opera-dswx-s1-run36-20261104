@@ -7,3 +7,4 @@ Replay attempt 3: exact collection DOI search; same event-proximal NISAR date 20
 Replay attempt 4: direct authenticated CMR UMM query by exact collection concept ID, with date-only/AOI-only diagnostics; reuse retained source run 41803576163 and keep ±3-day / >=80% gates unchanged.
 Search nearest OPERA WTR scene within ±14 days of 2026-08-17, but retain strict ±3-day scoring gate and 80% common-support gate. Out-of-gate scene is candidate-only, NO_SCORE.
 Use complete AOI-only CMR inventory and local ±30-day discovery filtering for Run #36; keep strict ±3-day score and 80% support gates unchanged.
+Trigger retained Run #36 RTC-S1 AOI inventory fallback after PR #146; NISAR observation 2026-08-17; discovery ±30 days; strict ±3-day score gate unchanged.
