@@ -259,10 +259,12 @@ def test_discovery_pins_pocloud_downloadable_scene_and_parses_wtr(monkeypatch):
     assert "provider" not in captured
     assert "short_name" not in captured
     assert "downloadable" not in captured
+    assert captured["debug"] is True
     assert captured["count"] == -1
     assert query["collection_short_name"] == opera.COLLECTION_SHORT_NAME
     assert query["collection_concept_id"] == opera.COLLECTION_CONCEPT_ID
     assert query["collection_query_method"].startswith("earthaccess DOI lookup")
+    assert query["downloadable_filter_applied"] is False
     assert len(records) == 1
     assert records[0]["tile_id"] == "45RVM"
     assert records[0]["observation_date"] == "2026-08-18"
