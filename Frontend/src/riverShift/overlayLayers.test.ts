@@ -60,7 +60,10 @@ describe('RiverShift candidate overlay filters', () => {
       newWater: true,
       observedWater: false,
     });
-    expect(filtered.features.map((feature) => feature.properties?.river_shift_layer || feature.properties?.class))
-      .toEqual(['erosion', 'deposition', 'newly_water_covered']);
+    expect(filtered.features.map((feature) => (
+      feature.properties?.river_shift_layer
+      || feature.properties?.class
+      || feature.properties?.context_layer
+    ))).toEqual(['erosion', 'deposition', 'newly_water_covered', 'aoi_boundary']);
   });
 });
