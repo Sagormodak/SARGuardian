@@ -121,7 +121,8 @@ def _prepare_inputs(
     return by_date, provenance
 
 
-def _close_enough(actual: float, expected: float, *, tolerance: float = 1e-8) -> bool:
+def _close_enough(actual: float, expected: float, *, tolerance: float) -> bool:
+    """Compare against the precision retained in the original Run #36 display."""
     return abs(float(actual) - float(expected)) <= tolerance
 
 
@@ -198,15 +199,29 @@ def replay(prepared_root: Path, products_root: Path, output_root: Path) -> dict[
     }
     quality_dir = output_root / "outputs" / "quality-assurance"
     source_audit_path = quality_dir / "candidate_mask_overlap_audit.json"
+    source_masks = {
+        "erosion": morphology_dir / "erosion_candidate_mask.tif",
+        "deposition": morphology_dir / "deposition_candidate_mask.tif",
+        "new_water": flood_dir / "newly_water_covered_mask.tif",
+    }
     source_audit = audit_candidate_mask_overlap(
-        {
-            "erosion": morphology_dir / "erosion_candidate_mask.tif",
-            "deposition": morphology_dir / "deposition_candidate_mask.tif",
-            "new_water": flood_dir / "newly_water_covered_mask.tif",
-        },
+        source_masks,
         source_audit_path,
         comparison_window=comparison_window,
     )
+    # Make a reproducible, self-contained evidence bundle while preserving the
+    # original science masks in their analysis directories. These are byte-for-
+    # byte copies with independently checked hashes, not recomputed rasters.
+    for class_name, source_mask in source_masks.items():
+        evidence_name = {
+            "erosion": "erosion_mask.tif",
+            "deposition": "deposition_mask.tif",
+            "new_water": "new_water_mask.tif",
+        }[class_name]
+        evidence_path = quality_dir / evidence_name
+        shutil.copy2(source_mask, evidence_path)
+        if sha256_file(source_mask) != sha256_file(evidence_path):
+            raise ValueError(f"Retrospective evidence copy checksum mismatch for {class_name}")
 
     # Reuse the current worker's exact preview generator and geometry-overlap
     # function. An empty acquisition-frame list is intentional: this replay is
@@ -247,8 +262,20 @@ def replay(prepared_root: Path, products_root: Path, output_root: Path) -> dict[
         "persistent_erosion_candidate_area_ha": float(morphology_result["metrics"]["persistent_erosion_candidate_area_ha"]),
         "persistent_deposition_candidate_area_ha": float(morphology_result["metrics"]["persistent_deposition_candidate_area_ha"]),
     }
+    # Run #36's retained console summary printed new-water to 4 decimals and
+    # morphology areas to 3 decimals. Allow only the corresponding half-unit
+    # rounding interval; this is not a broad numerical tolerance.
+    display_rounding_tolerance = {
+        "newly_water_covered_area_km2": 0.00005,
+        "persistent_erosion_candidate_area_ha": 0.0005,
+        "persistent_deposition_candidate_area_ha": 0.0005,
+    }
     match_flags = {
-        key: _close_enough(value, ORIGINAL_METRICS[key])
+        key: _close_enough(
+            value,
+            ORIGINAL_METRICS[key],
+            tolerance=display_rounding_tolerance[key],
+        )
         for key, value in reproduced_metrics.items()
     }
     reproduction_status = "EXACT_AREA_REPRODUCTION" if all(match_flags.values()) else "AREA_REPRODUCTION_DIVERGED"
