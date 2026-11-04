@@ -1026,7 +1026,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
                   </span>
                 </label>
                 <p className="rs-marker-note">{generalChangeMarkers.length > 0
-                  ? `${generalChangeMarkers.length} window-level candidate marker(s) available. They remain visible across observed-date steps; they are not date-specific measurements.`
+                  ? `${generalChangeMarkers.length} representative marker(s) shown (up to 24 per class). They remain visible across observed-date steps; they are window-level candidates, not date-specific measurements.`
                   : 'No erosion, deposition or new-water candidate footprints are available for markers in this result.'}</p>
               </div>
             )}
