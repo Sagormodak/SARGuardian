@@ -1103,13 +1103,13 @@ def _report_retry_wave() -> None:
         callback_state = "failed"
         callback_stage = "delayed_retry_setup_failed"
         error_code = "RETRY_MATRIX_HANDOFF_FAILED"
-        error_message = "One or more fresh-runner retry waves could not be prepared: " + "; ".join(setup_failures)
+        error_message = "One or more retry matrix handoffs for fresh-runner waves could not be prepared: " + "; ".join(setup_failures)
     elif failed:
         callback_state = "failed"
         callback_stage = "delayed_retry_waves_exhausted"
         error_code = "PRODUCT_RETRY_FAILED"
         error_message = (
-            f"{failed} product(s) remained unverifiable after up to three fresh-runner retry waves."
+            f"{failed} delayed retry product(s) remained unverifiable after up to three fresh-runner retry waves."
         )
 
     callbacks.send(
