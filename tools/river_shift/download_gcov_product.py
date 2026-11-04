@@ -9,13 +9,22 @@ import os
 import re
 import shutil
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Any
 
+import requests
+
 
 HDF5_SIGNATURE = bytes.fromhex("894844460d0a1a0a")
 MATURITIES = {"BETA", "PROVISIONAL"}
+RANGE_PART_BYTES = 256 * 1024 * 1024
+RANGE_DOWNLOAD_WORKERS = 2
+RANGE_MAX_ATTEMPTS = 3
+DOWNLOAD_STREAM_CHUNK_BYTES = 8 * 1024 * 1024
+EARTHDATA_LOGIN_MAX_ATTEMPTS = 2
 
 
 def _load_earthaccess():
@@ -96,6 +105,357 @@ def _reauthenticate_with_username_password(earthaccess) -> bool:
         os.environ["EARTHDATA_TOKEN"] = token
 
 
+def _transient_network_error(error: BaseException) -> bool:
+    """Identify transport failures without retrying rejected credentials or bad URLs."""
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.ChunkedEncodingError,
+            TimeoutError,
+            ConnectionError,
+        )):
+            return True
+        for nested in (getattr(current, "__cause__", None), getattr(current, "__context__", None)):
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+    return False
+
+
+def _safe_error_message(error: BaseException) -> str:
+    """Keep useful transport diagnostics while ensuring credentials never enter logs."""
+    message = str(error)
+    for secret_name in ("EARTHDATA_TOKEN", "EARTHDATA_PASSWORD"):
+        secret = os.environ.get(secret_name, "")
+        if secret:
+            message = message.replace(secret, "[REDACTED]")
+    return message[:240]
+
+
+def _login_with_bounded_retry(earthaccess, *, retry_wave: bool) -> str:
+    """Retry transient EDL login transport errors once; never loop on bad credentials."""
+    token = os.environ.get("EARTHDATA_TOKEN", "").strip()
+    username = os.environ.get("EARTHDATA_USERNAME", "").strip()
+    password = os.environ.get("EARTHDATA_PASSWORD", "")
+    use_password_fallback = bool(retry_wave and token and username and password)
+    auth_mode = "username_password_delayed_retry" if use_password_fallback else (
+        "bearer_token" if token else "username_password"
+    )
+
+    for attempt in range(1, EARTHDATA_LOGIN_MAX_ATTEMPTS + 1):
+        try:
+            if use_password_fallback:
+                print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+                    "stage": "delayed_retry_password_authentication",
+                    "status": "START",
+                    "attempt_number": attempt,
+                }), flush=True)
+                if not _reauthenticate_with_username_password(earthaccess):
+                    raise RuntimeError("username_password_retry_not_configured")
+            else:
+                earthaccess.login(strategy="environment")
+            return auth_mode
+        except Exception as exc:
+            http_status = _earthdata_http_auth_rejection(exc)
+            transient = _transient_network_error(exc)
+            print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+                "stage": "earthdata_login",
+                "status": "RETRY" if transient and attempt < EARTHDATA_LOGIN_MAX_ATTEMPTS else "FAIL",
+                "attempt_number": attempt,
+                "max_attempts": EARTHDATA_LOGIN_MAX_ATTEMPTS,
+                "auth_mode": auth_mode,
+                "error_type": type(exc).__name__,
+                "http_status": http_status,
+                "transient_network_error": transient,
+                "error_message": _safe_error_message(exc),
+            }), flush=True)
+            if not transient or attempt >= EARTHDATA_LOGIN_MAX_ATTEMPTS:
+                raise
+            time.sleep(min(2 ** attempt, 4))
+            # Clear a possibly half-initialized earthaccess module cache before
+            # the bounded second login attempt. The configured environment remains
+            # unchanged, so this does not convert a transport error into a credential retry.
+            if hasattr(earthaccess, "Auth") and hasattr(earthaccess, "_auth"):
+                try:
+                    earthaccess._auth = earthaccess.Auth()
+                    if hasattr(earthaccess, "_store"):
+                        earthaccess._store = None
+                except Exception:
+                    pass
+    raise RuntimeError("Earthdata login did not complete.")
+
+
+def _authenticated_requests_session_factory(earthaccess):
+    """Return earthaccess's redirect-safe EDL requests-session factory, if available."""
+    getter = getattr(earthaccess, "get_requests_https_session", None)
+    if not callable(getter):
+        getter = getattr(earthaccess, "get_requests_session", None)
+    return getter if callable(getter) else None
+
+
+def _is_trusted_nisar_url(value: Any, expected_name: str) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    parsed = urlparse(value.strip())
+    host = (parsed.hostname or "").lower()
+    return (
+        parsed.scheme == "https"
+        and (host == "nisar.asf.earthdatacloud.nasa.gov" or host.endswith(".asf.earthdatacloud.nasa.gov"))
+        and Path(parsed.path).name == f"{expected_name}.h5"
+    )
+
+
+def _parse_content_range(value: Any) -> tuple[int, int, int] | None:
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(r"bytes\s+(\d+)-(\d+)/(\d+)", value.strip(), re.IGNORECASE)
+    if not match:
+        return None
+    start, end, total = (int(item) for item in match.groups())
+    if start < 0 or end < start or total <= end:
+        return None
+    return start, end, total
+
+
+def _probe_http_range_support(earthaccess, url: str, expected_name: str) -> dict[str, Any] | None:
+    """Probe one byte only. Return None when the ASF endpoint does not support Range."""
+    if not _is_trusted_nisar_url(url, expected_name):
+        print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+            "stage": "http_range_probe",
+            "status": "SKIP",
+            "reason": "no trusted exact-granule ASF URL in the selected manifest",
+        }), flush=True)
+        return None
+    factory = _authenticated_requests_session_factory(earthaccess)
+    if factory is None:
+        print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+            "stage": "http_range_probe",
+            "status": "SKIP",
+            "reason": "earthaccess authenticated requests session is unavailable",
+        }), flush=True)
+        return None
+
+    response = None
+    started = time.monotonic()
+    try:
+        session = factory()
+        response = session.get(
+            url,
+            headers={"Range": "bytes=0-0"},
+            stream=True,
+            allow_redirects=True,
+            timeout=(20, 60),
+        )
+        status = int(getattr(response, "status_code", 0) or 0)
+        if status in {401, 403}:
+            raise RuntimeError(f"Earthdata rejected the exact NISAR range probe with HTTP status: {status}")
+        if status != 206:
+            print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+                "stage": "http_range_probe",
+                "status": "FALLBACK",
+                "http_status": status,
+                "reason": "server did not return HTTP 206 Partial Content",
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+            }), flush=True)
+            return None
+        parsed = _parse_content_range(getattr(response, "headers", {}).get("Content-Range"))
+        if parsed != (0, 0, parsed[2] if parsed else -1):
+            raise RuntimeError("The ASF range probe returned a malformed Content-Range header.")
+        content_length = getattr(response, "headers", {}).get("Content-Length")
+        if content_length not in (None, "", "1"):
+            raise RuntimeError("The ASF range probe returned an unexpected Content-Length.")
+        metadata = {
+            "size_bytes": parsed[2],
+            "etag": getattr(response, "headers", {}).get("ETag"),
+            "last_modified": getattr(response, "headers", {}).get("Last-Modified"),
+            "session_factory": factory,
+        }
+        print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+            "stage": "http_range_probe",
+            "status": "PASS",
+            "http_status": 206,
+            "size_bytes": metadata["size_bytes"],
+            "etag_present": bool(metadata["etag"]),
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }), flush=True)
+        return metadata
+    except RuntimeError:
+        raise
+    except requests.exceptions.RequestException as exc:
+        print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+            "stage": "http_range_probe",
+            "status": "FALLBACK",
+            "error_type": type(exc).__name__,
+            "error_message": _safe_error_message(exc),
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }), flush=True)
+        return None
+    finally:
+        if response is not None and callable(getattr(response, "close", None)):
+            response.close()
+
+
+def _download_one_http_range(
+    *,
+    session_factory,
+    url: str,
+    destination: Path,
+    start: int,
+    end: int,
+    total_size: int,
+    etag: str | None,
+    granule_name: str,
+) -> int:
+    expected_bytes = end - start + 1
+    for attempt in range(1, RANGE_MAX_ATTEMPTS + 1):
+        response = None
+        try:
+            headers = {"Range": f"bytes={start}-{end}"}
+            if etag:
+                headers["If-Range"] = etag
+            session = session_factory()
+            response = session.get(
+                url,
+                headers=headers,
+                stream=True,
+                allow_redirects=True,
+                timeout=(20, 180),
+            )
+            status = int(getattr(response, "status_code", 0) or 0)
+            if status in {401, 403}:
+                raise RuntimeError(f"Earthdata rejected the NISAR range for {granule_name} with HTTP status: {status}")
+            if status in {408, 425, 429} or status >= 500:
+                raise requests.exceptions.HTTPError(
+                    f"Transient HTTP {status} while downloading byte range {start}-{end}",
+                    response=response,
+                )
+            if status != 206:
+                raise RuntimeError(
+                    f"ASF stopped honoring byte ranges for {granule_name}: expected HTTP 206, received {status}."
+                )
+            content_range = _parse_content_range(
+                getattr(response, "headers", {}).get("Content-Range")
+            )
+            if content_range != (start, end, total_size):
+                raise RuntimeError(
+                    f"ASF returned an inconsistent Content-Range for {granule_name} bytes {start}-{end}."
+                )
+            response_etag = getattr(response, "headers", {}).get("ETag")
+            if etag and response_etag and response_etag != etag:
+                raise RuntimeError("ASF product ETag changed during ranged download; refusing to combine different object versions.")
+
+            written = 0
+            with destination.open("r+b") as stream:
+                stream.seek(start)
+                for chunk in response.iter_content(chunk_size=DOWNLOAD_STREAM_CHUNK_BYTES):
+                    if not chunk:
+                        continue
+                    stream.write(chunk)
+                    written += len(chunk)
+            if written != expected_bytes:
+                raise requests.exceptions.ChunkedEncodingError(
+                    f"Range {start}-{end} yielded {written} bytes; expected {expected_bytes}."
+                )
+            return written
+        except requests.exceptions.RequestException as exc:
+            status = _earthdata_http_auth_rejection(exc)
+            if status in {401, 403} or attempt >= RANGE_MAX_ATTEMPTS:
+                raise RuntimeError(
+                    f"HTTP range {start}-{end} for {granule_name} failed after {attempt} attempt(s): "
+                    f"{type(exc).__name__}: {_safe_error_message(exc)}"
+                ) from None
+            print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+                "stage": "http_range_segment_retry",
+                "status": "RETRY",
+                "granule_name": granule_name,
+                "range_start": start,
+                "range_end": end,
+                "attempt_number": attempt,
+                "max_attempts": RANGE_MAX_ATTEMPTS,
+                "error_type": type(exc).__name__,
+            }), flush=True)
+            time.sleep(min(2 ** attempt, 8))
+        finally:
+            if response is not None and callable(getattr(response, "close", None)):
+                response.close()
+    raise RuntimeError(f"HTTP range {start}-{end} for {granule_name} exhausted its retry budget.")
+
+
+def _download_via_http_ranges(
+    *,
+    earthaccess,
+    url: str,
+    destination: Path,
+    granule_name: str,
+    range_metadata: dict[str, Any],
+) -> tuple[Path, int]:
+    total_size = int(range_metadata["size_bytes"])
+    if total_size <= 0:
+        raise RuntimeError("The ASF range probe returned an invalid product size.")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("wb") as stream:
+        stream.truncate(total_size)
+
+    ranges = [
+        (start, min(start + RANGE_PART_BYTES - 1, total_size - 1))
+        for start in range(0, total_size, RANGE_PART_BYTES)
+    ]
+    worker_count = min(RANGE_DOWNLOAD_WORKERS, len(ranges))
+    started = time.monotonic()
+    print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+        "stage": "http_range_download",
+        "status": "START",
+        "granule_name": granule_name,
+        "size_bytes": total_size,
+        "range_count": len(ranges),
+        "parallel_connections": worker_count,
+        "range_part_bytes": RANGE_PART_BYTES,
+        "max_attempts_per_range": RANGE_MAX_ATTEMPTS,
+    }), flush=True)
+
+    downloaded = 0
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="rivershift-range") as executor:
+        futures = [
+            executor.submit(
+                _download_one_http_range,
+                session_factory=range_metadata["session_factory"],
+                url=url,
+                destination=destination,
+                start=start,
+                end=end,
+                total_size=total_size,
+                etag=range_metadata.get("etag"),
+                granule_name=granule_name,
+            )
+            for start, end in ranges
+        ]
+        for future in as_completed(futures):
+            downloaded += future.result()
+
+    actual_size = destination.stat().st_size
+    if downloaded != total_size or actual_size != total_size:
+        raise RuntimeError(
+            f"Ranged download size mismatch for {granule_name}: received {downloaded} of {total_size} bytes."
+        )
+    elapsed = max(time.monotonic() - started, 0.001)
+    print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+        "stage": "http_range_download",
+        "status": "PASS",
+        "granule_name": granule_name,
+        "downloaded_bytes": downloaded,
+        "elapsed_seconds": round(elapsed, 3),
+        "throughput_mib_per_second": round(downloaded / (1024 * 1024) / elapsed, 2),
+        "retried_ranges": "see http_range_segment_retry events",
+    }), flush=True)
+    return destination, downloaded
+
+
 def is_hdf5_file(path: Path) -> bool:
     """Recognize the HDF5 signature, including a permitted user block."""
     with path.open("rb") as stream:
@@ -144,36 +504,31 @@ def download_product(product: dict, output_dir: Path) -> dict:
 
     token = os.environ.get("EARTHDATA_TOKEN", "").strip()
     retry_wave = os.environ.get("RIVERSHIFT_RETRY_ATTEMPT", "0").strip() == "1"
-    auth_mode = "bearer_token" if token else "username_password"
+    auth_mode = "username_password_delayed_retry" if retry_wave and token else (
+        "bearer_token" if token else "username_password"
+    )
     print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
         "stage": "earthdata_login",
         "status": "START",
         "auth_mode": auth_mode,
         "attempt_number": 2 if retry_wave else 1,
         "delayed_retry_wave": retry_wave,
+        "max_transient_attempts": EARTHDATA_LOGIN_MAX_ATTEMPTS,
     }), flush=True)
     try:
-        # On the first wave, a rejected token fails this product and is queued.
-        # Switch to the password session only when that product reaches the delayed retry wave.
-        if retry_wave and token and os.environ.get("EARTHDATA_USERNAME", "").strip() and os.environ.get("EARTHDATA_PASSWORD", ""):
-            print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
-                "stage": "delayed_retry_password_authentication",
-                "status": "START",
-            }), flush=True)
-            if not _reauthenticate_with_username_password(earthaccess):
-                raise RuntimeError("username_password_retry_not_configured")
-            auth_mode = "username_password_delayed_retry"
-        else:
-            earthaccess.login(strategy="environment")
+        auth_mode = _login_with_bounded_retry(earthaccess, retry_wave=retry_wave)
     except Exception as exc:
         print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
             "stage": "earthdata_login",
             "status": "FAIL",
             "auth_mode": auth_mode,
             "error_type": type(exc).__name__,
+            "http_status": _earthdata_http_auth_rejection(exc),
+            "transient_network_error": _transient_network_error(exc),
+            "error_message": _safe_error_message(exc),
         }), flush=True)
         raise RuntimeError(
-            "Earthdata authentication setup failed; verify EARTHDATA_TOKEN or the Earthdata username/password secrets."
+            "Earthdata login failed after the bounded transient retry; inspect the error type and HTTP status above."
         ) from None
     print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
         "stage": "earthdata_login",
@@ -231,64 +586,88 @@ def download_product(product: dict, output_dir: Path) -> dict:
     temporary_dir.mkdir(parents=True, exist_ok=False)
 
     try:
-        print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
-            "stage": "earthaccess_download",
-            "status": "START",
-            "threads": 1,
-            "requested_granule_count": 1,
-        }), flush=True)
-        try:
-            downloaded_paths = earthaccess.download(
-                exact_matches,
-                local_path=str(temporary_dir),
-                threads=1,
-                show_progress=False,
+        download_started = time.monotonic()
+        source_url = product.get("download_url")
+        range_metadata = _probe_http_range_support(earthaccess, source_url, expected_name)
+        download_method = "earthaccess.download"
+        if range_metadata is not None:
+            downloaded_path, downloaded_bytes = _download_via_http_ranges(
+                earthaccess=earthaccess,
+                url=source_url,
+                destination=temporary_dir / f"{expected_name}.h5",
+                granule_name=expected_name,
+                range_metadata=range_metadata,
             )
-        except Exception as download_error:
-            denied_status = _earthdata_http_auth_rejection(download_error)
+            download_method = "earthaccess_authenticated_http_range"
+        else:
             print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
                 "stage": "earthaccess_download",
-                "status": "FAIL",
-                "error_type": type(download_error).__name__,
-                "http_status": denied_status,
-                "attempt_number": 2 if retry_wave else 1,
-                "delayed_retry_wave": retry_wave,
-                "immediate_retry_performed": False,
+                "status": "START",
+                "threads": 1,
+                "requested_granule_count": 1,
+                "fallback_reason": "authenticated HTTP byte ranges unavailable",
             }), flush=True)
-            if denied_status in {401, 403} and not retry_wave:
+            try:
+                downloaded_paths = earthaccess.download(
+                    exact_matches,
+                    local_path=str(temporary_dir),
+                    threads=1,
+                    show_progress=False,
+                )
+            except Exception as download_error:
+                denied_status = _earthdata_http_auth_rejection(download_error)
+                print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
+                    "stage": "earthaccess_download",
+                    "status": "FAIL",
+                    "error_type": type(download_error).__name__,
+                    "http_status": denied_status,
+                    "attempt_number": 2 if retry_wave else 1,
+                    "delayed_retry_wave": retry_wave,
+                    "immediate_retry_performed": False,
+                    "error_message": _safe_error_message(download_error),
+                }), flush=True)
+                if denied_status in {401, 403} and not retry_wave:
+                    raise RuntimeError(
+                        "Earthdata rejected this product download with HTTP "
+                        f"{denied_status}; the product is queued for the single delayed retry wave after all first-attempt batches finish."
+                    ) from None
                 raise RuntimeError(
-                    "Earthdata rejected this product download with HTTP "
-                    f"{denied_status}; the product is queued for the single delayed retry wave after all first-attempt batches finish."
+                    "The exact NISAR GCOV product download failed on this attempt; no immediate re-download was performed."
                 ) from None
-            raise RuntimeError(
-                "The exact NISAR GCOV product download failed on this attempt; no immediate re-download was performed."
-            ) from None
 
-        paths = [Path(item).resolve() for item in (downloaded_paths or [])]
-        if len(paths) != 1:
-            raise RuntimeError(
-                f"earthaccess returned {len(paths)} files for one exact GCOV granule; refusing ambiguous output."
-            )
+            paths = [Path(item).resolve() for item in (downloaded_paths or [])]
+            if len(paths) != 1:
+                raise RuntimeError(
+                    f"earthaccess returned {len(paths)} files for one exact GCOV granule; refusing ambiguous output."
+                )
+            downloaded_path = paths[0]
 
-        downloaded_path = paths[0]
         temp_root = temporary_dir.resolve()
-        if temp_root not in downloaded_path.parents or not downloaded_path.is_file():
-            raise RuntimeError("earthaccess returned a missing or out-of-directory download path.")
+        if temp_root not in downloaded_path.resolve().parents or not downloaded_path.is_file():
+            raise RuntimeError("The exact download returned a missing or out-of-directory file.")
         if downloaded_path.stem != expected_name:
-            raise RuntimeError("earthaccess returned a filename that does not match the requested exact granule.")
+            raise RuntimeError("The downloaded NISAR filename does not match the exact requested granule.")
         downloaded_bytes = downloaded_path.stat().st_size
         if downloaded_bytes <= 0:
             raise RuntimeError("The downloaded NISAR HDF5 file is empty.")
+        if range_metadata is not None and downloaded_bytes != int(range_metadata["size_bytes"]):
+            raise RuntimeError(
+                f"The HTTP range download is incomplete: {downloaded_bytes} of {range_metadata['size_bytes']} bytes."
+            )
         if not is_hdf5_file(downloaded_path):
             raise RuntimeError(
                 "The downloaded object does not contain the HDF5 signature; it may be an HTML/login or error response."
             )
 
         downloaded_path.replace(final_path)
+        elapsed = max(time.monotonic() - download_started, 0.001)
         print("RIVERSHIFT_DOWNLOAD_STAGE " + json.dumps({
             "stage": "earthaccess_download",
             "status": "PASS",
+            "download_method": download_method,
             "downloaded_bytes": downloaded_bytes,
+            "elapsed_seconds": round(elapsed, 3),
+            "throughput_mib_per_second": round(downloaded_bytes / (1024 * 1024) / elapsed, 2),
         }), flush=True)
     finally:
         shutil.rmtree(temporary_dir, ignore_errors=True)
@@ -301,13 +680,19 @@ def download_product(product: dict, output_dir: Path) -> dict:
         "product": "GCOV",
         "maturity": maturity,
         "collection_short_name": collection,
-        "download_method": "earthaccess.download",
+        "download_method": (
+            "earthaccess_authenticated_http_range"
+            if _is_trusted_nisar_url(source_url, expected_name)
+            and callable(_authenticated_requests_session_factory(earthaccess))
+            else "earthaccess.download"
+        ),
         "source_host": source_host,
         "file_path": str(final_path.resolve()),
         "size_bytes": final_path.stat().st_size,
         "sha256": sha256_file(final_path),
         "downloaded": True,
     }
+    result["download_method"] = download_method
     receipt_path = output_dir / f"{expected_name}.download.json"
     receipt_path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
     return result
