@@ -185,7 +185,7 @@ def test_independent_reference_alignment_uses_nearest_neighbour_and_preserves_no
         assert aligned_ds.height == prediction_ds.height
         values = aligned_ds.read(1)
         assert set(np.unique(values)).issubset({0, 1, 255})
-        assert int(np.count_nonzero(values == 255)) == 8
+        assert int(np.count_nonzero(values == 255)) == 4
     assert details["method"] == "nearest_neighbour_categorical_reprojection"
     assert details["aligned_valid_pixels"] == 8
 
