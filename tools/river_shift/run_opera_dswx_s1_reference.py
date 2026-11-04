@@ -651,8 +651,8 @@ def run_pipeline(
                 reference_date=selected_date.isoformat(),
                 reference_method=(
                     "OPERA DSWx-S1 V1 WTR class 1=open water and class 0=not water; "
-                    "class 3=inundated vegetation, 120=fill, 250=HAND mask, 251=layover/shadow, "
-                    "252/253=legacy masks, 254=ocean mask, 255=fill and any other values are NoData; "
+                    "classes 3=inundated vegetation, 250=HAND masked, 251=layover/shadow and 255=fill are NoData; "
+                    "undocumented source classes are rejected instead of being re-labelled; "
                     "same-date tile revisions deduplicated by highest product version "
                     "then latest generation timestamp; nearest-neighbour categorical alignment"
                 ),
