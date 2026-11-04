@@ -1578,6 +1578,19 @@ def _assemble_job(
     inventory.extend(preview_layers)
     inventory.append({"path": time_report_path.relative_to(work_dir).as_posix(), "sha256": sha256_file(time_report_path)})
 
+    combined_preview_path = output_root / "map" / "river_change_candidates_preview.geojson"
+    combined_preview = _read_json(combined_preview_path, "combined candidate map preview")
+    preview_metadata = combined_preview.get("river_shift_preview")
+    preview_geometry_overlap = (
+        preview_metadata.get("preview_geometry_overlap")
+        if isinstance(preview_metadata, dict) else None
+    )
+    if not isinstance(preview_geometry_overlap, dict):
+        raise WorkerFailure(
+            "PREVIEW_OVERLAP_AUDIT_MISSING",
+            "The combined candidate preview is missing its projected preview-geometry overlap diagnostic.",
+        )
+
     report_digest = sha256_file(time_report_path)
     report_payload = _read_json(time_report_path, "time-series preview report")
     flood_result = _read_json(flood_dir / "river_shift_result.json", "flood result")
@@ -1608,6 +1621,7 @@ def _assemble_job(
             "pairwise": candidate_overlap_audit["pairwise"],
             "report_sha256": sha256_file(overlap_audit_path),
         },
+        "preview_geometry_overlap": preview_geometry_overlap,
         "warnings": [
             "NISAR observations occur on actual acquisition dates; no daily raster observations or interpolation were created.",
             "Riverbank erosion and deposition are provisional radar-derived candidates, not field-confirmed changes.",
