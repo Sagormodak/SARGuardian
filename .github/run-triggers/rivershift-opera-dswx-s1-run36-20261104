@@ -3,3 +3,4 @@ Replay trigger committed after the workflow was installed on main; source run 41
 Retry OPERA CMR discovery after removing the restrictive cloud_hosted filter. Source run 41803576163; exact NISAR date 2026-08-17; preserve the ±3-day and 80% common-support gates.
 Replay attempt 2: run retained-source OPERA search after query-filter fix; do not rerun NISAR GCOV processing or relax the temporal/support gates.
 Re-arm retained Run 36 OPERA reference replay through PR merge push event. Exact source date 2026-08-17; temporal ±3 days; common support >=0.80; NISAR processing must not rerun.
+Replay attempt 3: exact collection DOI search; same event-proximal NISAR date 2026-08-17, same AOI, ±3-day window, and >=0.80 labelled support. Reuse retained artifacts only; do not rerun GCOV processing.
