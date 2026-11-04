@@ -932,7 +932,12 @@ def write_mask_web_preview(
                 # out_shape average can sample away isolated positives; a
                 # coarser same-CRS warp computes fractional occupancy for each
                 # target cell, so any positive source pixel remains > 0.
-                sampled_values = np.zeros((preview_height, preview_width), dtype=np.float32)
+                # Zero is a valid background class in these binary masks.
+                # Use a separate destination NoData sentinel so GDAL does not
+                # replace valid zeros with tiny positive floats during warp.
+                sampled_values = np.full(
+                    (preview_height, preview_width), -1.0, dtype=np.float32
+                )
                 reproject(
                     source=rasterio.band(source, 1),
                     destination=sampled_values,
@@ -941,7 +946,7 @@ def write_mask_web_preview(
                     src_nodata=source_nodata,
                     dst_transform=preview_transform,
                     dst_crs=source_crs_value,
-                    dst_nodata=0.0,
+                    dst_nodata=-1.0,
                     resampling=Resampling.average,
                     init_dest_nodata=True,
                 )
