@@ -62,3 +62,15 @@ def test_matrix_rejects_non_contiguous_product_indexes():
     matrix["include"][0]["product_index"] = 2
     with pytest.raises(ValueError, match="not contiguous"):
         validate_retry_matrix(json.dumps(matrix), "1", 3)
+
+
+def test_matrix_rejects_invalid_numeric_field_types():
+    matrix = _matrix(2, ["NISAR_L2_PR_GCOV_025"])
+    matrix["include"][0]["product_index"] = "1"
+    with pytest.raises(ValueError, match="invalid or duplicate"):
+        validate_retry_matrix(json.dumps(matrix), "1", 2)
+
+
+def test_matrix_rejects_invalid_expected_wave():
+    with pytest.raises(ValueError, match="between 1 and 3"):
+        validate_retry_matrix('{"include":[]}', "0", 4)
