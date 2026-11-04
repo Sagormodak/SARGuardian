@@ -214,5 +214,10 @@ export function deriveGeneralChangeMarkers(
     counts[candidate.changeType] += 1;
     selected.push(candidate);
   }
-  return selected.map(({ area: _area, ...marker }) => marker);
+  return selected.map((candidate) => ({
+    id: candidate.id,
+    changeType: candidate.changeType,
+    longitude: candidate.longitude,
+    latitude: candidate.latitude,
+  }));
 }
