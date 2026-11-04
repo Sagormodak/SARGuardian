@@ -161,3 +161,49 @@ def test_common_support_fraction_rejects_grid_mismatch(tmp_path) -> None:
     _write_mask(ref_path, values, transform=from_origin(500010, 2700000, 10, 10))
     with pytest.raises(ValueError, match="same projected grid"):
         runner._common_support_fraction(pred_path, ref_path)
+
+
+def test_independent_reference_alignment_uses_nearest_neighbour_and_preserves_nodata(tmp_path) -> None:
+    prediction = np.zeros((4, 4), dtype=np.uint8)
+    reference = np.asarray(
+        [[1, 1, 0, 0], [1, 1, 0, 0], [0, 0, 255, 255], [0, 0, 255, 255]],
+        dtype=np.uint8,
+    )
+    prediction_path = tmp_path / "prediction.tif"
+    reference_path = tmp_path / "reference-source.tif"
+    aligned_path = tmp_path / "reference-aligned.tif"
+    _write_mask(prediction_path, prediction)
+    _write_mask(
+        reference_path,
+        reference,
+        transform=from_origin(500000, 2700000, 10, 10),
+    )
+
+    details = runner._align_reference_to_prediction(prediction_path, reference_path, aligned_path)
+
+    with rasterio.open(prediction_path) as prediction_ds, rasterio.open(aligned_path) as aligned_ds:
+        assert aligned_ds.crs == prediction_ds.crs
+        assert aligned_ds.transform == prediction_ds.transform
+        assert aligned_ds.width == prediction_ds.width
+        assert aligned_ds.height == prediction_ds.height
+        values = aligned_ds.read(1)
+        assert set(np.unique(values)).issubset({0, 1, 255})
+        assert int(np.count_nonzero(values == 255)) == 8
+    assert details["method"] == "nearest_neighbour_categorical_reprojection"
+    assert details["aligned_valid_pixels"] == 8
+
+
+def test_independent_reference_alignment_rejects_non_binary_valid_labels(tmp_path) -> None:
+    prediction_path = tmp_path / "prediction.tif"
+    reference_path = tmp_path / "reference-source.tif"
+    _write_mask(prediction_path, np.zeros((2, 2), dtype=np.uint8))
+    _write_mask(
+        reference_path,
+        np.asarray([[0, 1], [2, 255]], dtype=np.uint8),
+    )
+    with pytest.raises(ValueError, match="must be binary"):
+        runner._align_reference_to_prediction(
+            prediction_path,
+            reference_path,
+            tmp_path / "aligned.tif",
+        )
