@@ -109,7 +109,7 @@ function isObservedOpenWaterFeature(properties?: Record<string, unknown>): boole
     properties.change_type,
     properties.candidate_type,
   ].filter((value): value is string => typeof value === 'string');
-  const label = labels.map((value) => value.toLowerCase().replace(/[\\s-]+/g, '_')).join('_');
+  const label = labels.map((value) => value.toLowerCase().replace(/[\s-]+/g, '_')).join('_');
   return label.includes('open_water') && !label.includes('new');
 }
 
