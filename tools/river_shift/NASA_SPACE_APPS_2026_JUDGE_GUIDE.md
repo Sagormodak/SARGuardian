@@ -95,6 +95,15 @@ These values describe that specific AOI, selected products, threshold and compar
 
 The retained processing log records successful source provenance checks, the six-date time series, candidate-mask generation, preview generation and 51 validated output files at package assembly. Private Drive upload receipts and remote checksum checks passed. The result remained **PROVISIONAL**. **Original-run limitation:** Run #36 predates backend PR #151, which integrated the full-resolution candidate-mask overlap audit into the live worker; its original artifact manifest still does not contain candidate_mask_overlap_audit.json. A separate, checksum-bound retrospective replay ([Run #41926490047](https://github.com/moshiour0/SARGuardian-backend/actions/runs/41926490047)) downloaded all six exact retained COGs and reran the current worker functions. All six source COG checksums matched their retained sidecars; the three reported candidate areas reproduced exactly. The replay generated a new full-resolution candidate_mask_overlap_audit.json and preview geometry audit, explicitly labelled RETROSPECTIVE_RECOMPUTED_NOT_ORIGINAL_WORKER_ARTIFACT. This is reproducible retrospective evidence, not a claim that the original 2026 Run #36 worker emitted those files. New jobs on main retain both source-mask and preview-overlap diagnostics natively.
 
+**Retrospective overlap results (diagnostic, not accuracy):**
+- Common valid support: **5,581,042 pixels** (62.0125% of the full grid).
+- Full-resolution erosion ↔ deposition: **0 intersecting pixels**; Jaccard 0.000.
+- Full-resolution deposition ↔ new-water: **0 intersecting pixels**.
+- Full-resolution erosion ↔ new-water: **61,518 intersecting pixels**; Jaccard 0.2567. These screens use separate three-date Otsu thresholds/date windows (flood −11.75165 dB; morphology −12.01393 dB), so this is a cross-screen diagnostic requiring interpretation, not the erosion/deposition exclusivity test.
+- Current preview uses one 293×384 grid at 89.557 m display-cell spacing; erosion ↔ deposition polygon intersection is **0 km²**. Sparse MultiPoint markers are excluded from polygon area/Jaccard and capped at 8,000 displayed points per class.
+
+The preview's erosion ↔ new-water polygons still intersect by 0.48794 km². That is display-only and reflects the separate comparison/threshold basis; it is not an independent measurement or an accuracy score.
+
 ### Independent reference outcome for Run #36
 
 The separate [OPERA DSWx-S1 replay #41900559056](https://github.com/moshiour0/SARGuardian-backend/actions/runs/41900559056) reused the retained NISAR mask and exact prepared manifest; it did not rerun NISAR processing. NASA CMR returned 307 OPERA DSWx-S1 granules intersecting the AOI across the collection history. After local sensing-date filtering over **2026-07-18 to 2026-09-16**, 287 WTR assets were outside the discovery window, 20 returned granules were not WTR assets, and **no eligible WTR scene remained inside the 30-day discovery window**.
