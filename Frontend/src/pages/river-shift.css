@@ -129,3 +129,9 @@
 .rs-overlay-observed { padding-top: 10px; border-top: 1px solid rgba(149, 194, 208, .12); }
 .rs-overlay-note { margin: 0; color: #8eaab7; font-size: 9px; line-height: 1.5; }
 @media (max-width: 560px) { .rs-overlay-class-grid { grid-template-columns: 1fr; } }
+
+.rs-overlap-audit { margin-top: 14px; padding: 14px; border: 1px solid rgba(115, 198, 203, .2); border-radius: 10px; background: rgba(5, 26, 40, .42); }
+.rs-overlap-audit h3 { margin: 0; color: #edf9fc; font: 700 16px 'Manrope', sans-serif; letter-spacing: -.03em; }
+.rs-overlap-table-wrap { width: 100%; overflow-x: auto; border: 1px solid rgba(149, 194, 208, .14); border-radius: 8px; }
+.rs-overlap-table { min-width: 720px; }
+.rs-overlap-table th, .rs-overlap-table td { font-variant-numeric: tabular-nums; }
