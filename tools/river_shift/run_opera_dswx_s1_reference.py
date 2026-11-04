@@ -253,6 +253,20 @@ def _download_selected(selected: list[dict[str, Any]], destination: Path) -> lis
     return [found[row["filename"]] for row in selected]
 
 
+def _canonical_metadata_value(value: str | None, *, numeric: bool = False) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if numeric:
+        try:
+            return str(int(float(text)))
+        except ValueError:
+            pass
+    return text.upper()
+
+
 def _classify_wtr(values: np.ndarray, source_valid: np.ndarray | None = None) -> np.ndarray:
     """Retain only OPERA WTR class 0 (not water) and class 1 (open water)."""
     array = np.asarray(values)
@@ -303,18 +317,19 @@ def _build_reference_on_nisar_grid(
             # and TRACK_NUMBER. Some exports expose the RTC-prefixed aliases;
             # normalize both documented forms before comparing tile geometry.
             geometry_fields = {
-                "SPACECRAFT_NAME": source_tags.get("SPACECRAFT_NAME"),
-                "ORBIT_PASS_DIRECTION": (
+                "SPACECRAFT_NAME": _canonical_metadata_value(source_tags.get("SPACECRAFT_NAME")),
+                "ORBIT_PASS_DIRECTION": _canonical_metadata_value(
                     source_tags.get("ORBIT_PASS_DIRECTION")
                     or source_tags.get("RTC_ORBIT_PASS_DIRECTION")
                 ),
-                "TRACK_NUMBER": (
-                    source_tags.get("TRACK_NUMBER")
-                    or source_tags.get("RTC_TRACK_NUMBER")
+                "TRACK_NUMBER": _canonical_metadata_value(
+                    source_tags.get("TRACK_NUMBER") or source_tags.get("RTC_TRACK_NUMBER"),
+                    numeric=True,
                 ),
-                "ABSOLUTE_ORBIT_NUMBER": (
+                "ABSOLUTE_ORBIT_NUMBER": _canonical_metadata_value(
                     source_tags.get("ABSOLUTE_ORBIT_NUMBER")
-                    or source_tags.get("RTC_ABSOLUTE_ORBIT_NUMBER")
+                    or source_tags.get("RTC_ABSOLUTE_ORBIT_NUMBER"),
+                    numeric=True,
                 ),
             }
             missing_geometry = [key for key, value in geometry_fields.items() if not value]
