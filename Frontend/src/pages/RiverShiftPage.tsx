@@ -3,7 +3,7 @@ import type { User } from 'firebase/auth';
 import { importLibrary, setOptions } from '@googlemaps/js-api-loader';
 import { createRiverShiftJob, downloadRiverShiftArtifact, getRiverShiftJob, listRiverShiftJobs, type RiverShiftJob } from '../api/catalog';
 import type { RiverShiftGeoJSON, RiverShiftReport, RiverShiftTimeSeriesFrame } from '../riverShift/manifest';
-import { countRiverShiftCandidateLayers, filterRiverShiftCandidateGeoJSON, isRiverShiftGeoJSONApproved, isRiverShiftReportVerified, isRiverShiftTimeSeriesGeoJSONApproved, parseRiverShiftGeoJSON, parseRiverShiftReport } from '../riverShift/manifest';
+import { countRiverShiftCandidateLayers, filterRiverShiftCandidateGeoJSON, getRiverShiftEventObservationNote, getRiverShiftOverlapAuditAvailability, isRiverShiftGeoJSONApproved, isRiverShiftReportVerified, isRiverShiftTimeSeriesGeoJSONApproved, parseRiverShiftGeoJSON, parseRiverShiftReport } from '../riverShift/manifest';
 import { formatWktPolygon, parseWktPolygon, type Wgs84Point } from '../riverShift/aoi';
 import { deriveGeneralChangeMarkers } from '../riverShift/generalChangeMarkers';
 import './river-shift.css';
@@ -138,7 +138,22 @@ function OverlapAuditPanel({ summary }: { summary: Record<string, unknown> }) {
   const sourcePairs = asRecord(sourceAudit?.pairwise);
   const previewAudit = asRecord(summary.preview_geometry_overlap);
   const previewPairs = asRecord(previewAudit?.pairwise);
-  if (!sourcePairs || !previewPairs) return null;
+  const availability = getRiverShiftOverlapAuditAvailability(summary);
+  if (!availability.sourceMask || !availability.previewGeometry || !sourcePairs || !previewPairs) {
+    return (
+      <section className="rs-overlap-audit" aria-label="RiverShift candidate overlap audit">
+        <div className="rs-section-heading">
+          <div><p className="rs-kicker">SPATIAL QA</p><h3>Overlap audit not fully recorded</h3></div>
+          <span className="rs-chip">NOT MEASURED · NOT ZERO</span>
+        </div>
+        <p className="rs-muted">
+          Full-resolution source-mask diagnostic: {availability.sourceMask ? 'available' : 'not recorded'}.
+          {' '}Display-preview diagnostic: {availability.previewGeometry ? 'available' : 'not recorded'}.
+          {' '}Missing diagnostics are not zero-overlap results. Run a new RiverShift job on the current worker to produce both reports.
+        </p>
+      </section>
+    );
+  }
 
   const rows = [
     { key: 'erosion__deposition', label: 'Erosion ↔ Deposition' },
@@ -1108,7 +1123,10 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
         {riverJob.state === 'succeeded' && <div className="rs-warning-inline"><strong>Processing complete · PROVISIONAL.</strong> {riverJob.analysis_mode === 'general_scan'
           ? 'No event date was supplied or inferred. Independent scientific validation is still pending.'
           : 'The event date was user supplied and has not been independently confirmed; independent scientific validation is still pending.'}
-          {' '}The map below can show a checksum-checked display preview; its measurements are not verified.</div>}
+          {' '}The map below can show a checksum-checked display preview; its measurements are not verified.
+          {riverJob.analysis_mode === 'event_based' && getRiverShiftEventObservationNote(riverJob.result_summary?.event_observation_timing) && (
+            <span> {getRiverShiftEventObservationNote(riverJob.result_summary?.event_observation_timing)}</span>
+          )}</div>}
         {riverJob.state === 'succeeded' && riverJob.result_summary && (
           <OverlapAuditPanel summary={riverJob.result_summary} />
         )}
