@@ -109,7 +109,10 @@ export type DisplacementJob = Partial<DisplacementProcessingOptions> & {
 };
 
 const configuredApiUrl = (import.meta.env.VITE_SARGUARDIAN_API_URL as string | undefined)?.trim();
-const API_BASE = (configuredApiUrl || 'http://localhost:8000').replace(/\/+$/, '');
+const defaultApiUrl = import.meta.env.DEV
+  ? 'http://localhost:8000'
+  : 'https://sarguardian-backend-api.vercel.app';
+const API_BASE = (configuredApiUrl || defaultApiUrl).replace(/\/+$/, '');
 
 type ProcessingServiceStatusHandler = (message: string) => void;
 
