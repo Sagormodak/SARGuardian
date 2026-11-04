@@ -341,8 +341,11 @@ def test_downsampled_disjoint_class_masks_share_one_preview_grid_and_do_not_over
     overlap = combined["river_shift_preview"]["preview_geometry_overlap"]
     assert overlap["pairwise"]["erosion__deposition"]["intersection_area_km2"] == 0
     assert overlap["pairwise"]["erosion__deposition"]["jaccard"] == 0
-    assert overlap["per_class_sparse_marker_points"]["erosion"] > 0
-    assert overlap["per_class_sparse_marker_points"]["deposition"] > 0
+    # These deliberately dense, coherent patches are majority-occupancy
+    # polygons. Sparse marker behavior is tested by the isolated-pixel and
+    # marker-cap tests above.
+    assert overlap["per_class_sparse_marker_points"]["erosion"] == 0
+    assert overlap["per_class_sparse_marker_points"]["deposition"] == 0
     # The exact source masks are still disjoint; the preview uses point cues
     # for sub-cell candidates rather than expanding them into large polygons.
     assert not np.any((erosion == 1) & (deposition == 1))
