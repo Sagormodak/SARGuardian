@@ -25,6 +25,15 @@ Riverbank erosion, channel migration and floodwater changes can threaten settlem
 
 RiverShift focuses on making those observations easier to explore: users select the area, while the application discovers where within that area the radar-derived change candidates occur. The user does not have to know the exact target pixel or river segment in advance.
 
+### Dated regional impact context — Chowhali and the Jamuna
+
+Public reporting from Chowhali/Sirajganj shows why river-change screening has a real community context:
+
+- **11 July 2026:** *The Daily Star* reported that 78 houses and one mosque had been lost to Jamuna erosion over the preceding two weeks along an approximately 1.5 km stretch from Jotpara Mor to Char Salimabad Bhuter Mor. The report also described cropland damage and nearby schools/market at risk, citing the upazila Project Implementation Office. [Source: The Daily Star, 11 July 2026](https://online92.thedailystar.net/news/environment/climate-crisis/natural-disaster/news/jamuna-devours-78-houses-two-weeks-4220946).
+- **9 August 2026:** *The Daily Star* reported that the Jamuna had risen since 3 August, with six-day rises of 76 cm at Kazipur and 83 cm at the Sirajganj hard point. A local schoolteacher reported that more than 100 homesteads and extensive croplands around Chowhali had been inundated; the same report quoted Water Development Board officials saying there was no immediate danger-level flood risk at that time. [Source: The Daily Star, 9 August 2026](https://online.thedailystar.net/news/bangladesh/news/jamuna-swells-sirajganj-low-lying-areas-inundated-4243436).
+
+The 9 August report was 12 days after Run #36's user-supplied 28 July event date and 8 days before its 17 August event-proximal NISAR acquisition. This timing provides regional context for the observation window; it does **not** independently confirm the user-supplied event date or prove that any reported home, crop field, school or mosque intersects a Run #36 candidate polygon. The reporting is not a pixel-wise validation mask, an asset inventory, a damage attribution, or proof that RiverShift detected the reported losses. Use it to explain the human and agricultural stakes, while keeping the NISAR output provisional.
+
 ## Data sources and how each is used
 
 | Source | Role in RiverShift | Important boundary |
@@ -185,7 +194,7 @@ The legacy `validate_with_sentinel2.py` tool and retained-run workflow remain av
 
 | Criterion | Evidence to present | Remaining human action / risk |
 |---|---|---|
-| Impact | Riverbank/flood-change use case, AOI-specific candidate maps and bounded area metrics; the Dynamic PR #81 adds an optional AOI-bounded OpenStreetMap buildings/public-facilities context screen and accepts source-attributed point GeoJSON. It reports unique and per-class point matches against candidate preview polygons. | Execute the optional OSM query for the exact demo AOI and retain its snapshot timestamp; describe counts only as mapped-feature exposure context, never damaged assets, affected population, or a complete inventory. OSM coverage and the preview geometry are incomplete/approximate. |
+| Impact | Riverbank/flood-change use case; dated public reporting documents house loss/erosion and later inundation of homesteads/cropland around Chowhali; the app adds source-attributed OSM building/facility points and local point-GeoJSON exposure screening against candidate previews. | Explain the 11 July and 9 August regional reports as societal context only. Do not claim those reported assets intersect Run #36 polygons or were detected/damaged by NISAR. OSM counts remain mapped-feature screening, not a complete inventory or affected-population estimate. |
 | Creativity | User-drawn AOI, target-free change discovery, discrete radar time series, explainable classes and private provenance. | A polished end-to-end demo is still needed. |
 | Validity | Current backend main `bf8f8e16`: 259 RiverShift tests passed; retained Run #36 replay reproduced all three reported areas after six source-COG checksums matched; full-resolution source-mask overlap and shared-grid preview QA are recorded separately. Dynamic feature PR #81 build/type-check/lint and 151 frontend tests passed; backend tests passed. New worker jobs fail closed when required overlap QA is missing. | These prove software contracts and reproducibility, not physical accuracy. Run #36 has no eligible OPERA WTR reference; Sentinel-2 common support was 0.1554%. F1/IoU and field/bankline accuracy remain NO_SCORE. Signed transect tools require independently digitised dated banklines. |
 | Relevance | NISAR Level-2 GCOV is the primary measurement input; challenge name is explicit. | Explain what radar contributes and why NISAR observations are central. |

@@ -30,6 +30,15 @@ River channels, banks and floodwater coverage can change over short periods, aff
 
 RiverShift addresses the discovery and communication gap: the user identifies the study area, while the application screens where within that AOI the radar-derived change candidates occur.
 
+### Why this matters in the Jamuna–Chowhali region
+
+Two dated public reports illustrate the human and agricultural stakes around Chowhali:
+
+- On **11 July 2026**, *The Daily Star* reported 78 houses and one mosque lost to Jamuna erosion over two weeks along an approximately 1.5 km stretch from Jotpara Mor to Char Salimabad Bhuter Mor, with cropland damage and nearby schools/market at risk. [Read the report](https://online92.thedailystar.net/news/environment/climate-crisis/natural-disaster/news/jamuna-devours-78-houses-two-weeks-4220946).
+- On **9 August 2026**, *The Daily Star* reported more than 100 homesteads and extensive croplands around Chowhali inundated as the Jamuna rose. [Read the report](https://online.thedailystar.net/news/bangladesh/news/jamuna-swells-sirajganj-low-lying-areas-inundated-4243436).
+
+These are regional context reports, not proof that the named assets are inside this demonstration AOI or overlap the Run #36 candidate polygons. The 9 August report was 12 days after the user-supplied 28 July event date and 8 days before the 17 August NISAR acquisition; it does not independently verify that event date or validate the radar classification.
+
 ## What we built
 
 - A user-drawn AOI and date-window workflow.
