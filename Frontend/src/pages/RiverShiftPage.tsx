@@ -696,7 +696,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
     }
     map.data.setStyle((feature) => {
       const geometryType = feature.getGeometry()?.getType();
-      const name = String(feature.getProperty('river_shift_layer') || feature.getProperty('class') || feature.getProperty('change_type') || '').toLowerCase();
+      const name = String(feature.getProperty('marker_change_type') || feature.getProperty('river_shift_layer') || feature.getProperty('class') || feature.getProperty('change_type') || '').toLowerCase();
       const colour = name.includes('erosion') ? '#f07462'
         : name.includes('deposition') ? '#5fd7a5'
           : '#53b9f4';
