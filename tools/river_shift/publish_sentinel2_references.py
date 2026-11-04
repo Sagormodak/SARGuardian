@@ -34,6 +34,22 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def _load_single_json_under(root: Path, filename: str) -> dict[str, Any]:
+    """Read exactly one manifest recursively from an actions/download-artifact directory.
+
+    With merge-multiple=false GitHub creates an artifact-name subdirectory below
+    the configured download path, so callers must not assume the JSON is at root.
+    """
+    root = Path(root)
+    matches = sorted(path for path in root.rglob(filename) if path.is_file())
+    if len(matches) != 1:
+        raise ValueError(
+            f"Expected exactly one {filename} below the prepared artifact directory; "
+            f"found {len(matches)}."
+        )
+    return _read_json(matches[0])
+
+
 def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True, allow_nan=False), encoding="utf-8")
@@ -83,7 +99,7 @@ def run_pipeline(
     scl_path = crosscheck_dir / "reference-scl-water.tif"
     mndwi_path = crosscheck_dir / "reference-mndwi-water.tif"
     report = _read_json(report_path)
-    prepared = _read_json(prepared_dir / "prepared.json")
+    prepared = _load_single_json_under(prepared_dir, "prepared.json")
     observation = report.get("observation") or {}
     artifacts = report.get("reference_artifacts") or {}
     source_job_id = str(prepared.get("job_id") or "").strip()
