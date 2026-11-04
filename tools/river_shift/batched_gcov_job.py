@@ -1004,9 +1004,14 @@ def _report_retry_wave() -> None:
     original_retry_rows = _select_retry_rows(prepared, first_results, first_dir)
 
     raw_dispatch = os.environ.get("RIVERSHIFT_RETRY_DISPATCH_STATUSES", "").strip()
-    if not raw_dispatch:
-        raw_dispatch = os.environ.get("RIVERSHIFT_RETRY_DISPATCH_STATUS", "success")
-    dispatch_statuses = [value.strip().lower() for value in raw_dispatch.split(",") if value.strip()]
+    if raw_dispatch:
+        dispatch_statuses = [value.strip().lower() for value in raw_dispatch.split(",")]
+    else:
+        # Backward compatibility for standalone callers/tests using the original
+        # one-wave status variable. The newer two optional waves default to the
+        # no-queue/success path unless their explicit status is supplied.
+        legacy_status = os.environ.get("RIVERSHIFT_RETRY_DISPATCH_STATUS", "success").strip().lower()
+        dispatch_statuses = [legacy_status, "success", "success"]
     raw_prepare = os.environ.get("RIVERSHIFT_RETRY_PREPARE_STATUSES", "success,success,success")
     prepare_statuses = [value.strip().lower() for value in raw_prepare.split(",")]
     raw_counts = os.environ.get("RIVERSHIFT_RETRY_COUNTS", "1,0,0")
