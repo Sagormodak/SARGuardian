@@ -72,9 +72,10 @@ def test_signed_callback_does_not_retry_permanent_client_rejection(monkeypatch):
     monkeypatch.setattr(process_gcov_job.requests, "post", fake_post)
     monkeypatch.setattr(process_gcov_job.time, "sleep", delays.append)
 
-    with pytest.raises(WorkerFailure, match="CALLBACK_REJECTED"):
+    with pytest.raises(WorkerFailure) as error:
         callbacks.send("running", "result_package_assembly")
 
+    assert error.value.code == "CALLBACK_REJECTED"
     assert len(attempts) == 1
     assert delays == []
     assert callbacks.sequence == 0
@@ -92,9 +93,10 @@ def test_signed_callback_bounds_retries_for_origin_timeout(monkeypatch):
     monkeypatch.setattr(process_gcov_job.requests, "post", fake_post)
     monkeypatch.setattr(process_gcov_job.time, "sleep", delays.append)
 
-    with pytest.raises(WorkerFailure, match="CALLBACK_REJECTED"):
+    with pytest.raises(WorkerFailure) as error:
         callbacks.send("running", "result_package_assembly")
 
+    assert error.value.code == "CALLBACK_REJECTED"
     assert len(attempts) == 4
     assert delays == [1.0, 2.0, 4.0]
     assert callbacks.sequence == 0
