@@ -204,3 +204,116 @@ def test_independent_reference_alignment_rejects_non_binary_valid_labels(tmp_pat
             reference_path,
             tmp_path / "aligned.tif",
         )
+
+
+def test_validate_runs_end_to_end_and_keeps_release_provisional(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+
+    job_id = "4e6e4071-fb9d-4e20-a331-867f3f2bd88f"
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    prediction_path = source_dir / "during_water_mask.tif"
+    prediction_values = (np.indices((20, 20)).sum(axis=0) % 2).astype(np.uint8)
+    _write_mask(prediction_path, prediction_values)
+    prediction_sha = hashlib.sha256(prediction_path.read_bytes()).hexdigest()
+
+    result_report = {
+        "analysis_type": "flood_inundation_screening",
+        "source": {
+            "mission": "NISAR",
+            "product": "GCOV",
+            "maturity": "PROVISIONAL",
+            "frequency": "A",
+            "covariance_term": "HHHH",
+            "granule_names": ["NISAR_L2_GCOV_TEST_GRANULE"],
+            "source_granule_sha256": ["a" * 64],
+        },
+        "outputs": {
+            "during_water_mask": "during_water_mask.tif",
+            "during_water_mask_sha256": prediction_sha,
+        },
+        "quality": {"provenance_complete": True},
+    }
+    report_path = source_dir / "river_shift_result.json"
+    report_path.write_text(json.dumps(result_report), encoding="utf-8")
+
+    reference_values = prediction_values[::2, ::2].copy()
+    reference_values[0, 0] = 255
+    reference_path = tmp_path / "reference-original.tif"
+    _write_mask(
+        reference_path,
+        reference_values,
+        transform=from_origin(500000, 2700000, 20, 20),
+    )
+    blobs = {
+        "prediction-file-123": prediction_path.read_bytes(),
+        "result-file-123": report_path.read_bytes(),
+        "reference-file-123": reference_path.read_bytes(),
+    }
+    items = {
+        "prediction": {
+            "name": "during_water_mask.tif",
+            "path": "outputs/flood/during_water_mask.tif",
+            "drive_file_id": "prediction-file-123",
+            "bytes": len(blobs["prediction-file-123"]),
+            "sha256": hashlib.sha256(blobs["prediction-file-123"]).hexdigest(),
+        },
+        "result_report": {
+            "name": "river_shift_result.json",
+            "path": "outputs/flood/river_shift_result.json",
+            "drive_file_id": "result-file-123",
+            "bytes": len(blobs["result-file-123"]),
+            "sha256": hashlib.sha256(blobs["result-file-123"]).hexdigest(),
+        },
+    }
+    monkeypatch.setattr(
+        runner,
+        "_resolve_source_manifest",
+        lambda *_args: {
+            "schema_version": 1,
+            "engine": "RiverShift",
+            "job_id": job_id,
+            "github_run_id": "41803576163",
+            "prediction_observation_date": "2026-08-17",
+            "prediction": items["prediction"],
+            "result_report": items["result_report"],
+        },
+    )
+
+    def fake_download(file_id, destination, *, max_bytes):
+        payload = blobs[file_id]
+        assert len(payload) <= max_bytes
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        return {"bytes": len(payload)}
+
+    monkeypatch.setattr(runner, "download_private_result_to_path", fake_download)
+    output_path = tmp_path / "output" / "independent_reference_validation.json"
+    args = SimpleNamespace(
+        source_job_id=job_id,
+        api_base_url="https://api.example.test",
+        reference_drive_file_id="reference-file-123",
+        reference_source="Independent high-resolution reference mapping v1",
+        reference_date="2026-08-17",
+        reference_method="Blind binary water/non-water digitisation with independent QA",
+        maximum_date_offset_days=3,
+        minimum_common_support_fraction=0.80,
+        block_size_pixels=4,
+        bootstrap_replicates=100,
+        random_seed=42,
+        work_dir=tmp_path / "work",
+        output=output_path,
+    )
+
+    result = runner.validate(args)
+
+    assert output_path.is_file()
+    assert result["quality"]["status"] == "VALIDATION_METRICS_COMPUTED_REVIEW_REQUIRED"
+    assert result["quality"]["release_status"] == "PROVISIONAL"
+    assert result["reference"]["independence_verified"] is False
+    assert result["reference"]["alignment"]["method"] == "nearest_neighbour_categorical_reprojection"
+    assert result["reference"]["common_support_fraction"] == pytest.approx(0.99)
+    assert result["source"]["river_shift_job_id"] == job_id
+    assert result["source"]["prediction_analysis"]["mission"] == "NISAR"
+    assert result["metrics"]["valid_pixel_count"] > 0
+    assert result["metrics"]["f1_score"] is not None
