@@ -122,3 +122,12 @@ To run it, open **Actions → RiverShift retained-run Sentinel-2 cross-sensor re
 The workflow reads retained AOI COGs and receipts only. It does not download raw multi-gigabyte HDF5 NISAR granules, change the original run, or run as part of normal RiverShift processing. The summary exposes the selected Sentinel-2 item and comparison metrics only; the full report, water masks, AOI coordinates and asset URLs remain on the temporary Actions runner and are not uploaded as public artifacts.
 
 A no-match or low-support result is a valid explicit outcome. No comparison score is invented, and the original NISAR run remains PROVISIONAL until independent human review.
+
+## Private Drive publication and independent-reference gate
+
+The retained-run replay workflow also publishes the two candidate GeoTIFFs under the existing private Drive hierarchy:
+`RiverShift/<source-job-uuid>/sentinel2-reference-candidates/<acquisition-date>-<datatake-key>/<workflow-run>/`.
+
+It uses the existing `GOOGLE_DRIVE_OAUTH_CLIENT_JSON`, `GOOGLE_DRIVE_REFRESH_TOKEN`, and `GOOGLE_DRIVE_PARENT_FOLDER_ID` secrets. Each folder is checked for non-public permissions, and every uploaded file is verified against the remote byte count and MD5. No new Drive folder-ID secret is introduced.
+
+The workflow then calls the existing `validate_independent_reference.py` against the retained event-based `during_water_mask.tif`, once for SCL and once for MNDWI. The date gate is ±3 days and the common valid support gate remains 80%. A date or support mismatch creates a blocked/no-score report and fails the validation step; the numeric result remains `PROVISIONAL` / `REVIEW_REQUIRED` even when metrics are computed. The workflow must not interpret this cross-sensor comparison as field ground truth.
