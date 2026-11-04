@@ -452,3 +452,23 @@ def test_drive_preflight_uses_list_and_create_for_the_parent(monkeypatch, tmp_pa
     assert "parent-folder-123" not in output
     assert "test-refresh-token" not in output
 
+
+
+def test_event_observation_timing_reports_the_actual_date_gap():
+    timing = event_observation_timing(
+        date(2026, 7, 28),
+        {"event_proximal_observation": "2026-08-17"},
+    )
+    assert timing["offset_days"] == 20
+    assert timing["event_date"] == "2026-07-28"
+    assert timing["first_post_event_observation"] == "2026-08-17"
+    assert "not a measured event-peak" in timing["interpretation"]
+
+
+def test_event_observation_timing_returns_none_without_event_date():
+    assert event_observation_timing(None, None) is None
+
+
+def test_event_observation_timing_requires_a_strictly_post_event_date():
+    with pytest.raises(WorkerFailure):
+        event_observation_timing(date(2026, 7, 28), {"event_proximal_observation": "2026-07-28"})
