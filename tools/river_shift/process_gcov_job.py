@@ -1122,6 +1122,7 @@ def write_mask_web_preview(
                         "preview_sparse_marker_points_omitted": sparse_marker_points_omitted,
                         "maximum_sparse_marker_points": MAX_SPARSE_PREVIEW_MARKERS,
                         "minimum_polygon_occupancy_fraction": 0.5,
+                        "fixed_preview_grid": fixed_dimension,
                         "polygon_simplification": "none_grid_aligned_partition_preserved",
                         "fixed_preview_grid": fixed_dimension,
                         "source_candidate_pixels": source_candidate_pixels,
