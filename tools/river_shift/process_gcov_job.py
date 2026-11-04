@@ -1133,7 +1133,18 @@ def create_web_previews(
             "web_map_preview", "PASS",
             layer_type=layer_type,
             feature_count=len(preview.get("features", [])),
+            source_candidate_pixels=preview["river_shift_preview"]["source_candidate_pixels"],
+            source_candidate_fraction=round(
+                preview["river_shift_preview"]["source_candidate_pixels"]
+                / max(1, preview["river_shift_preview"]["source_width"] * preview["river_shift_preview"]["source_height"]),
+                6,
+            ),
             preview_candidate_cells=preview["river_shift_preview"]["preview_candidate_cells"],
+            preview_candidate_fraction=round(
+                preview["river_shift_preview"]["preview_candidate_cells"]
+                / max(1, preview["river_shift_preview"]["preview_width"] * preview["river_shift_preview"]["preview_height"]),
+                6,
+            ),
             preview_width=preview["river_shift_preview"]["preview_width"],
             preview_height=preview["river_shift_preview"]["preview_height"],
             features_omitted_for_size=0,
@@ -1228,12 +1239,24 @@ def create_web_previews(
         frame["water_geojson"] = preview_path.name
         frame["water_geojson_sha256"] = frame_digest
         frame["water_preview_feature_count"] = len(frame_preview["features"])
+        frame["water_preview_source_candidate_pixels"] = frame_preview["river_shift_preview"]["source_candidate_pixels"]
         frame["water_preview_candidate_cells"] = frame_preview["river_shift_preview"]["preview_candidate_cells"]
         _log_worker_stage(
             "time_series_frame_preview", "PASS",
             acquisition_date=observed_date,
             feature_count=len(frame_preview["features"]),
+            source_candidate_pixels=frame_preview["river_shift_preview"]["source_candidate_pixels"],
+            source_candidate_fraction=round(
+                frame_preview["river_shift_preview"]["source_candidate_pixels"]
+                / max(1, frame_preview["river_shift_preview"]["source_width"] * frame_preview["river_shift_preview"]["source_height"]),
+                6,
+            ),
             preview_candidate_cells=frame_preview["river_shift_preview"]["preview_candidate_cells"],
+            preview_candidate_fraction=round(
+                frame_preview["river_shift_preview"]["preview_candidate_cells"]
+                / max(1, frame_preview["river_shift_preview"]["preview_width"] * frame_preview["river_shift_preview"]["preview_height"]),
+                6,
+            ),
             preview_width=frame_preview["river_shift_preview"]["preview_width"],
             preview_height=frame_preview["river_shift_preview"]["preview_height"],
             output_bytes=preview_path.stat().st_size,
