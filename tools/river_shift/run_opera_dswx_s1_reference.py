@@ -306,6 +306,10 @@ def _build_reference_on_nisar_grid(
                     source_tags.get("TRACK_NUMBER")
                     or source_tags.get("RTC_TRACK_NUMBER")
                 ),
+                "ABSOLUTE_ORBIT_NUMBER": (
+                    source_tags.get("ABSOLUTE_ORBIT_NUMBER")
+                    or source_tags.get("RTC_ABSOLUTE_ORBIT_NUMBER")
+                ),
             }
             missing_geometry = [key for key, value in geometry_fields.items() if not value]
             if missing_geometry:
