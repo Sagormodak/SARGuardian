@@ -22,7 +22,7 @@ RiverShift is an interactive river-change screening application built around NAS
 
 The map separates three classes: newly water-covered/open-water candidates (blue), persistent erosion candidates (red), and persistent deposition candidates (green). Users can step or play through the actual acquisition dates and inspect the corresponding area and data-coverage metrics. Each displayed output is linked to source product identifiers and SHA-256 checksums.
 
-The goal is to make radar observations understandable to both researchers and the public while preserving scientific limits: candidates are not field-confirmed findings, map previews are display-only, and the playback never invents daily observations.
+The goal is to make radar observations understandable to both researchers and the public while preserving scientific limits: candidates are not field-confirmed findings, map previews are display-only, and the playback never invents daily observations. A separate gold map layer can show source-attributed mapped building/facility points; up to 2,000 representative points are sampled for display while local exposure screening retains the full point collection.
 
 ## The problem
 
