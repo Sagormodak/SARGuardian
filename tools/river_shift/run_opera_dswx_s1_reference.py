@@ -242,6 +242,7 @@ def _discover_records(
     aoi_wkt: str,
     requested_date: date,
     maximum_offset_days: int,
+    discovery_window_days: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     import earthaccess
     from shapely import wkt as shapely_wkt
@@ -251,8 +252,13 @@ def _discover_records(
         raise OperaReferenceError("The retained RiverShift AOI WKT is empty or invalid.")
     west, south, east, north = geometry.bounds
     bbox = (west, south, east, north)
-    start = requested_date - timedelta(days=maximum_offset_days)
-    end = requested_date + timedelta(days=maximum_offset_days)
+    search_window_days = maximum_offset_days if discovery_window_days is None else discovery_window_days
+    if not maximum_offset_days <= search_window_days <= 30:
+        raise OperaReferenceError(
+            "discovery_window_days must be between the strict score gate and 30 days."
+        )
+    start = requested_date - timedelta(days=search_window_days)
+    end = requested_date + timedelta(days=search_window_days)
     temporal = (
         f"{start.isoformat()}T00:00:00Z",
         f"{end.isoformat()}T23:59:59Z",
@@ -267,7 +273,8 @@ def _discover_records(
             "temporal_start_utc": temporal[0],
             "temporal_end_utc": temporal[1],
             "bounding_box": [west, south, east, north],
-            "maximum_date_offset_days": maximum_offset_days,
+            "strict_score_maximum_date_offset_days": maximum_offset_days,
+            "discovery_window_days": search_window_days,
         }, sort_keys=True),
         flush=True,
     )
@@ -392,6 +399,8 @@ def _discover_records(
         "downloadable_filter_applied": False,
         "bounding_box_wgs84": [west, south, east, north],
         "temporal_query_utc": list(temporal),
+        "discovery_window_days": search_window_days,
+        "strict_score_maximum_date_offset_days": maximum_offset_days,
         "requested_observation_date": requested_date.isoformat(),
         "granules_returned_by_cmr": result["hits"],
         "umm_items_loaded": len(items),
@@ -726,12 +735,17 @@ def run_pipeline(
     api_base_url: str,
     output_dir: Path,
     maximum_date_offset_days: int = 3,
+    discovery_window_days: int = 14,
     minimum_common_support_fraction: float = 0.80,
     block_size_pixels: int = 64,
     bootstrap_replicates: int = 500,
 ) -> dict[str, Any]:
     if not 0 <= maximum_date_offset_days <= 30:
         raise OperaReferenceError("maximum_date_offset_days must be between 0 and 30.")
+    if not maximum_date_offset_days <= discovery_window_days <= 30:
+        raise OperaReferenceError(
+            "discovery_window_days must be at least the strict date gate and at most 30 days."
+        )
     if not 0.5 <= minimum_common_support_fraction <= 1:
         raise OperaReferenceError("minimum_common_support_fraction must be between 0.5 and 1.")
     prepared = _load_single_json_under(prepared_dir, "prepared.json")
@@ -760,6 +774,7 @@ def run_pipeline(
                     or ""),
         requested_date=requested_date,
         maximum_offset_days=maximum_date_offset_days,
+        discovery_window_days=discovery_window_days,
     )
     selected, selected_date_text = _select_scene_records(records, requested_date)
     report_path = output_dir / "opera_dswx_s1_reference_report.json"
@@ -774,6 +789,8 @@ def run_pipeline(
             "source_github_run_id": target_manifest.get("github_run_id"),
             "requested_nisar_observation_date": requested_date.isoformat(),
             "query": query,
+            "discovery_window_days": discovery_window_days,
+            "strict_score_maximum_date_offset_days": maximum_date_offset_days,
             "selected_observation_date": None,
             "selected_granules": [],
             "reference": None,
@@ -785,8 +802,14 @@ def run_pipeline(
                 "interpretation": "NO_ELIGIBLE_OPERA_DSWX_S1_SCENE_WITHIN_TEMPORAL_GATE",
             },
             "limitations": [
-                "No OPERA DSWx-S1 WTR granule was found within the configured temporal window.",
-                "No metrics were calculated; the temporal gate was not relaxed.",
+                (
+                    "No OPERA DSWx-S1 WTR granule was found within the "
+                    f"{discovery_window_days}-day discovery window."
+                ),
+                (
+                    "No metrics were calculated; the strict "
+                    f"±{maximum_date_offset_days}-day scoring gate was not relaxed."
+                ),
             ],
         }
         _write_json(report_path, report)
@@ -820,6 +843,8 @@ def run_pipeline(
             "source_github_run_id": target_manifest.get("github_run_id"),
             "requested_nisar_observation_date": requested_date.isoformat(),
             "query": query,
+            "discovery_window_days": discovery_window_days,
+            "strict_score_maximum_date_offset_days": maximum_date_offset_days,
             "selected_observation_date": selected_date.isoformat(),
             "date_offset_days": offset,
             "product_specification": PRODUCT_SPEC,
@@ -992,6 +1017,12 @@ def main() -> int:
     parser.add_argument("--api-base-url", required=True)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--maximum-date-offset-days", type=int, default=3)
+    parser.add_argument(
+        "--discovery-window-days",
+        type=int,
+        default=14,
+        help="Search window for the nearest OPERA scene; does not change the strict scoring date gate.",
+    )
     parser.add_argument("--minimum-common-support-fraction", type=float, default=0.80)
     parser.add_argument("--block-size-pixels", type=int, default=64)
     parser.add_argument("--bootstrap-replicates", type=int, default=500)
@@ -1002,6 +1033,7 @@ def main() -> int:
             api_base_url=args.api_base_url,
             output_dir=args.output_dir,
             maximum_date_offset_days=args.maximum_date_offset_days,
+            discovery_window_days=args.discovery_window_days,
             minimum_common_support_fraction=args.minimum_common_support_fraction,
             block_size_pixels=args.block_size_pixels,
             bootstrap_replicates=args.bootstrap_replicates,
