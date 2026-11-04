@@ -319,8 +319,12 @@ def replay(prepared_root: Path, products_root: Path, output_root: Path) -> dict[
     }
     manifest_path = output_root / "run36_retrospective_overlap_replay.json"
     manifest_path.write_text(json.dumps(output_manifest, indent=2, allow_nan=False), encoding="utf-8")
-    output_manifest["manifest_sha256"] = sha256_file(manifest_path)
-    manifest_path.write_text(json.dumps(output_manifest, indent=2, allow_nan=False), encoding="utf-8")
+    manifest_sha = sha256_file(manifest_path)
+    manifest_path.with_suffix(".json.sha256").write_text(
+        f"{manifest_sha}  {manifest_path.name}\\n",
+        encoding="utf-8",
+    )
+    output_manifest["manifest_sha256"] = manifest_sha
     return output_manifest
 
 
