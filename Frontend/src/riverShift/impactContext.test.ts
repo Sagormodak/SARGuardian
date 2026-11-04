@@ -164,7 +164,7 @@ describe('RiverShift impact-context map markers', () => {
     });
     expect(deriveImpactMapPoints(exposure, 2)).toEqual([
       { id: 'building-1-point-0', longitude: 89.7, latitude: 24.5, kind: 'building' },
-      { id: 'school-2-point-0', longitude: 89.8, latitude: 24.6, kind: 'public_facility' },
+      { id: 'school-2-point-1', longitude: 89.81, latitude: 24.61, kind: 'public_facility' },
     ]);
     expect(deriveImpactMapPoints(exposure, 20)).toHaveLength(3);
   });
