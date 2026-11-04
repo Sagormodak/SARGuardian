@@ -107,6 +107,26 @@ jobs:
             --minimum-common-support "${{ inputs.minimum_common_support || '0.80' }}"
           echo "::endgroup::"
 
+      - name: Upload candidates to private Drive and validate retained RiverShift prediction
+        id: independent-validation
+        shell: micromamba-shell {0}
+        env:
+          GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+          RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+        run: |
+          set -euo pipefail
+          python -u tools/river_shift/publish_sentinel2_references.py \
+            --crosscheck-dir replay-output/sentinel2-cross-sensor \
+            --prepared-dir prepared \
+            --api-base-url https://sarguardian-backend-api.vercel.app \
+            --output-dir replay-output/independent-validation \
+            --maximum-date-offset-days 3 \
+            --minimum-common-support-fraction 0.80 \
+            --block-size-pixels 64 \
+            --bootstrap-replicates 500
+
       - name: Retain Sentinel-2 reference GeoTIFFs and provenance report
         if: always()
         uses: actions/upload-artifact@v4
@@ -117,6 +137,7 @@ jobs:
             replay-output/sentinel2-cross-sensor/reference-scl-water.tif
             replay-output/sentinel2-cross-sensor/reference-mndwi-water.tif
             replay-output/cross_sensor_replay_manifest.json
+            replay-output/independent-validation/
           if-no-files-found: warn
           retention-days: 30
           compression-level: 1
@@ -127,6 +148,8 @@ jobs:
         env:
           SUMMARY_REPORT: replay-output/sentinel2-cross-sensor/sentinel2_cross_sensor_agreement.json
           REPLAY_MANIFEST: replay-output/cross_sensor_replay_manifest.json
+          VALIDATION_STATUS: replay-output/independent-validation/sentinel2_reference_validation_status.json
+          DRIVE_RECEIPT: replay-output/independent-validation/sentinel2_reference_drive_receipt.json
           SOURCE_RUN_ID: ${{ inputs.source_run_id || '41803576163' }}
           OBSERVATION_DATE: ${{ inputs.observation_date || '2026-08-17' }}
         run: |
@@ -148,6 +171,11 @@ jobs:
           observation = report.get("observation") or {}
           support = report.get("spatial_support") or {}
           metrics = report.get("metrics")
+          validation_status_path = Path(os.environ["VALIDATION_STATUS"])
+          validation_status = (
+              json.loads(validation_status_path.read_text(encoding="utf-8"))
+              if validation_status_path.is_file() else {}
+          )
           lines = [
               "## RiverShift Sentinel-2 cross-sensor replay",
               "",
@@ -178,6 +206,23 @@ jobs:
                   )
           else:
               lines.extend(["No agreement metrics were published because no eligible scene or enough clear common support was available.", ""])
+          if validation_status:
+              lines.extend([
+                  "",
+                  "### Retained-output independent validation",
+                  "",
+                  f"- Status: **{validation_status.get('status', 'not available')}**",
+                  f"- Reference date: {validation_status.get('sentinel2_observation_date', 'not available')}",
+                  f"- Release status: **{validation_status.get('release_status', 'PROVISIONAL')}**",
+                  f"- Review required: {validation_status.get('review_required', True)}",
+              ])
+              for key in ("scl", "mndwi"):
+                  value = (validation_status.get("independent_validation") or {}).get(key) or {}
+                  lines.append(f"- {key.upper()}: {value.get('status', 'not available')}")
+                  if value.get("temporal_offset_days") is not None:
+                      lines.append(f"  - Date offset: {value['temporal_offset_days']} days")
+                  if value.get("common_support_fraction") is not None:
+                      lines.append(f"  - Common support: {value['common_support_fraction']}")
           lines.extend([
               "",
               "**Interpretation:** cross-sensor agreement screening only. Sentinel-2 SCL/MNDWI GeoTIFFs are candidate labels, not ground truth or field validation. Confirm hydrological stage and reference quality before formal scoring. The source NISAR run remains PROVISIONAL.",
