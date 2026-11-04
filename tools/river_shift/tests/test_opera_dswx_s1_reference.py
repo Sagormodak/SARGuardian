@@ -445,3 +445,32 @@ def test_selected_wtr_download_uses_authenticated_https_urls_and_pocloud_provide
     assert captured["threads"] == 4
     assert paths == [tmp_path / "downloads" / filename]
     assert paths[0].read_bytes() == b"test-opera-wtr"
+
+
+def test_cmr_scene_discovery_window_can_be_wider_without_changing_strict_score_gate(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    item = _cmr_item()
+    session = _FakeCMRSession([_FakeCMRResponse([item], 1)])
+    monkeypatch.setitem(
+        sys.modules,
+        "earthaccess",
+        SimpleNamespace(
+            login=lambda **kwargs: None,
+            get_requests_https_session=lambda: session,
+        ),
+    )
+
+    records, query = opera._discover_records(
+        aoi_wkt="POLYGON((89.6 24.0,89.8 24.0,89.8 24.2,89.6 24.2,89.6 24.0))",
+        requested_date=date.fromisoformat("2026-08-17"),
+        maximum_offset_days=3,
+        discovery_window_days=14,
+    )
+
+    params = dict(session.calls[0]["params"])
+    assert params["temporal[]"] == "2026-08-03T00:00:00Z,2026-08-31T23:59:59Z"
+    assert query["discovery_window_days"] == 14
+    assert query["strict_score_maximum_date_offset_days"] == 3
+    assert records[0]["observation_date"] == "2026-08-18"
