@@ -908,8 +908,8 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
       if (cancelled) return;
       const maps = mapsLibrary as google.maps.MapsLibrary;
       const mapOptions: google.maps.MapOptions = {
-        center: { lat: 24.6, lng: 89.65 },
-        zoom: 8,
+        center: { lat: 15, lng: 0 },
+        zoom: 2,
         mapTypeId: 'satellite',
         streetViewControl: false,
         mapTypeControl: true,
@@ -1166,7 +1166,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
         <button className="rs-back" onClick={onHome} type="button">← SARGuardian</button>
         <div className="rs-brand">
           <span className="rs-brand-mark">RS</span>
-          <div><strong>RiverShift</strong><small>FLOOD & RIVER CHANGE INTELLIGENCE</small></div>
+          <div><strong>RiverShift</strong><small>GLOBAL NISAR RIVER-CHANGE WORKFLOW</small></div>
         </div>
         <div className="rs-header-actions">
           <span className="rs-challenge-tag">NASA SPACE APPS 2026 · DANCING WITH THE SARS</span>
@@ -1178,14 +1178,15 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
 
       <section className="rs-hero">
         <div>
-          <p className="rs-kicker">NISAR-POWERED SURFACE CHANGE MONITORING</p>
-          <h1>Track the river.<br /><em>Measure the change.</em></h1>
+          <p className="rs-kicker">GLOBAL NISAR L-BAND OBSERVATION WORKFLOW</p>
+          <h1>Explore rivers worldwide.<br /><em>Measure observed change.</em></h1>
           <p className="rs-intro">
-            Discover real NISAR GCOV acquisitions, inspect reproducible RiverShift analysis reports,
-            and compare observed floodwater and persistent river-change candidates.
+            Select a river reach within NISAR's global L-band land-observation footprint. RiverShift discovers
+            the compatible GCOV acquisitions available for your AOI and date window, then screens actual
+            observations for water and persistent land–water change candidates.
           </p>
           <div className="rs-hero-tags">
-            <span>NASA-ISRO NISAR</span><span>GCOV · L-BAND</span><span>ASF DAAC</span>
+            <span>GLOBAL L-BAND OBSERVATIONS</span><span>USER-DEFINED AOI</span><span>NASA · ASF DAAC</span>
           </div>
         </div>
         <div className="rs-hero-visual" aria-hidden="true">
@@ -1193,13 +1194,13 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
           <div className="rs-river-contour rs-contour-two" />
           <div className="rs-river-contour rs-contour-three" />
           <div className="rs-river-dot rs-dot-one" /><div className="rs-river-dot rs-dot-two" /><div className="rs-river-dot rs-dot-three" />
-          <span>RIVER SYSTEM<br />CHANGE OBSERVATORY</span>
+          <span>GLOBAL RIVER SYSTEM<br />CHANGE OBSERVATORY</span>
         </div>
       </section>
 
       <section className="rs-quick-start" aria-label="RiverShift quick start">
-        <div><span>01</span><strong>Draw a river reach</strong><small>Use one WGS84 AOI around the area to study.</small></div>
-        <div><span>02</span><strong>Choose observation dates</strong><small>Use a wide enough window for four or more distinct acquisitions.</small></div>
+        <div><span>01</span><strong>Choose a region worldwide</strong><small>Pan the world map and draw one WGS84 river-reach AOI, up to 1,000 km².</small></div>
+        <div><span>02</span><strong>Choose observation dates</strong><small>Find at least four compatible NISAR acquisition dates within a window of up to 366 days.</small></div>
         <div><span>03</span><strong>Review evidence, not just colours</strong><small>Check source dates, overlap QA and independent-reference status.</small></div>
       </section>
 
@@ -1237,7 +1238,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
               <textarea value={aoiWkt} onChange={(event) => setAoiWkt(event.target.value)}
                 placeholder="Paste a closed POLYGON ((longitude latitude, ...)) from ASF Vertex."
                 rows={4} required />
-              <small>Coordinates are longitude, latitude. Use the exact same AOI for every selected acquisition.</small>
+              <small>Coordinates are longitude, latitude. Choose any eligible river reach in the global NISAR L-band observation footprint. Current request limits: one Polygon up to 1,000 km² and a date window up to 366 days. At least four distinct acquisition dates and 90% catalogue-footprint coverage per selected date are required; the worker rechecks actual raster support.</small>
             </label>
             <div className="rs-fields-two">
               <label className="rs-field"><span>Start date</span><input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required /></label>
