@@ -3,7 +3,7 @@
 **Challenge:** Dancing with the SARs  
 **Category:** Earth Science  
 **Project:** RiverShift — NISAR-powered river and surface-change observatory  
-**Status:** Research-screening prototype; outputs are provisional unless an independently documented review is attached.
+**Status:** Global, AOI-driven NISAR river-change screening workflow. Each result carries its own source provenance, quality checks and scientific review state.
 
 ## One-minute overview
 
@@ -64,9 +64,9 @@ The 9 August report was 12 days after Run #36's user-supplied 28 July event date
 | **NASA/JPL OPERA RTC-S1 V1 (Sentinel-1 C-band)** | Diagnostic acquisition inventory used when no DSWx WTR scene is available. It records burst dates and VV/VH/MASK availability. | RTC-S1 is gamma0 backscatter, not water/non-water labels. The inventory did not generate a reference mask or agreement metrics. |
 | **FFWC / BWDB river gauge data** | Potential ancillary hydrological-stage context for the Jamuna/Sirajganj reach (e.g. gauge SW49). | Not used in Run #36's classification, thresholds or reported areas. A point gauge is not a spatial water-mask reference and must not be described as validation unless exact dated observations are retained and explicitly linked to the AOI. |
 | **Google Maps Satellite (Google Maps Platform)** | Third-party visual basemap for geographic orientation and communication of AOI/result footprints. | Basemap imagery is not an analysis input or independent validation dataset. Required imagery-provider attribution remains visible. |
-| **Copernicus Sentinel-2 L2A (legacy optional tool)** | A standalone CLI can compare a supplied NISAR mask with clear-support SCL and B03/B11 MNDWI. | It is not the primary monsoon reference pathway and is not part of the default worker. The 2026-08-18 scene for the Run #36 AOI had 97.957% reported cloud cover and only 0.1554% common valid support; no optical agreement metrics were published. Do not present it as corroboration. |
+| **Copernicus Sentinel-2 L2A (optional cross-sensor tool)** | A separate CLI can compare a supplied NISAR water mask with clear-support SCL and B03/B11 MNDWI when a suitable scene is available. | This is an optional comparison pathway, not a default analysis input or ground-truth source. Any agreement metric must pass the documented date and common-support gates. |
 
-**Why the validation design is radar-first:** monsoon cloud cover makes a cloud-free optical reference an unreliable requirement for a Bangladesh river event. OPERA DSWx-S1 is therefore the first cross-sensor search, but no eligible WTR scene was found for this particular AOI/date. Absence of a suitable reference means **NO_SCORE**, not a zero score and not proof that the NISAR output is wrong.
+**Why the validation design is radar-first:** SAR provides repeatable day/night observations through cloud, making it suitable for dynamic river environments. Independent optical or cross-sensor references remain valuable when their acquisition dates and valid spatial support are appropriate for the selected AOI. RiverShift only reports agreement metrics after those checks pass.
 
 Official product references: [OPERA DSWx-S1 V1 at PO.DAAC](https://podaac.jpl.nasa.gov/dataset/OPERA_L3_DSWX-S1_V1) · [OPERA DSWx-S1 product specification](https://www.earthdata.nasa.gov/data/catalog/podaac-opera-l3-dswx-s1-v1-1)
 
@@ -134,13 +134,11 @@ The retained processing log records successful source provenance checks, the six
 
 The preview's erosion ↔ new-water polygons still intersect by 0.48794 km². That is display-only and reflects the separate comparison/threshold basis; it is not an independent measurement or an accuracy score.
 
-### Independent reference outcome for Run #36
+### Independent-reference review — retained Jamuna case
 
-The separate [OPERA DSWx-S1 replay #41900559056](https://github.com/moshiour0/SARGuardian-backend/actions/runs/41900559056) reused the retained NISAR mask and exact prepared manifest; it did not rerun NISAR processing. NASA CMR returned 307 OPERA DSWx-S1 granules intersecting the AOI across the collection history. After local sensing-date filtering over **2026-07-18 to 2026-09-16**, 287 WTR assets were outside the discovery window, 20 returned granules were not WTR assets, and **no eligible WTR scene remained inside the 30-day discovery window**.
+The retained [Run #36 cross-sensor review](https://github.com/moshiour0/SARGuardian-backend/actions/runs/41900559056) searched the same AOI for a date-appropriate OPERA DSWx-S1 water reference. No eligible WTR observation was available for that comparison window, so the correct result is **NO_MATCH_NO_SCORE / PROVISIONAL**. The processing outputs and their reproducibility evidence remain available; no accuracy metric is inferred from the absence of a suitable reference.
 
-The diagnostic OPERA RTC-S1 inventory returned 2,093 AOI granules and 2,020 VV burst groups, but its nearest acquisition was **2026-06-26 (52 days before 2026-08-17)**. That is outside both the ±30-day discovery window and the strict ±3-day scoring gate; RTC-S1 is backscatter, not a water label. Consequently, no OPERA reference GeoTIFF or agreement metrics were created. The correct scientific outcome is **NO_MATCH_NO_SCORE / PROVISIONAL**, not 0% accuracy and not independent validation.
-
-The replay successfully uploaded its diagnostic report, validation status and private Drive receipt with remote checksum verification. The GitHub Action is deliberately red because the independent-reference metrics gate did not pass; this prevents a no-score result from appearing green.
+This is an AOI- and date-specific review outcome. It does not limit the global processing architecture, and it does not transfer to another region: each new AOI receives its own catalogue, compatibility and reference-availability checks.
 
 ## Optional impact-context screen — mapped exposure, not damage
 
@@ -158,7 +156,7 @@ RiverShift keeps three kinds of evidence separate:
 2. **Cross-sensor SAR comparison:** an eligible OPERA DSWx-S1 WTR mask may be compared to the retained NISAR water mask on the exact same grid. The score is permitted only when sensing dates are within **±3 days** and at least **80% of NISAR-valid pixels** have valid OPERA labels. Only WTR classes 0 and 1 are labelled; class 3 (inundated vegetation), 250 (HAND mask), 251 (layover/shadow), 254 (ocean mask), 255 (fill) and unknown classes remain NoData.
 3. **Hydrological or field context:** FFWC/BWDB stage observations, dated banklines, field surveys or other sources may support interpretation only when the source, exact timestamp, station/location, datum and method are documented. A river gauge is point context, not a pixel-wise water classification reference.
 
-For Run #36, the OPERA WTR search had no eligible scene within ±30 days and the nearest RTC-S1 acquisition was 52 days before the target NISAR date. Therefore **no independent water-mask agreement score is available**. The optional Sentinel-2 tool also did not provide a usable reference: its 2026-08-18 candidate had 97.957% cloud cover and only 0.1554% common valid support. Neither dataset is presented as validation.
+For the retained Jamuna Run #36, the reference review returned **NO_MATCH_NO_SCORE / PROVISIONAL** because no eligible, date-appropriate OPERA DSWx-S1 WTR reference was available. No F1, IoU or other accuracy metric is reported for that run. This status is specific to that AOI and observation window.
 
 A formal validation pack for a future event should include:
 - a separately prepared, independently reviewed water/non-water reference for the same AOI and a date within the declared scoring gate;
@@ -174,18 +172,15 @@ The standalone signed-bankline tool requires independently prepared dated bankli
 
 The legacy `validate_with_sentinel2.py` tool and retained-run workflow remain available for contexts where optical clear support is genuinely adequate, but they are not the monsoon validation strategy for this Run #36.
 
-## Known limitations
+## Scientific interpretation guardrails
 
-- NISAR acquisition dates are discrete; time-series availability depends on product maturity, acquisition geometry and valid raster coverage.
-- A catalogue footprint intersecting an AOI does not guarantee every pixel is valid after processing.
-- Water classification depends on the chosen frequency, diagonal covariance term, thresholding method and valid-data mask.
-- Newly water-covered and persistent land/water transitions are candidate classes, not independently confirmed flood, erosion or deposition.
-- The current automatic workflow does not establish signed bankline migration, sediment thickness/volume, water depth or flood causality.
-- OPERA DSWx-S1 V1 did not provide an eligible WTR scene for Run #36 within the ±30-day discovery window. RTC-S1's nearest AOI acquisition was 52 days earlier and cannot be promoted into a ±3-day water reference.
-- The August 2026 Sentinel-2 scene was too cloudy (97.957% reported cloud cover; 0.1554% common support) to produce comparison metrics. It is not corroboration.
-- FFWC gauge SW49 is a possible stage-context source, but a dated gauge value was not included in Run #36 and would not be a spatial water-mask reference.
-- Google Satellite is a visual context layer only, not a measurement source.
-- All Run #36 area values and the current project output remain **PROVISIONAL**; absence of validation does not mean zero change.
+- Blue, red and green map classes are radar-derived change candidates interpreted against actual NISAR observations; they are not automatically field-confirmed flood, erosion or deposition labels.
+- Source granule identity, acquisition dates, compatibility checks, SHA-256 provenance and full-resolution measurements are retained separately from simplified map previews.
+- A catalogue match is only the discovery stage. The worker also checks spatial coverage, product configuration, native layers and valid raster support before processing.
+- The current automatic workflow does not infer sediment volume, water depth, flood causality or signed bankline migration. Signed migration is handled as a separate analysis using independently dated banklines and oriented transects.
+- Optional building/facility overlays provide mapped exposure context only. They are not damage labels or a complete population/asset inventory.
+- Independent accuracy metrics are published only when a suitable reference and the required temporal/common-support gates are available. The retained Jamuna Run #36 therefore remains **PROVISIONAL / NO_MATCH_NO_SCORE**; this is not a zero score.
+
 
 ## Public code and evidence
 
