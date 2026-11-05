@@ -84,7 +84,7 @@ Run `audit_gcov_acquisitions.py` against the NASA CMR UMM-G 1.6.7 catalogue mani
 
 The GitHub Actions workflow `.github/workflows/river-shift-gcov-audit.yml` runs public catalogue discovery and footprint feasibility without downloading imagery. It is launched manually with the user-selected AOI/date window. The processing workflow `.github/workflows/river-shift-gcov-process.yml` runs only after an authenticated user submits a RiverShift job.
 
-The archived live catalogue evidence is linked from the root README and judge guide. Catalogue footprint coverage is not valid raster coverage. The selected public product links redirect to Earthdata Login, so current HDF5 compatibility remains blocked pending an authenticated download. The exporter requires the exact-granule `.download.json` receipt, checks its maturity and source host, and binds the output COG to the sidecar with SHA-256 before analysis.
+The archived catalogue-feasibility manifest is product-level evidence only: catalogue footprint intersection is not valid raster coverage and does not establish native HDF5 layer compatibility. In the authenticated live processing workflow, the worker downloads the selected exact GCOV granules, verifies the native HDF5 layers and valid raster support, and stops if those checks fail. The exporter requires the exact-granule `.download.json` receipt, checks product maturity and source host, and binds each output COG to its source receipt with SHA-256 before analysis.
 
 ## Data-comparability gate
 Before pixel-wise comparison, verify:
