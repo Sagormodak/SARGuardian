@@ -1,0 +1,114 @@
+import { describe, expect, it, vi } from 'vitest';
+import { copyPreparation, isPointInsidePolygon, parsePolygonWkt, polygonToWkt, prepareInvestigation, type InvestigationSelection } from '../engine/investigation';
+import { createAoiOverlayController } from '../ui/mapOverlays';
+
+const selection: InvestigationSelection = {
+  coordinates: [[85.3, 27.7], [85.301, 27.7], [85.301, 27.701]],
+  areaClosed: true, startDate: '2026-10-01', endDate: '2026-10-22', today: '2026-10-23',
+};
+
+describe('AOI WKT fallback parser', () => {
+  it('parses a closed lon/lat WKT ring without duplicating the closing point', () => {
+    expect(parsePolygonWkt('POLYGON ((85.3 27.7, 85.301 27.7, 85.301 27.701, 85.3 27.7))'))
+      .toEqual([[85.3, 27.7], [85.301, 27.7], [85.301, 27.701]]);
+  });
+  it.each([
+    '',
+    'MULTIPOLYGON (((85 27, 85.1 27, 85 27.1, 85 27)))',
+    'POLYGON ((85 27, 85.1 27, 85 27.1, 85 27), (85.01 27.01, 85.02 27.01, 85.01 27.02, 85.01 27.01))',
+    'POLYGON ((181 27, 85.1 27, 85 27.1, 181 27))',
+    'POLYGON ((85 91, 85.1 27, 85 27.1, 85 91))',
+    'POLYGON ((85 27, invalid 27, 85 27.1, 85 27))',
+    'POLYGON ((0x10 27, 85.1 27, 85 27.1, 0x10 27))',
+    'POLYGON ((85 27, 85.1 27, 85 27.1))',
+  ])('rejects unsupported or invalid WKT %s', (wkt) => {
+    expect(() => parsePolygonWkt(wkt)).toThrow();
+  });
+  it('uses longitude/latitude order for point-in-AOI checks', () => {
+    const ring = parsePolygonWkt('POLYGON ((85.3 27.7, 85.301 27.7, 85.301 27.701, 85.3 27.7))');
+    expect(isPointInsidePolygon(85.3002, 27.7002, ring)).toBe(true);
+    expect(isPointInsidePolygon(85.31, 27.71, ring)).toBe(false);
+  });
+});
+
+describe('AOI WKT', () => {
+  it('preserves longitude/latitude order and source precision without mutation', () => {
+    const points = [[85.30000012345678, 27.7], [85.301, 27.7], [85.301, 27.701]];
+    const before = JSON.stringify(points);
+    expect(polygonToWkt(points)).toBe('POLYGON((85.30000012345678 27.7, 85.301 27.7, 85.301 27.701, 85.30000012345678 27.7))');
+    expect(JSON.stringify(points)).toBe(before);
+  });
+  it('does not double-close an already closed ring', () => {
+    expect(polygonToWkt([...selection.coordinates, selection.coordinates[0]])).toBe(polygonToWkt(selection.coordinates));
+  });
+  it.each([[], [[1, 2], [2, 3]], [[1, 2], [2, 3], [1, 2]], [[NaN, 2], [2, 3], [3, 4]], [[Infinity, 2], [2, 3], [3, 4]], [[181, 2], [2, 3], [3, 4]], [[1, -91], [2, 3], [3, 4]], [[[1, 2], [2, 3], [3, 4]]], { type: 'MultiPolygon', coordinates: [] }])('rejects invalid or unsupported geometry %j', (points) => {
+    expect(() => polygonToWkt(points)).toThrow();
+  });
+  it('accepts the actual coordinate structure emitted by Google Maps drag events', () => {
+    const callbacks: Record<string, (event: unknown) => void> = {};
+    class Polygon { setPaths() {} setVisible() {} }
+    class Marker {
+      addListener(name: string, handler: (event: unknown) => void) { callbacks[name] = handler; return { remove() {} }; }
+      setPosition() {} setZIndex() {} setIcon() {}
+    }
+    vi.stubGlobal('google', { maps: { Polygon, Marker, SymbolPath: { CIRCLE: 0 } } });
+    try {
+      const onCoordinates = vi.fn();
+      const controller = createAoiOverlayController({ onCoordinates, onSelectedVertex: vi.fn() });
+      controller.update({ coordinates: selection.coordinates, areaClosed: true, drawing: false, selectedVertexIndex: null });
+      controller.attach({} as google.maps.Map);
+      callbacks.dragend({ latLng: { lng: () => 85.302, lat: () => 27.702 } });
+      expect(polygonToWkt(onCoordinates.mock.calls[0][0])).toContain('85.302 27.702');
+    } finally { vi.unstubAllGlobals(); }
+  });
+});
+
+describe('shared investigation selection', () => {
+  it('creates the exact date/geometry payload for the current selection', () => {
+    expect(prepareInvestigation(selection)).toEqual({ valid: true, payload: {
+      aoi_wkt: polygonToWkt(selection.coordinates), start_date: selection.startDate, end_date: selection.endDate,
+      place_name: null, place_latitude: null, place_longitude: null, target_latitude: null, target_longitude: null,
+    } });
+  });
+  it.each(['', '2026-02-30', '2026-1-01', 'invalid', '2026-10-24'])('rejects invalid or future end date %s', (endDate) => {
+    expect(prepareInvestigation({ ...selection, endDate }).valid).toBe(false);
+  });
+  it('passes selected location context and only promotes an in-AOI point to measurement target', () => {
+    const inside = prepareInvestigation({ ...selection, place: { name: 'Himalaya Station', latitude: 27.7002, longitude: 85.3008 } });
+    expect(inside.valid).toBe(true);
+    if (inside.valid) {
+      expect(inside.payload.place_name).toBe('Himalaya Station');
+      expect(inside.payload.target_latitude).toBe(27.7002);
+      expect(inside.payload.target_longitude).toBe(85.3008);
+    }
+    const outside = prepareInvestigation({ ...selection, place: { name: 'Nearby town', latitude: 27.71, longitude: 85.30 } });
+    expect(outside.valid).toBe(true);
+    if (outside.valid) {
+      expect(outside.payload.place_name).toBe('Nearby town');
+      expect(outside.payload.place_latitude).toBe(27.71);
+      expect(outside.payload.target_latitude).toBeNull();
+      expect(outside.payload.target_longitude).toBeNull();
+    }
+  });
+  it('enforces ordering, maximum window, area and closure rules', () => {
+    for (const change of [{ endDate: '2026-09-30' }, { startDate: '2026-01-01' }, { areaClosed: false }, { coordinates: [[0, 0], [20, 0], [20, 20]] as [number, number][] }]) {
+      expect(prepareInvestigation({ ...selection, ...change }).valid).toBe(false);
+    }
+  });
+  it('recomputes edited geometry and dates, and invalidates cleared AOIs', () => {
+    const before = prepareInvestigation(selection);
+    const after = prepareInvestigation({ ...selection, coordinates: [[85.3, 27.7], [85.302, 27.7], [85.301, 27.701]], endDate: '2026-10-23' });
+    expect(after.valid && after.payload).not.toEqual(before.valid && before.payload);
+    expect(prepareInvestigation({ ...selection, coordinates: [], areaClosed: false }).valid).toBe(false);
+  });
+  it('copies exact WKT and JSON, and propagates clipboard failures', async () => {
+    const prepared = prepareInvestigation(selection);
+    if (!prepared.valid) throw new Error('Fixture invalid');
+    const write = vi.fn().mockResolvedValue(undefined);
+    await copyPreparation(prepared.payload, 'wkt', write);
+    expect(write).toHaveBeenLastCalledWith(prepared.payload.aoi_wkt);
+    await copyPreparation(prepared.payload, 'payload', write);
+    expect(JSON.parse(write.mock.calls[1][0])).toEqual(prepared.payload);
+    await expect(copyPreparation(prepared.payload, 'wkt', vi.fn().mockRejectedValue(new Error('denied')))).rejects.toThrow('denied');
+  });
+});

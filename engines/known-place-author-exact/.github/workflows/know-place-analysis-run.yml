@@ -1,0 +1,469 @@
+name: Know Place Analysis - exact five-pair raw replay
+
+# Historical replay only: its frozen manifest contains the older X05026 first pair.
+# It must never run from [run-know-place] alone, because that marker is used for
+# the author-exact P05023 path. This historical mixed-release replay requires BOTH
+# [run-know-place] and the separate [run-mixed-release-replay] marker.
+# Keep this workflow isolated to feat/know-place-analysis; main is untouched.
+on:
+  push:
+    branches:
+      - feat/know-place-analysis
+
+permissions:
+  contents: read
+
+concurrency:
+  group: know-place-raw-replay
+  cancel-in-progress: false
+
+jobs:
+  trigger_gate:
+    name: Decide whether this branch push explicitly requested the expensive analysis
+    runs-on: ubuntu-24.04
+    outputs:
+      run_analysis: ${{ steps.decide.outputs.run_analysis }}
+    steps:
+      - name: Evaluate explicit consent marker without downloading science data
+        id: decide
+        shell: bash
+        env:
+          EVENT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          should_run=false
+          if [[ "$EVENT_MESSAGE" == *"[run-know-place]"* && "$EVENT_MESSAGE" == *"[run-mixed-release-replay]"* ]]; then
+            should_run=true
+          fi
+          echo "run_analysis=$should_run" >> "$GITHUB_OUTPUT"
+          if [[ "$should_run" == "true" ]]; then
+            echo "Explicit consent marker found. The raw-data replay job is enabled."
+          else
+            echo "No expensive run requested. No product downloads will occur."
+            {
+              echo "## Know Place Analysis trigger gate"
+              echo
+              echo "This feature-branch update did not include BOTH [run-know-place] and [run-mixed-release-replay]; the historical mixed-release replay is disabled."
+              echo "No raw NISAR products were downloaded."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  analyze-five-pairs:
+    name: Validate inputs and analyse five exact GOFF pairs
+    needs: trigger_gate
+    if: needs.trigger_gate.outputs.run_analysis == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+      CROWN_WKT: "POLYGON ((85.5245 28.2847, 85.5400 28.2847, 85.5400 28.2970, 85.5245 28.2970, 85.5245 28.2847))"
+      CROWN_GEOMETRY_KIND: bounding-box-approximation
+      GEOMETRY_HEIGHT_M: '5151'
+      CONTROL_DRAWS: '1000'
+
+    steps:
+      - name: Require an explicit trigger and required credentials before any product download
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$GOOGLE_DRIVE_OAUTH_CLIENT_JSON" || -z "$GOOGLE_DRIVE_REFRESH_TOKEN" || -z "$GOOGLE_DRIVE_PARENT_FOLDER_ID" ]]; then
+            echo "ERROR=DRIVE_SECRETS_REQUIRED_BEFORE_EXPENSIVE_DOWNLOAD"
+            exit 1
+          fi
+          if [[ -z "$EARTHDATA_TOKEN" && ( -z "$EARTHDATA_USERNAME" || -z "$EARTHDATA_PASSWORD" ) ]]; then
+            echo "ERROR=EARTHDATA_TOKEN_OR_USERNAME_PASSWORD_REQUIRED"
+            exit 1
+          fi
+          RUN_ROOT="$RUNNER_TEMP/know-place-analysis"
+          OUT_ROOT="$RUNNER_TEMP/know-place-analysis-output"
+          echo "RUN_ROOT=$RUN_ROOT" >> "$GITHUB_ENV"
+          echo "OUT_ROOT=$OUT_ROOT" >> "$GITHUB_ENV"
+          mkdir -p "$RUN_ROOT/raw" "$RUN_ROOT/download-receipts" "$OUT_ROOT"
+          chmod 700 "$RUN_ROOT" "$RUN_ROOT/raw" "$OUT_ROOT"
+          echo "CREDENTIAL_PREFLIGHT=PASS"
+          echo "EXPLICIT_DOWNLOAD_CONSENT=PASS"
+          echo "secrets_ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout backend repository at the triggering feature-branch commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: backend-source
+
+      - name: Checkout the pinned dynamic-WKT science engine used by the previous run
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian
+          ref: 10639a916c9829850775410b3ed7de62e527770d
+          path: science-source
+
+      - name: Record exact backend and science revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          backend_sha="$(git -C backend-source rev-parse HEAD)"
+          science_sha="$(git -C science-source rev-parse HEAD)"
+          {
+            echo "## Know Place Analysis - exact five-pair replay"
+            echo
+            echo "- Backend branch: $GITHUB_REF_NAME"
+            echo "- Backend commit: $backend_sha"
+            echo "- Science commit: $science_sha"
+            echo "- Previous input run: https://github.com/moshiour0/SARGuardian-backend/actions/runs/39942529304"
+            echo "- Main branch was not changed by this workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install pinned analysis runtime and retention dependencies (exclude test-only pins)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The science requirements file includes pytest==9.1.1 for test runs,
+          # while the backend dev extra pins pytest<9. Pytest is not needed for
+          # raw HDF5 processing, so exclude only that test-only line and keep
+          # the scientific runtime versions from the pinned source repository.
+          runtime_requirements="$RUNNER_TEMP/know-place-runtime-requirements.txt"
+          grep -Ev '^[[:space:]]*pytest([<=>!~]|[[:space:]]|$)' science-source/requirements.txt > "$runtime_requirements"
+          test -s "$runtime_requirements"
+          python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 \
+            -r "$runtime_requirements" -r backend-source/tools/requirements-retention.txt scipy==1.18.1
+
+      - name: Re-query ASF for each exact granule and verify current maturity and collection
+        id: catalog
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=backend-source python -m tools.know_place.catalog --out "$RUN_ROOT/catalog-manifest.json"
+          cp "$RUN_ROOT/catalog-manifest.json" "$OUT_ROOT/catalog-manifest.json"
+          python - "$RUN_ROOT/catalog-manifest.json" "$RUN_ROOT/download-plan.tsv" <<'PY'
+          import json,sys
+          source, target=sys.argv[1:]
+          d=json.load(open(source,encoding="utf-8"))
+          rows=d.get("products",[])
+          if d.get("status") != "PASS" or len(rows) != 5:
+              raise SystemExit("ERROR=CATALOG_MANIFEST_NOT_EXACTLY_FIVE_PRODUCTS")
+          with open(target,"w",encoding="utf-8") as f:
+              for p in rows:
+                  f.write("{}\t{}\t{}\t{}\n".format(
+                      p["granule_name"],p["expected_source_bytes"],
+                      p["expected_source_sha256"],p["catalog_maturity"]))
+          PY
+          echo "ASF_EXACT_GRANULES_VALIDATED=5"
+          echo "CATALOG_STATUS=PASS" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Re-download one exact product at a time and match previous-run byte identity
+        id: download
+        shell: bash
+        timeout-minutes: 300
+        run: |
+          set -euo pipefail
+          while IFS=$'\t' read -r granule expected_bytes expected_sha maturity; do
+            [[ -n "$granule" && -n "$expected_bytes" && -n "$expected_sha" && -n "$maturity" ]]
+            echo "PRODUCT_START=$granule"
+            # The downloader's --aoi source argument only initializes the pinned
+            # Earthdata session helper; the Know Place science path uses its own
+            # separate box/crown masks and never calls the legacy source AOI reader.
+            python backend-source/tools/download_nisar_product.py \
+              --product-type GOFF --maturity "$maturity" \
+              --granule-name "$granule" --science-root "$PWD/science-source" \
+              --aoi source --expected-source-bytes "$expected_bytes" \
+              --out-dir "$RUN_ROOT/raw"
+            raw="$RUN_ROOT/raw/$granule.h5"
+            test -s "$raw"
+            actual_bytes="$(stat -c '%s' "$raw")"
+            actual_sha="$(sha256sum "$raw" | awk '{print $1}')"
+            if [[ "$actual_bytes" != "$expected_bytes" ]]; then
+              echo "ERROR=HISTORICAL_SOURCE_SIZE_MISMATCH granule=$granule expected=$expected_bytes actual=$actual_bytes"
+              exit 1
+            fi
+            if [[ "$actual_sha" != "$expected_sha" ]]; then
+              echo "ERROR=HISTORICAL_SOURCE_SHA256_MISMATCH granule=$granule expected=$expected_sha actual=$actual_sha"
+              exit 1
+            fi
+            receipt="$RUN_ROOT/raw/download-manifest.json"
+            if [[ -s "$receipt" ]]; then
+              cp "$receipt" "$RUN_ROOT/download-receipts/$granule.download-manifest.json"
+              cp "$receipt" "$OUT_ROOT/$granule.download-manifest.json"
+            fi
+            echo "SOURCE_IDENTITY_MATCH=PASS granule=$granule bytes=$actual_bytes sha256=$actual_sha"
+          done < "$RUN_ROOT/download-plan.tsv"
+          echo "RAW_GO-FF_SOURCE_BYTES_MATCHED_PREVIOUS_RUN=5"
+
+      - name: Build the explicitly labelled Know Place input manifest
+        id: config
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$RUN_ROOT/catalog-manifest.json" "$RUN_ROOT/know-place-inputs.json" "$OUT_ROOT/run-config-provenance.json" <<'PY'
+          import json,os,sys,hashlib
+          catalog_path,config_path,provenance_path=sys.argv[1:]
+          catalog=json.load(open(catalog_path,encoding="utf-8"))
+          crown=os.environ["CROWN_WKT"].strip()
+          kind=os.environ["CROWN_GEOMETRY_KIND"]
+          height=float(os.environ["GEOMETRY_HEIGHT_M"])
+          draws=int(os.environ["CONTROL_DRAWS"])
+          if not crown.startswith("POLYGON ((") or not crown.endswith("))"):
+              raise SystemExit("ERROR=CROWN_WKT_MUST_BE_SINGLE_RING_POLYGON")
+          if not (1000.0 <= height <= 8000.0):
+              raise SystemExit("ERROR=GEOMETRY_HEIGHT_OUT_OF_RANGE")
+          if not (1 <= draws <= 100000):
+              raise SystemExit("ERROR=CONTROL_DRAWS_OUT_OF_RANGE")
+          if kind not in {"bounding-box-approximation","user-digitized-geometry"}:
+              raise SystemExit("ERROR=CROWN_GEOMETRY_KIND_UNSUPPORTED")
+          box="POLYGON ((85.500000 28.265000, 85.565000 28.265000, 85.565000 28.318000, 85.500000 28.318000, 85.500000 28.265000))"
+          source=("Preprint coordinate bounds represented as a rectangle; not an author-supplied geometry"
+                  if kind=="bounding-box-approximation"
+                  else "Operator-digitized WKT supplied to the Know Place Analysis workflow; not verified against an author-supplement geometry")
+          products=[]
+          for p in catalog["products"]:
+              products.append({
+                  "path":"raw/"+p["source_filename"],
+                  "expected_granule_name":p["source_filename"],
+                  "catalog_maturity":p["catalog_maturity"],
+                  "catalog_maturity_evidence":p["catalog_maturity_evidence"],
+              })
+          config={
+              "schema_version":"know-place-analysis-inputs/1.0",
+              "reference_box_wkt":box,
+              "crown_wkt":crown,
+              "crown_geometry_kind":kind,
+              "crown_geometry_source":source,
+              "geometry_height_m":height,
+              "control_seed":260826,
+              "control_draws":draws,
+              "coherence_minimum_valid_cells":1,
+              "coherence_neighbour_policy":"primary minimum 1 because the preprint omits a minimum neighbour count; sensitivity is reported for 1,5,10,15,20,25",
+              "products":products,
+          }
+          with open(config_path,"w",encoding="utf-8") as f:
+              json.dump(config,f,indent=2,ensure_ascii=False); f.write("\n")
+          provenance={
+              "schema_version":"know-place-run-config-provenance/1.0",
+              "project":"Know Place Analysis",
+              "reference_box_wkt":box,
+              "crown_wkt":crown,
+              "crown_geometry_sha256":hashlib.sha256(crown.encode()).hexdigest(),
+              "crown_geometry_kind":kind,
+              "crown_geometry_source":source,
+              "geometry_height_m":height,
+              "control_seed":260826,
+              "control_draws":draws,
+              "coherence_minimum_valid_cells":1,
+              "source_reference_run_id":catalog.get("source_reference_run_id"),
+              "author_product_variant_status":"NOT_VERIFIED_AGAINST_AUTHOR_SUPPLEMENT",
+              "scientific_scope":"measurement reproduction study only; not a hazard detector",
+              "products":[{k:p.get(k) for k in (
+                  "granule_name","source_filename","reference_date","secondary_date",
+                  "expected_source_bytes","expected_source_sha256","catalog_maturity",
+                  "catalog_maturity_evidence","release_id","previous_product_id"
+              )} for p in catalog["products"]],
+          }
+          json.dump(provenance,open(provenance_path,"w",encoding="utf-8"),indent=2,ensure_ascii=False)
+          with open(provenance_path,"a",encoding="utf-8") as f: f.write("\n")
+          PY
+          {
+            echo "CROWN_GEOMETRY_KIND=$CROWN_GEOMETRY_KIND"
+            echo "CROWN_WKT=$CROWN_WKT"
+            echo "Input manifest created; exact author crown geometry remains unverified."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run the five-pair exploratory paper-method analysis
+        id: analysis
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          PYTHONPATH=backend-source python -m tools.know_place.analyze \
+            --config "$RUN_ROOT/know-place-inputs.json" \
+            --out "$OUT_ROOT" 2>&1 | tee "$OUT_ROOT/analysis.log"
+          rc=${PIPESTATUS[0]}
+          echo "analysis_exit_code=$rc" >> "$GITHUB_OUTPUT"
+          if [[ -s "$OUT_ROOT/know-place-analysis-report.json" ]]; then
+            echo "report_created=true" >> "$GITHUB_OUTPUT"
+            status="$(python - "$OUT_ROOT/know-place-analysis-report.json" <<'PY'
+          import json,sys
+          print(json.load(open(sys.argv[1],encoding="utf-8")).get("status","UNKNOWN"))
+          PY
+          )"
+            echo "analysis_status=$status" >> "$GITHUB_OUTPUT"
+            echo "KNOW_PLACE_ANALYSIS_STATUS=$status"
+          else
+            echo "report_created=false" >> "$GITHUB_OUTPUT"
+            echo "analysis_status=REPORT_NOT_CREATED" >> "$GITHUB_OUTPUT"
+            echo "ERROR=ANALYSIS_REPORT_NOT_CREATED"
+          fi
+          # This step captures the tool's return code so outputs can still be
+          # preserved. A separate explicit gate determines the workflow result.
+          exit 0
+
+      - name: Fail the workflow if the five scientific metric sets are incomplete
+        id: scientific_gate
+        if: always() && steps.analysis.outputs.report_created == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$OUT_ROOT/know-place-analysis-report.json" <<'PY'
+          import json,sys
+          report=json.load(open(sys.argv[1],encoding="utf-8"))
+          print("STRUCTURAL_STATUS="+str(report.get("structural_status")))
+          print("PAPER_REPRODUCTION_STATUS="+str(report.get("paper_reproduction_status")))
+          print("HAZARD_DETECTION_STATUS="+str(report.get("hazard_detection_status")))
+          if report.get("status") != "SCIENTIFIC_METRICS_COMPUTED":
+              raise SystemExit("ERROR=FIVE_PAIR_SCIENCE_METRICS_INCOMPLETE")
+          products=report.get("products",[])
+          if len(products)!=5 or any(p.get("status")!="METRICS_COMPUTED" for p in products):
+              raise SystemExit("ERROR=FIVE_PAIR_REPORT_GATE_FAILED")
+          # Expected and intentional until exact author geometry and golden outputs exist.
+          if report.get("paper_reproduction_status","").startswith("PASS"):
+              raise SystemExit("ERROR=UNEXPECTED_PAPER_PARITY_PASS_WITHOUT_GOLDEN_DATA")
+          PY
+          echo "Five per-pair metric records computed; paper parity remains a separate, blocked gate." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Package only derived analysis outputs and provenance (never raw HDF5)
+        id: bundle
+        if: always() && steps.analysis.outputs.report_created == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$OUT_ROOT" <<'PY'
+          from pathlib import Path
+          import sys,zipfile
+          root=Path(sys.argv[1])
+          target=root/"know-place-analysis-results.zip"
+          exclude={target.name,"drive-upload-receipt.json","drive-receipt-upload.json"}
+          with zipfile.ZipFile(target,"w",compression=zipfile.ZIP_DEFLATED,compresslevel=6) as archive:
+              for path in sorted(root.rglob("*")):
+                  if path.is_file() and path.name not in exclude and path != target:
+                      if path.suffix.lower() in {".h5",".hdf5"}:
+                          raise SystemExit("ERROR=RAW_HDF5_FOUND_IN_RESULT_BUNDLE")
+                      archive.write(path,path.relative_to(root))
+          print(f"KNOW_PLACE_RESULTS_BUNDLE={target}")
+          print(f"KNOW_PLACE_BUNDLE_BYTES={target.stat().st_size}")
+          PY
+
+      - name: Upload result bundle and scientific receipts to private Google Drive
+        id: drive_upload
+        if: always() && steps.analysis.outputs.report_created == 'true' && steps.preflight.outputs.secrets_ready == 'true' && steps.bundle.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            "$OUT_ROOT/know-place-analysis-results.zip"
+            "$OUT_ROOT/know-place-analysis-report.json"
+            "$OUT_ROOT/catalog-manifest.json"
+            "$OUT_ROOT/run-config-provenance.json"
+          )
+          [[ ! -s "$OUT_ROOT/know-place-analysis-pairs.csv" ]] || files+=("$OUT_ROOT/know-place-analysis-pairs.csv")
+          for file in "${files[@]}"; do test -s "$file"; done
+          python backend-source/tools/drive_resumable_upload.py \
+            --root "$OUT_ROOT" --run-name "KnowPlace-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --files "${files[@]}" --out "$OUT_ROOT/drive-upload-receipt.json"
+          python backend-source/tools/drive_resumable_upload.py \
+            --root "$OUT_ROOT" --run-name "KnowPlace-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --files "$OUT_ROOT/drive-upload-receipt.json" \
+            --out "$OUT_ROOT/drive-receipt-upload.json"
+          python - "$OUT_ROOT/drive-upload-receipt.json" "$OUT_ROOT/drive-receipt-upload.json" <<'PY'
+          import json,sys
+          first,second=[json.load(open(p,encoding="utf-8")) for p in sys.argv[1:]]
+          if first.get("remote_verification")!="PASS" or second.get("remote_verification")!="PASS":
+              raise SystemExit("ERROR=KNOW_PLACE_DRIVE_RETENTION_NOT_VERIFIED")
+          if first.get("raw_product_uploaded") is not False:
+              raise SystemExit("ERROR=RAW_HDF5_MUST_NOT_BE_UPLOADED")
+          print("KNOW_PLACE_DRIVE_RETENTION=PASS")
+          PY
+          echo "KNOW_PLACE_DRIVE_RETENTION=PASS" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove temporary raw products only after verified durable derived output
+        if: steps.drive_upload.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$OUT_ROOT/drive-upload-receipt.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1],encoding="utf-8"))
+          if d.get("remote_verification")!="PASS" or d.get("raw_product_uploaded") is not False:
+              raise SystemExit("ERROR=REFUSING_TEMPORARY_RAW_CLEANUP_WITHOUT_DRIVE_VERIFICATION")
+          PY
+          rm -rf "$RUN_ROOT/raw" "$RUN_ROOT/download-receipts"
+          echo "TEMPORARY_RAW_PRODUCTS_REMOVED_AFTER_DRIVE_VERIFICATION=true"
+
+      - name: Write final run summary with clear science-versus-reproduction status
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo
+            echo "## Know Place Analysis outcome"
+            echo
+            if [[ -s "$OUT_ROOT/know-place-analysis-report.json" ]]; then
+              python - "$OUT_ROOT/know-place-analysis-report.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1],encoding="utf-8"))
+          print("- **Analysis status:** `{}`".format(d.get("status")))
+          print("- **Structural status:** `{}`".format(d.get("structural_status")))
+          print("- **Paper reproduction status:** `{}`".format(d.get("paper_reproduction_status")))
+          print("- **Hazard detection status:** `{}`".format(d.get("hazard_detection_status")))
+          print("- **Products with complete metrics:** {}/5".format(d.get("run_scope",{}).get("pair_count_with_metrics",0)))
+          print("- **Published 26 Jul–19 Aug crown median target:** 0.96 m; comparison does not force this result.")
+          print("- **Interpretation:** a metric match is not a validated landslide alarm; paper parity is blocked until geometry, variants and author reference outputs are verified.")
+          PY
+            else
+              echo "- **Analysis report:** not created; inspect catalog/download/analysis logs above."
+            fi
+            echo
+            echo "Main branch was not modified or merged."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload derived outputs, compact receipts and logs to GitHub Actions
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: know-place-analysis-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/know-place-analysis-output
+            ${{ runner.temp }}/know-place-analysis/catalog-manifest.json
+            ${{ runner.temp }}/know-place-analysis/download-plan.tsv
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final evidence gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ steps.preflight.outcome }}" != "success" ]]; then
+            echo "ERROR=PRE-DOWNLOAD_PREFLIGHT_FAILED"
+            exit 1
+          fi
+          if [[ "${{ steps.catalog.outcome }}" != "success" ]]; then
+            echo "ERROR=ASF_CATALOG_GATE_FAILED"
+            exit 1
+          fi
+          if [[ "${{ steps.download.outcome }}" != "success" ]]; then
+            echo "ERROR=RAW_PRODUCT_IDENTITY_GATE_FAILED"
+            exit 1
+          fi
+          if [[ "${{ steps.analysis.outputs.report_created }}" != "true" ]]; then
+            echo "ERROR=ANALYSIS_REPORT_NOT_CREATED"
+            exit 1
+          fi
+          if [[ "${{ steps.scientific_gate.outcome }}" != "success" ]]; then
+            echo "ERROR=SCIENTIFIC_METRIC_COMPLETENESS_GATE_FAILED"
+            exit 1
+          fi
+          if [[ "${{ steps.drive_upload.outcome }}" != "success" ]]; then
+            echo "ERROR=DRIVE_RETENTION_GATE_FAILED"
+            exit 1
+          fi
+          echo "KNOW_PLACE_RUN_STATUS=SCIENTIFIC_METRICS_COMPUTED_PAPER_PARITY_BLOCKED"

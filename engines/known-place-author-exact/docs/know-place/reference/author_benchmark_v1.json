@@ -1,0 +1,375 @@
+{
+  "schema_version": "know-place-author-benchmark/1.1",
+  "provenance": {
+    "article_title": "NISAR offsets measure pre-failure motion but do not single out the Bhote Koshi avalanche source",
+    "author": "Sansar Raj Meena",
+    "posted_date": "2026-09-22",
+    "article_doi": "https://doi.org/10.21203/rs.3.rs-11022365/v1",
+    "code_and_golden_data_archive_doi": "https://doi.org/10.5281/zenodo.22730419",
+    "article_license": "CC BY 4.0",
+    "supplement_license": "CC BY 4.0 except Supplementary Figure 1 and Supplementary Table 5, which are identified as third-party CC BY-NC 4.0 material",
+    "uploaded_artifacts": [
+      {
+        "name": "nisar_offsets_measure_pre_failure_motion_but_do_not_single_out_the_bhote_koshi_avalanche_source.pdf",
+        "role": "main paper PDF",
+        "sha256": "514ff22bbf8adff829605e005496cff7f80ee72596171432aa169f2ffb986705"
+      },
+      {
+        "name": "8da4c3f71775fbc4b0d7d324.docx",
+        "role": "Supplementary Information containing Supplementary Figures 1-3 and Tables 1-6",
+        "sha256": "37c43d7f683796aa96f9a90f0bd6abda2b1e26f4ccbbb674cfa13642da37f777"
+      },
+      {
+        "name": "b0dbe1d825f6eb03362df3d2.csv",
+        "role": "Supplementary Data 1: attributed inventory of 101 validated zones",
+        "sha256": "b800d90bd6e7322ef2f8548370de0fb922ef057cbdce2d0c2caa681ae76a42a8"
+      }
+    ],
+    "local_reference_inventory": "docs/know-place/reference/author_validated_zones_supplementary_data_1.csv",
+    "archive_status": "VERIFIED_2026-10-24: uploaded README and Zenodo ZIP hashes recorded; ZIP integrity passed; all 90 present manifest-listed payloads matched declared size and MD5; this verifies archive bytes and included outputs, not raw GOFF source hashes or method parity.",
+    "manuscript_version_note": "The existing Know Place blueprint cites a differently titled EGUsphere preprint (DOI 10.5194/egusphere-2026-5462). The relationship between the EGUsphere and supplied Research Square records has not been formally verified. All IDs and scalar values in this manifest are transcribed only from the user-supplied Research Square PDF and its supplement; do not silently merge records.",
+    "live_author_catalog_check": {
+      "validation_run_id": 40035193088,
+      "validation_run_url": "https://github.com/moshiour0/SARGuardian-backend/actions/runs/40035193088",
+      "queries_completed": 5,
+      "trusted_collection_route_confirmed": 4,
+      "not_found": [
+        "NISAR_L2_PR_GOFF_023_098_A_016_024_4000_SH_20260620T233921_20260620T233956_20260702T233920_20260702T233955_P05023_N_F_J_001"
+      ],
+      "result": "BLOCKED",
+      "raw_product_downloads": 0,
+      "caution": "A live catalog NOT_FOUND result is not proof the author's archived file does not exist. The separate historical catalog gate reports X05026 for the first pair; do not substitute it silently."
+    },
+    "archive_audit": {
+      "report": "docs/know-place/evidence/ZENODO_AUTHOR_ARCHIVE_AUDIT_20261024.md",
+      "fixture": "docs/know-place/reference/author_archive_golden_v1.json",
+      "archive_filename": "bhotekoshi2026_nisar_data-and-code_CC-BY-4.0.zip",
+      "archive_bytes": 183389034,
+      "archive_md5": "b07b7eb3b3178d3f69d5bca009cb0db4",
+      "archive_sha256": "002c2ba173a03693431b79578ca28d6b11e1ec00423d7533e82198871576c5e3",
+      "readme_md5": "f6d057f28c3dbccb62f32e98e41bf594",
+      "readme_sha256": "d20f8eb894afffc2ae469c110fb69028caef8360fc1b8039f56863eeebf11199",
+      "zip_integrity": "PASS",
+      "present_manifest_payloads_verified": 90,
+      "payload_size_or_md5_mismatches": 0,
+      "table_s7_matches_user_csv_byte_for_byte": true,
+      "raw_goff_h5_in_zip": false,
+      "full_footprint_pair_rasters_in_zip": false,
+      "author_scripts_inspected": [
+        "code/make_pot_figure.py",
+        "code/make_fig_timeseries.py",
+        "code/polygon_null.py",
+        "code/wide_screen.py",
+        "code/geometry.py"
+      ],
+      "implementation_parity": "NOT_VERIFIED"
+    }
+  },
+  "spatial_definition": {
+    "crs": "EPSG:4326",
+    "crown_wkt": "POLYGON ((85.5245 28.2847, 85.5400 28.2847, 85.5400 28.2970, 85.5245 28.2970, 85.5245 28.2847))",
+    "crown_area_km2": 2.07,
+    "reference_box_wkt": "POLYGON ((85.500 28.265, 85.565 28.265, 85.565 28.318, 85.500 28.318, 85.500 28.265))",
+    "polygon_source": "Main paper Methods, bulk referencing; Supplementary Figure 2 caption",
+    "site_series_geometry_policy": "One crown-local radar geometry is used throughout the site series; the paper does not document an explicit HAE/datum query in the text.",
+    "footprint_geometry_policy": "Per-pixel radar geometry interpolated at Copernicus DEM GLO-90 elevation on the common GOFF grid."
+  },
+  "raster_and_selection_policy": {
+    "track": "T098",
+    "direction": "ascending",
+    "frequency": "L-SAR frequency A",
+    "polarization": "HH",
+    "grid_crs": "EPSG:32645",
+    "grid_shape_pixels": [
+      4230,
+      4311
+    ],
+    "posting_m": 80,
+    "layer": "layer2",
+    "min_snr": 5,
+    "discard_magnitude_over_m": 10,
+    "projection": "dE = AT*atuX - (SR/sin(theta))*losX/abs(los_h); dN = AT*atuY - (SR/sin(theta))*losY/abs(los_h)",
+    "los_sign_convention": "LOS unit vector is target-to-sensor; positive slant-range offset means motion away from sensor; vertical motion is set to zero for the horizontal projection.",
+    "bulk_reference": "Component-wise median over SNR-valid pixels within the 6 km box but outside the crown; no further stability selection.",
+    "site_directional_coherence": "5x5 mean resultant length R of unit displacement vectors. Published estimator crops the crown and reflects at crop edges; author code is needed to pin missing-neighbour behaviour exactly.",
+    "polygon_null": "Random compact regions with crown valid-pixel count on valid ground within the 6 km box; 857-996 accepted draws depending on pair. The published text does not fully specify PRNG/draw implementation.",
+    "footprint_screen": {
+      "local_window_pixels": 41,
+      "local_window_km": 3.28,
+      "minimum_magnitude_anomaly_m": 0.5,
+      "minimum_anomaly_mad_multiple": 4,
+      "minimum_residual_coherence_R": 0.75,
+      "coherence_window_pixels": 5,
+      "minimum_valid_window_fraction": 0.5,
+      "minimum_epochs_of_five": 2,
+      "minimum_connected_component_pixels": 10,
+      "directional_validation_max_misfit_deg": 45
+    }
+  },
+  "exact_author_granules": [
+    {
+      "interval": "2026-06-20/2026-07-02",
+      "days": 12,
+      "processing_flag": "N_F",
+      "id": "NISAR_L2_PR_GOFF_023_098_A_016_024_4000_SH_20260620T233921_20260620T233956_20260702T233920_20260702T233955_P05023_N_F_J_001"
+    },
+    {
+      "interval": "2026-07-02/2026-07-14",
+      "days": 12,
+      "processing_flag": "F_F",
+      "id": "NISAR_L2_PR_GOFF_024_098_A_016_025_4000_SH_20260702T233920_20260702T233955_20260714T233920_20260714T233954_P05023_F_F_J_001"
+    },
+    {
+      "interval": "2026-07-14/2026-07-26",
+      "days": 12,
+      "processing_flag": "N_F",
+      "id": "NISAR_L2_PR_GOFF_025_098_A_016_026_4000_SH_20260714T233920_20260714T233954_20260726T233919_20260726T233954_P05023_N_F_J_001"
+    },
+    {
+      "interval": "2026-07-26/2026-08-19",
+      "days": 24,
+      "processing_flag": "N_F",
+      "id": "NISAR_L2_PR_GOFF_026_098_A_016_028_4000_SH_20260726T233919_20260726T233954_20260819T233918_20260819T233953_P05023_N_F_J_001"
+    },
+    {
+      "interval": "2026-08-19/2026-08-31",
+      "days": 12,
+      "processing_flag": "N_F",
+      "id": "NISAR_L2_PR_GOFF_028_098_A_016_029_4000_SH_20260819T233918_20260819T233953_20260831T233918_20260831T233952_P05023_N_F_J_001"
+    }
+  ],
+  "published_site_series": {
+    "columns": [
+      "20 Jun-2 Jul",
+      "2-14 Jul",
+      "14-26 Jul",
+      "26 Jul-19 Aug",
+      "19-31 Aug"
+    ],
+    "interval_days": [
+      12,
+      12,
+      12,
+      24,
+      12
+    ],
+    "median_crown_displacement_m": [
+      0.99,
+      0.54,
+      0.3,
+      0.96,
+      0.33
+    ],
+    "median_crown_rate_cm_per_day": [
+      8.3,
+      4.5,
+      2.5,
+      4,
+      2.7
+    ],
+    "displacement_null_percentile": [
+      94.9,
+      87.5,
+      81,
+      94.7,
+      81.3
+    ],
+    "displacement_null_median_m": [
+      0.17,
+      0.21,
+      0.14,
+      0.14,
+      0.09
+    ],
+    "bulk_reference_crown_R": [
+      0.75,
+      0.612,
+      0.611,
+      0.871,
+      0.551
+    ],
+    "bulk_reference_background_R": [
+      0.641,
+      0.719,
+      0.757,
+      0.687,
+      0.592
+    ],
+    "bulk_reference_crown_minus_background_R": [
+      0.109,
+      -0.107,
+      -0.146,
+      0.185,
+      -0.041
+    ],
+    "bulk_reference_crown_exceeds_background": [
+      true,
+      false,
+      false,
+      true,
+      false
+    ],
+    "single_field_crown_R": [
+      0.739,
+      0.583,
+      0.594,
+      0.848,
+      0.511
+    ],
+    "single_field_background_R": [
+      0.636,
+      0.726,
+      0.764,
+      0.68,
+      0.595
+    ],
+    "local_mean_reference_crown_R": [
+      0.669,
+      0.679,
+      0.726,
+      0.775,
+      0.666
+    ],
+    "local_mean_reference_background_R": [
+      0.678,
+      0.667,
+      0.697,
+      0.795,
+      0.661
+    ],
+    "local_mean_reference_crown_minus_background_R": [
+      -0.009,
+      0.012,
+      0.029,
+      -0.02,
+      0.005
+    ],
+    "polygon_null_R_percentile": [
+      77.2,
+      23.3,
+      39.8,
+      85.2,
+      29.1
+    ],
+    "polygon_null_samples_beating_box_mean_percent": [
+      47.5,
+      37.7,
+      37.2,
+      46.7,
+      50.2
+    ],
+    "polygon_null_R_5th_percentile": [
+      0.46,
+      0.485,
+      0.481,
+      0.413,
+      0.412
+    ],
+    "polygon_null_R_95th_percentile": [
+      0.863,
+      0.891,
+      0.965,
+      0.896,
+      0.814
+    ],
+    "polygon_null_accepted_draws": [
+      857,
+      887,
+      920,
+      916,
+      996
+    ],
+    "core_R": [
+      0.969,
+      0.978,
+      0.962,
+      0.973,
+      0.867
+    ],
+    "core_null_R_99th_percentile": [
+      0.969,
+      0.989,
+      0.998,
+      0.981,
+      0.931
+    ],
+    "core_null_percentile": [
+      99,
+      97,
+      89.2,
+      97.7,
+      92.6
+    ],
+    "core_null_draws": [
+      389,
+      395,
+      389,
+      388,
+      394
+    ],
+    "gamma_crosscheck_co_event": {
+      "crown_R": 0.659,
+      "box_R": 0.686,
+      "scene_R": 0.654,
+      "crown_box_pixels": "1398/31703",
+      "comparability": "Only the sign of crown-minus-box is comparable with geocoded/referenced NISAR statistics."
+    },
+    "displacement_valid_crown_pixels": [
+      283,
+      294,
+      296,
+      292,
+      195
+    ],
+    "polygon_null_R_valid_crown_pixels": [
+      302,
+      299,
+      302,
+      298,
+      202
+    ],
+    "count_estimand_sources": {
+      "displacement_valid_crown_pixels": {
+        "archive_file": "tables/nisar_pot_series.json",
+        "field": "n"
+      },
+      "polygon_null_R_valid_crown_pixels": {
+        "archive_file": "tables/polygon_null.json",
+        "field": "n_px"
+      },
+      "note": "These are distinct estimands. The former valid_crown_pixels key was ambiguous and has been removed."
+    }
+  },
+  "published_footprint_inventory": {
+    "total_footprint_km2": 116707,
+    "screenable_area_km2": 54799,
+    "prevalidation_candidate_zones": 106,
+    "validated_zones": 101,
+    "validated_zone_area_km2": 13.5,
+    "glacier_intersecting_zones": 93,
+    "off_glacier_zones": 8,
+    "source_zone_id": 43,
+    "source_zone": {
+      "lon": 85.5294,
+      "lat": 28.29161,
+      "area_km2": 0.192,
+      "n_epochs": 3,
+      "res_mag_m": 4.38,
+      "disp_az": 276.3,
+      "downslope_az": 296.1,
+      "d_downslope_deg": 19.8,
+      "R_res": 0.915,
+      "elev_m": 5084,
+      "slope_deg": 24.9,
+      "glacier": true,
+      "RGIId": "RGI60-15.04173"
+    }
+  },
+  "interpretation": {
+    "paper_conclusion": "Pre-failure motion is measurable, but the source is not distinctive against the calibrated population; no pre-event interval clears the 95th percentile for displacement or directional coherence, and no acceleration is resolved.",
+    "paper_reproduction_status": "BLOCKED_RAW_GOFF_BYTES_AND_IMPLEMENTATION_PARITY_UNVERIFIED",
+    "hazard_detection_status": "NOT_EVALUATED",
+    "source_variant_mismatch": "Supplementary Table 1 lists P05023 for the first pair, but the historical raw replay used X05026. Live ASF identity lookup confirmed four author IDs and returned NOT_FOUND for the exact first P05023 ID; preserve historical X05026 only as historical evidence. Raw-data hashes for the exact first P05023 file are unavailable.",
+    "next_gate": "Implement/test a separate author-parity path against archived fields and TableS4; resolve and SHA-256 pin exact raw GOFF payloads (especially first-pair P05023 without substituting X05026); regenerate full-footprint per-pair offsets and compare screen outputs."
+  }
+}

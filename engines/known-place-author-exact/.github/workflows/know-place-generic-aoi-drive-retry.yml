@@ -1,0 +1,155 @@
+name: Know Place Generic AOI — retry derived-only Drive retention
+
+# This workflow reuses the already-created GitHub artifact from generic AOI run
+# 40233937573. It does NOT run the AOI engine, query the product catalogue, or
+# download any raw GOFF HDF5. Its input is a derived-only artifact whose per-pair
+# raw-source cache was already cleaned by the original acquisition/analysis step.
+on:
+  push:
+    branches:
+      - feat/know-place-analysis
+    paths:
+      - "docs/know-place/GENERIC_AOI_DRIVE_RETRY_20261026.md"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  retry-derived-only-drive-upload:
+    if: contains(github.event.head_commit.message, '[run-know-place]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+    steps:
+      - name: Checkout the isolated feature branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install the versioned uploader/runtime
+        run: python -m pip install --disable-pip-version-check -r tools/know_place/requirements.txt -r tools/requirements-retention.txt
+
+      - name: Download the existing derived-only generic AOI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: know-place-aoi-40233937573-1
+          path: source-artifact
+          repository: ${{ github.repository }}
+          run-id: 40233937573
+          github-token: ${{ github.token }}
+
+      - name: Verify derived inputs and prepare an isolated retry root (no source download)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_ROOT="source-artifact/know-place-aoi-output"
+          mapfile -t RUN_DIRS < <(find "$SOURCE_ROOT" -mindepth 1 -maxdepth 1 -type d -name '20*' -print | sort)
+          if [[ "${#RUN_DIRS[@]}" -ne 1 ]]; then
+            echo "ERROR=EXPECTED_ONE_DERIVED_RUN_DIRECTORY"
+            exit 1
+          fi
+          SOURCE_RUN_DIR="${RUN_DIRS[0]}"
+          test -s "$SOURCE_RUN_DIR/result.json"
+          test -s "$SOURCE_RUN_DIR/manifest.json"
+          test -s "$SOURCE_RUN_DIR/visuals/dashboard.html"
+          test -s "$SOURCE_RUN_DIR/visuals/interactive-map.html"
+          if find "$SOURCE_RUN_DIR" -type f \( -iname '*.h5' -o -iname '*.hdf5' \) -print -quit | grep -q .; then
+            echo "ERROR=RAW_HDF5_PRESENT_IN_RETAINED_ARTIFACT"
+            exit 1
+          fi
+          mkdir -p drive-retry-root
+          cp -a "$SOURCE_RUN_DIR" drive-retry-root/
+          python - "$SOURCE_RUN_DIR/result.json" "$SOURCE_RUN_DIR/manifest.json" <<'PY'
+          import json, sys
+          result=json.load(open(sys.argv[1],encoding="utf-8"))
+          manifest=json.load(open(sys.argv[2],encoding="utf-8"))
+          request=result.get("request",{})
+          selection=request.get("product_selection",{})
+          assert result.get("status") == "SCIENTIFIC_METRICS_COMPUTED", "DERIVED_MEASUREMENT_NOT_COMPLETE"
+          assert result.get("measurement_status") == "METRICS_COMPUTED_ALL_PAIRS", "NOT_ALL_PAIRS_MEASURED"
+          assert selection.get("allowed_release_ids") == ["P05023"], "RELEASE_ALLOWLIST_NOT_P05023"
+          assert all(pair.get("release_id") == "P05023" and pair.get("status") == "METRICS_COMPUTED" for pair in result.get("pairs",[])), "PAIR_SOURCE_OR_METRICS_STATUS_MISMATCH"
+          assert int(manifest.get("source_product_count",0)) == len(result.get("pairs",[])), "SOURCE_COUNT_DOES_NOT_MATCH_METRICS"
+          print("EXISTING_DERIVED_RESULT_PREFLIGHT=PASS")
+          print("RAW_HDF5_IN_RETRY_INPUT=0")
+          print("EXACT_P05023_METRIC_PAIRS="+str(len(result.get("pairs",[]))))
+          PY
+
+      - name: Upload derived-only bundle and byte-verify remote copy
+        id: drive_bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m tools.know_place.upload_bundle_to_drive \
+            --run-root drive-retry-root \
+            --folder-name "know-place-40233937573-attempt-1"
+
+      - name: Upload and verify the Drive bundle receipt
+        id: receipt
+        shell: bash
+        env:
+          RECEIPT: drive-retry-root/know-place-40233937573-attempt-1.drive-upload-receipt.json
+        run: |
+          set -euo pipefail
+          test -s "$RECEIPT"
+          python - "$RECEIPT" <<'PY'
+          import json,sys
+          value=json.load(open(sys.argv[1],encoding="utf-8"))
+          if value.get("status") != "PASS" or value.get("remote_bytes_verified") is not True or value.get("raw_h5_included") is not False:
+              raise SystemExit("ERROR=GENERIC_AOI_DERIVED_BUNDLE_REMOTE_VERIFICATION_FAILED")
+          print("GENERIC_AOI_DRIVE_BUNDLE_REMOTE_BYTES=PASS")
+          print("RAW_HDF5_UPLOADED=false")
+          PY
+          python tools/drive_resumable_upload.py \
+            --root drive-retry-root \
+            --run-name "KnowPlaceGenericAOI-40233937573" \
+            --files "$RECEIPT" \
+            --out drive-retry-root/drive-receipt-upload.json
+          python - "drive-retry-root/drive-receipt-upload.json" <<'PY'
+          import json,sys
+          value=json.load(open(sys.argv[1],encoding="utf-8"))
+          if value.get("remote_verification") != "PASS" or value.get("raw_product_uploaded") is not False:
+              raise SystemExit("ERROR=GENERIC_AOI_DRIVE_RECEIPT_REMOTE_VERIFICATION_FAILED")
+          print("GENERIC_AOI_DRIVE_RECEIPT_REMOTE_VERIFICATION=PASS")
+          PY
+
+      - name: Summarize retention-only retry
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Generic AOI derived-only Drive retry"
+            echo
+            echo "- Source run: [#40233937573](https://github.com/moshiour0/SARGuardian-backend/actions/runs/40233937573)"
+            echo "- This job reuses the existing derived artifact; it performs no CMR query and no raw HDF5 download."
+            if [[ "${{ steps.drive_bundle.outcome }}" == "success" && "${{ steps.receipt.outcome }}" == "success" ]]; then
+              echo "- Remote derived-bundle byte verification: PASS"
+              echo "- Receipt upload and remote verification: PASS"
+              echo "- Raw HDF5 uploaded: false"
+            else
+              echo "- Retention retry result: FAILED; inspect the failing step. No new raw product download was requested."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve the Drive receipt and retry log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: know-place-aoi-drive-retry-40233937573
+          path: |
+            drive-retry-root/**
+            source-artifact/know-place-aoi-output/*/manifest.json
+            source-artifact/know-place-aoi-output/*/result.json
+          if-no-files-found: warn
+          retention-days: 30

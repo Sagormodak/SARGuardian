@@ -1,0 +1,59 @@
+{
+  "schema_version": "know-place-aoi-result/1.0",
+  "fixture_only": true,
+  "fixture_note": "SYNTHETIC UI TEST DATA ONLY. These values are invented to test generic-AOI map rendering and are not NISAR observations or scientific measurements.",
+  "structural_status": "PASS",
+  "measurement_status": "SYNTHETIC_FIXTURE_ONLY",
+  "paper_reproduction_status": "NOT_EVALUATED_GENERIC_AOI",
+  "hazard_detection_status": "NOT_EVALUATED",
+  "request": {
+    "aoi": {
+      "type": "Polygon",
+      "crs": "EPSG:4326",
+      "wkt": "POLYGON ((85.0000 28.0000, 85.0100 28.0000, 85.0100 28.0100, 85.0000 28.0100, 85.0000 28.0000))",
+      "geometry_note": "Synthetic AOI fixture polygon only; not a real observation or validated hazard boundary."
+    },
+    "date_range": {
+      "start": "2026-06-20",
+      "end": "2026-08-31",
+      "inclusive": true
+    }
+  },
+  "pairs": [
+    {
+      "reference_date": "2026-07-26",
+      "secondary_date": "2026-08-19",
+      "release_id": "SYNTHETIC_FIXTURE_ONLY",
+      "status": "SYNTHETIC_FIXTURE_ONLY",
+      "epsg": 32645,
+      "valid_aoi_pixels": 8,
+      "aoi_total_grid_cells": 10,
+      "valid_aoi_fraction": 0.8,
+      "high_magnitude_flagged_pixels": null,
+      "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "statistics": {
+        "aoi_median_horizontal_magnitude_m": 0.12,
+        "aoi_median_magnitude_rate_m_per_day": 0.006
+      },
+      "map_preview": {
+        "values": [
+          [
+            0.08,
+            0.1,
+            null
+          ],
+          [
+            0.12,
+            0.15,
+            0.19
+          ]
+        ],
+        "min_x_m": 300000,
+        "max_y_m": 3100000,
+        "pixel_size_x_m": 80,
+        "pixel_size_y_m": 80,
+        "support_mask_label": "Synthetic fixture pixels only; not derived from NISAR data."
+      }
+    }
+  ]
+}

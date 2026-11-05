@@ -1,0 +1,97 @@
+# Deploy only when you are ready. See docs/operations/RENDER_DEPLOYMENT_BN.md.
+services:
+  - type: web
+    name: sarguardian-api
+    runtime: python
+    plan: free
+    branch: main
+    rootDir: apps/dynamic/Backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeployTrigger: off
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.9
+      - key: APP_ENV
+        value: production
+      - key: CORS_ORIGINS
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: GOOGLE_DRIVE_OAUTH_CLIENT_JSON
+        sync: false
+      - key: GOOGLE_DRIVE_REFRESH_TOKEN
+        sync: false
+      - key: GOOGLE_DRIVE_FOLDER_ID
+        sync: false
+      - key: GITHUB_ACTIONS_TOKEN
+        sync: false
+      - key: GITHUB_ACTIONS_REPOSITORY
+        value: Sagormodak/SARGuardian
+      - key: GITHUB_ACTIONS_WORKFLOW
+        value: sarguardian-displacement.yml
+      - key: GITHUB_ACTIONS_REF
+        value: main
+      - key: DISPLACEMENT_ACTIONS_ENABLED
+        value: "false"
+      - key: DISPLACEMENT_CALLBACK_SECRET
+        sync: false
+      - key: PUBLIC_API_URL
+        sync: false
+      - key: KNOWN_PLACE_REPOSITORY
+        value: Sagormodak/SARGuardian
+      - key: KNOWN_PLACE_REF
+        value: main
+      - key: KNOWN_PLACE_PAPER_REPOSITORY
+        value: Sagormodak/SARGuardian
+      - key: KNOWN_PLACE_PAPER_REF
+        value: main
+      - key: RIVERSHIFT_ACTIONS_ENABLED
+        value: "false"
+      - key: RIVERSHIFT_GITHUB_ACTIONS_REPOSITORY
+        value: Sagormodak/SARGuardian
+      - key: RIVERSHIFT_GITHUB_ACTIONS_WORKFLOW
+        value: river-shift-gcov-process.yml
+      - key: RIVERSHIFT_GITHUB_ACTIONS_REF
+        value: main
+      - key: RIVERSHIFT_CALLBACK_SECRET
+        sync: false
+
+  - type: web
+    name: sarguardian-web
+    runtime: static
+    branch: main
+    rootDir: apps/dynamic/Frontend
+    buildCommand: npm ci --no-audit --no-fund && npm run build
+    staticPublishPath: dist
+    autoDeployTrigger: off
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: NODE_VERSION
+        value: 24.19.0
+      - key: VITE_SARGUARDIAN_API_URL
+        sync: false
+      - key: VITE_FIREBASE_API_KEY
+        sync: false
+      - key: VITE_FIREBASE_APP_ID
+        sync: false
+      - key: VITE_FIREBASE_AUTH_DOMAIN
+        sync: false
+      - key: VITE_FIREBASE_MEASUREMENT_ID
+        sync: false
+      - key: VITE_FIREBASE_MESSAGING_SENDER_ID
+        sync: false
+      - key: VITE_FIREBASE_PROJECT_ID
+        sync: false
+      - key: VITE_FIREBASE_STORAGE_BUCKET
+        sync: false
+      - key: VITE_GOOGLE_MAPS_API_KEY
+        sync: false

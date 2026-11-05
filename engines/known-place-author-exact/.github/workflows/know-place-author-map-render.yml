@@ -1,0 +1,435 @@
+name: Render interactive map from retained author-exact measurement
+
+on:
+  push:
+    branches:
+      - feat/know-place-analysis
+    paths:
+      - "docs/know-place/MAP_RENDER_REQUEST_40232441596.md"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: know-place-author-map-render
+  cancel-in-progress: false
+
+jobs:
+  render-and-retain-map:
+    name: Render, browser-smoke and retain five-pair P05023 map
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      SOURCE_RUN_ID: "40232441596"
+      SOURCE_ATTEMPT: "1"
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Validate retained source run and Drive credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$GITHUB_TOKEN" ]]; then
+            echo "ERROR=GITHUB_TOKEN_REQUIRED_TO_READ_SOURCE_ARTIFACT"
+            exit 1
+          fi
+          if [[ -z "$GOOGLE_DRIVE_OAUTH_CLIENT_JSON" || -z "$GOOGLE_DRIVE_REFRESH_TOKEN" || -z "$GOOGLE_DRIVE_PARENT_FOLDER_ID" ]]; then
+            echo "ERROR=DRIVE_SECRETS_REQUIRED_BEFORE_MAP_RETENTION"
+            exit 1
+          fi
+          RUN_NAME="KnowPlaceAuthorMap-$SOURCE_RUN_ID-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          echo "RUN_NAME=$RUN_NAME" >> "$GITHUB_ENV"
+          echo "RAW_NISAR_DOWNLOADS=0"
+
+      - name: Checkout isolated analysis branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install map, provenance and Drive runtime
+        run: python -m pip install --disable-pip-version-check --no-cache-dir --retries 4 --timeout 45 -r tools/requirements-retention.txt pyproj
+
+      - name: Download the exact retained derived-only source artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: know-place-author-exact-40232441596-1
+          run-id: 40232441596
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/author-map-source-artifact
+
+      - name: Locate and verify derived-only artifact members
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_ROOT="$RUNNER_TEMP/author-map-source"
+          OUT_ROOT="$RUNNER_TEMP/author-map-output"
+          mkdir -p "$SOURCE_ROOT" "$OUT_ROOT"
+          echo "SOURCE_ROOT=$SOURCE_ROOT" >> "$GITHUB_ENV"
+          echo "OUT_ROOT=$OUT_ROOT" >> "$GITHUB_ENV"
+          python - "$RUNNER_TEMP/author-map-source-artifact" "$SOURCE_ROOT" <<'PY'
+          from pathlib import Path
+          import shutil,sys,zipfile
+          artifact_root,output_root=map(Path,sys.argv[1:])
+          required=(
+              "author-exact-source-manifest.json",
+              "know-place-analysis-report.json",
+              "know-place-analysis-pairs.csv",
+              "author-exact-derived-results.zip",
+          )
+          matches={}
+          for name in required:
+              found=list(artifact_root.rglob(name))
+              if len(found)!=1:
+                  raise SystemExit(f"ERROR=SOURCE_ARTIFACT_MEMBER_COUNT:{name}:{len(found)}")
+              matches[name]=found[0]
+          for name,path in matches.items():
+              shutil.copy2(path,output_root/name)
+          raw_files=[p.relative_to(artifact_root).as_posix() for p in artifact_root.rglob("*")
+                     if p.is_file() and p.suffix.lower() in {".h5",".hdf5"}]
+          if raw_files:
+              raise SystemExit("ERROR=RAW_HDF5_FOUND_IN_SOURCE_ARTIFACT:"+",".join(raw_files))
+          bundle=output_root/"author-exact-derived-results.zip"
+          with zipfile.ZipFile(bundle) as archive:
+              if archive.testzip() is not None:
+                  raise SystemExit("ERROR=DERIVED_SOURCE_ZIP_CRC_FAILURE")
+              raw_members=[n for n in archive.namelist() if Path(n).suffix.lower() in {".h5",".hdf5"}]
+              if raw_members:
+                  raise SystemExit("ERROR=RAW_HDF5_FOUND_IN_DERIVED_BUNDLE")
+          print("RETAINED_SOURCE_RUN_ID=40232441596")
+          print("RETAINED_DERIVED_BUNDLE=PASS")
+          print("RAW_HDF5_MEMBERS=0")
+          PY
+
+      - name: Render map from verified derived metrics only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m tools.know_place.author_map_adapter \
+            --artifact-root "$SOURCE_ROOT" \
+            --out-root "$OUT_ROOT" \
+            --source-run-id "$SOURCE_RUN_ID"
+          test -s "$OUT_ROOT/interactive-map.html"
+          test -s "$OUT_ROOT/author-map-provenance.json"
+
+      - name: Install Playwright and Chromium for browser smoke test
+        id: browser_setup
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/author-map-browser"
+          cd "$RUNNER_TEMP/author-map-browser"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund playwright
+          npx playwright install --with-deps chromium
+
+      - name: Load generated map in headless Chromium and inspect all five pairs
+        id: browser_smoke
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -s "$OUT_ROOT/interactive-map.html" || ! -x "$RUNNER_TEMP/author-map-browser/node_modules/.bin/playwright" ]]; then
+            python - "$OUT_ROOT/browser-smoke.json" "$SOURCE_RUN_ID" <<'PY'
+          import json,sys
+          from pathlib import Path
+          Path(sys.argv[1]).write_text(json.dumps({
+            "schema_version":"know-place-author-map-browser-smoke/1.0",
+            "status":"BLOCKED_MAP_OR_BROWSER_SETUP",
+            "source_run_id":int(sys.argv[2]),
+            "raw_hdf5_read_or_downloaded":False
+          },indent=2)+"\n",encoding="utf-8")
+          PY
+            exit 0
+          fi
+          cat > "$RUNNER_TEMP/author-map-browser/smoke.cjs" <<'JS'
+          const fs = require("fs");
+          const path = require("path");
+          const { chromium } = require("playwright");
+          (async () => {
+            const htmlPath = path.resolve(process.argv[2]);
+            const outJson = path.resolve(process.argv[3]);
+            const screenshot = path.resolve(process.argv[4]);
+            const errors = [];
+            const browser = await chromium.launch({ headless: true });
+            try {
+              const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 1 });
+              page.on("pageerror", error => errors.push(String(error)));
+              await page.goto("file://" + htmlPath, { waitUntil: "domcontentloaded", timeout: 30000 });
+              await page.waitForFunction(() => document.querySelector("#pair-select")?.options.length === 5, { timeout: 25000 });
+              await page.selectOption("#pair-select", "3");
+              await page.waitForFunction(() => document.querySelector("#pair-label")?.textContent.includes("2026-07-26"), { timeout: 10000 });
+              const state = await page.evaluate(() => ({
+                title: document.title,
+                pairCount: document.querySelector("#pair-select")?.options.length ?? 0,
+                pairLabel: document.querySelector("#pair-label")?.textContent ?? "",
+                pairStatus: document.querySelector("#pair-status")?.textContent ?? "",
+                validPixels: document.querySelector("#valid-pixels")?.textContent ?? "",
+                validPixelLabel: document.querySelector("#valid-pixels-label")?.textContent ?? "",
+                medianMagnitude: document.querySelector("#median-magnitude")?.textContent ?? "",
+                medianRate: document.querySelector("#median-rate")?.textContent ?? "",
+                highPixels: document.querySelector("#high-pixels")?.textContent ?? "",
+                sourceHash: document.querySelector("#source-hash")?.textContent ?? "",
+                gridLabel: document.querySelector("#grid-epsg")?.textContent ?? "",
+                paperStatus: document.querySelector("#paper-status")?.textContent ?? "",
+                hazardStatus: document.querySelector("#hazard-status")?.textContent ?? "",
+                geometryNote: document.querySelector("#geometry-note")?.textContent ?? "",
+                transparencyNote: document.querySelector("#transparency-note")?.textContent ?? "",
+                geotiffLinkHidden: document.querySelector("#geotiff-link")?.classList.contains("hidden") ?? false,
+                mapMessage: document.querySelector("#map-message")?.textContent ?? "",
+                leafletLoaded: typeof window.L !== "undefined",
+              }));
+              await page.screenshot({ path: screenshot, fullPage: true });
+              const checks = {
+                title: state.title === "SARGuardian — Interactive AOI Map",
+                fivePairs: state.pairCount === 5,
+                selectedCriticalPair: state.pairLabel.includes("2026-07-26") && state.pairLabel.includes("2026-08-19"),
+                exactRelease: state.pairStatus.includes("P05023"),
+                crownSupport: state.validPixels.startsWith("292 / 323"),
+                crownSupportLabelCorrect: state.validPixelLabel.toLowerCase().includes("crown-mask"),
+                medianMagnitude: state.medianMagnitude === "0.966 m",
+                missingReviewCountIsNotRenderedAsNull: state.highPixels === "—",
+                sourceGridLabelIsAccurate: state.gridLabel.startsWith("Source measurement grid: EPSG:32645"),
+                reproductionCaveatReadable: state.paperStatus.startsWith("PARTIAL — numeric checks match"),
+                hazardUnaudited: state.hazardStatus === "NOT_EVALUATED",
+                authorRectangleGeometryClearlyDescribed: state.geometryNote.toLowerCase().includes("author-script aoi rectangle") && state.geometryNote.toLowerCase().includes("pixel-mask parity remains unverified"),
+                previewMaskedToCrownSupport: state.transparencyNote.toLowerCase().includes("crown-mask only"),
+                noFalseNativeGridLink: state.geotiffLinkHidden,
+                leafletLoaded: state.leafletLoaded,
+                noPageErrors: errors.length === 0,
+              };
+              const responsiveViewports = [];
+              const mobileScreenshot = path.join(path.dirname(screenshot), "browser-smoke-mobile.png");
+              const tabletScreenshot = path.join(path.dirname(screenshot), "browser-smoke-tablet.png");
+              const viewportSpecs = [
+                { label: "mobile-360x800", width: 360, height: 800, mobile: true },
+                { label: "mobile-390x844", width: 390, height: 844, mobile: true },
+                { label: "tablet-768x1024", width: 768, height: 1024, mobile: false },
+                { label: "landscape-844x390", width: 844, height: 390, mobile: false },
+              ];
+              for (const spec of viewportSpecs) {
+                const viewportPage = await browser.newPage({
+                  viewport: { width: spec.width, height: spec.height },
+                  deviceScaleFactor: 1,
+                  isMobile: spec.mobile,
+                  hasTouch: spec.mobile,
+                });
+                viewportPage.on("pageerror", error => errors.push(String(error)));
+                await viewportPage.goto("file://" + htmlPath, { waitUntil: "domcontentloaded", timeout: 30000 });
+                await viewportPage.waitForFunction(() => document.querySelector("#pair-select")?.options.length === 5, { timeout: 25000 });
+                await viewportPage.selectOption("#pair-select", "3");
+                await viewportPage.waitForFunction(() => document.querySelector("#pair-label")?.textContent.includes("2026-07-26"), { timeout: 10000 });
+                const layout = await viewportPage.evaluate(() => {
+                  const map = document.querySelector("#map");
+                  const pair = document.querySelector("#pair-select");
+                  const mapRect = map?.getBoundingClientRect();
+                  const pairRect = pair?.getBoundingClientRect();
+                  return {
+                    viewportWidth: window.innerWidth,
+                    viewportHeight: window.innerHeight,
+                    screenWidth: screen.width,
+                    visualViewportWidth: Math.round(window.visualViewport?.width || 0),
+                    documentWidth: document.documentElement.scrollWidth,
+                    documentClientWidth: document.documentElement.clientWidth,
+                    bodyWidth: document.body.scrollWidth,
+                    mobileMediaQueryMatches: window.matchMedia("(max-width: 920px)").matches,
+                    layoutWidth: Math.round(document.querySelector(".layout")?.getBoundingClientRect().width || 0),
+                    mapPanelWidth: Math.round(document.querySelector(".layout > section")?.getBoundingClientRect().width || 0),
+                    controlsPanelWidth: Math.round(document.querySelector(".layout > aside")?.getBoundingClientRect().width || 0),
+                    fieldWidth: Math.round(document.querySelector(".field")?.getBoundingClientRect().width || 0),
+                    mapWidth: Math.round(mapRect?.width || 0),
+                    mapHeight: Math.round(mapRect?.height || 0),
+                    pairControlWidth: Math.round(pairRect?.width || 0),
+                    pairControlCssWidth: getComputedStyle(pair).width,
+                    pairControlCssMaxWidth: getComputedStyle(pair).maxWidth,
+                    pairLabelTextLength: document.querySelector("#pair-select")?.selectedOptions?.[0]?.textContent?.length ?? 0,
+                    sourceHashWidth: Math.round(document.querySelector("#source-hash")?.getBoundingClientRect().width || 0),
+                    sourceHashScrollWidth: document.querySelector("#source-hash")?.scrollWidth || 0,
+                    pairControlVisible: Boolean(pair && pairRect?.width > 0 && getComputedStyle(pair).display !== "none" && getComputedStyle(pair).visibility !== "hidden"),
+                    selectedPair: document.querySelector("#pair-label")?.textContent ?? "",
+                  };
+                });
+                const viewportChecks = {
+                  noHorizontalOverflow: layout.documentWidth <= spec.width && layout.bodyWidth <= spec.width,
+                  mapFitsViewport: layout.mapWidth >= Math.min(300, spec.width - 24) && layout.mapWidth <= spec.width,
+                  mapHasUsableHeight: layout.mapHeight >= 300,
+                  pairControlVisible: layout.pairControlVisible,
+                  criticalPairAvailable: layout.selectedPair.includes("2026-07-26") && layout.selectedPair.includes("2026-08-19"),
+                };
+                const viewportPassed = Object.values(viewportChecks).every(Boolean);
+                responsiveViewports.push({
+                  label: spec.label,
+                  viewport: { width: spec.width, height: spec.height, mobile_emulation: spec.mobile },
+                  rendered_state: layout,
+                  checks: viewportChecks,
+                  status: viewportPassed ? "PASS" : "FAIL",
+                });
+                console.log("RESPONSIVE_VIEWPORT_" + spec.label.toUpperCase() + "=" + (viewportPassed ? "PASS" : "FAIL"));
+                if (spec.label === "mobile-360x800") {
+                  await viewportPage.screenshot({ path: mobileScreenshot, fullPage: true });
+                }
+                if (spec.label === "tablet-768x1024") {
+                  await viewportPage.screenshot({ path: tabletScreenshot, fullPage: true });
+                }
+                await viewportPage.close();
+              }
+              checks.responsiveViewports = responsiveViewports.length === 4 && responsiveViewports.every(viewport => viewport.status === "PASS");
+              checks.noPageErrors = errors.length === 0;
+              const passed = Object.values(checks).every(Boolean);
+              fs.writeFileSync(outJson, JSON.stringify({
+                schema_version: "know-place-author-map-browser-smoke/1.1",
+                status: passed ? "PASS" : "FAIL",
+                source_run_id: Number(process.env.SOURCE_RUN_ID),
+                selected_pair: state.pairLabel,
+                rendered_state: state,
+                checks,
+                responsive_viewports: responsiveViewports,
+                responsive_screenshot_files: [path.basename(mobileScreenshot), path.basename(tabletScreenshot)],
+                page_errors: errors,
+                screenshot_file: path.basename(screenshot),
+                raw_hdf5_read_or_downloaded: false,
+              }, null, 2) + "\n");
+              console.log("AUTHOR_MAP_BROWSER_SMOKE=" + (passed ? "PASS" : "FAIL"));
+              for (const [key, value] of Object.entries(checks)) console.log("BROWSER_CHECK_" + key.toUpperCase() + "=" + (value ? "PASS" : "FAIL"));
+              if (!passed) process.exitCode = 1;
+            } finally {
+              await browser.close();
+            }
+          })().catch(error => {
+            fs.writeFileSync(process.argv[3], JSON.stringify({
+              schema_version: "know-place-author-map-browser-smoke/1.0",
+              status: "FAIL",
+              source_run_id: Number(process.env.SOURCE_RUN_ID),
+              error: String(error),
+              raw_hdf5_read_or_downloaded: false,
+            }, null, 2) + "\n");
+            console.error(error);
+            process.exit(1);
+          });
+          JS
+          SOURCE_RUN_ID="$SOURCE_RUN_ID" node "$RUNNER_TEMP/author-map-browser/smoke.cjs" \
+            "$OUT_ROOT/interactive-map.html" \
+            "$OUT_ROOT/browser-smoke.json" \
+            "$OUT_ROOT/browser-smoke.png"
+
+      - name: Package rendered map and provenance for durable retention
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$OUT_ROOT" <<'PY'
+          from pathlib import Path
+          import sys,zipfile
+          root=Path(sys.argv[1])
+          target=root/"author-map-rendered-evidence.zip"
+          files=[root/"interactive-map.html",root/"author-map-provenance.json",root/"browser-smoke.json"]
+          screenshot=root/"browser-smoke.png"
+          if not all(path.is_file() for path in files):
+              raise SystemExit("ERROR=MAP_EVIDENCE_MEMBER_MISSING")
+          if screenshot.is_file(): files.append(screenshot)
+          for name in ("browser-smoke-mobile.png", "browser-smoke-tablet.png"):
+              responsive_screenshot=root/name
+              if responsive_screenshot.is_file(): files.append(responsive_screenshot)
+          with zipfile.ZipFile(target,"w",compression=zipfile.ZIP_DEFLATED,compresslevel=6) as archive:
+              for path in files: archive.write(path,path.name)
+          with zipfile.ZipFile(target) as archive:
+              if archive.testzip() is not None: raise SystemExit("ERROR=MAP_EVIDENCE_ZIP_CRC_FAILURE")
+              if any(Path(n).suffix.lower() in {".h5",".hdf5"} for n in archive.namelist()):
+                  raise SystemExit("ERROR=RAW_HDF5_IN_MAP_EVIDENCE")
+          print("AUTHOR_MAP_EVIDENCE_PACKAGE=PASS")
+          print("RAW_HDF5_IN_MAP_EVIDENCE=0")
+          PY
+
+      - name: Upload map evidence to private Google Drive and verify remote bytes
+        id: drive_upload
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -s "$OUT_ROOT/author-map-rendered-evidence.zip" ]]; then
+            echo "ERROR=MAP_EVIDENCE_ZIP_NOT_AVAILABLE"
+            exit 1
+          fi
+          python tools/drive_resumable_upload.py \
+            --root "$OUT_ROOT" \
+            --run-name "$RUN_NAME" \
+            --files "$OUT_ROOT/author-map-rendered-evidence.zip" \
+            --out "$OUT_ROOT/drive-upload-receipt.json"
+          test -s "$OUT_ROOT/drive-upload-receipt.json"
+          python tools/drive_resumable_upload.py \
+            --root "$OUT_ROOT" \
+            --run-name "$RUN_NAME" \
+            --files "$OUT_ROOT/drive-upload-receipt.json" \
+            --out "$OUT_ROOT/drive-receipt-copy.json"
+          python - "$OUT_ROOT/drive-upload-receipt.json" "$OUT_ROOT/drive-receipt-copy.json" <<'PY'
+          import json,sys
+          first,second=[json.load(open(path,encoding="utf-8")) for path in sys.argv[1:]]
+          for receipt in (first,second):
+              if receipt.get("remote_verification")!="PASS" or receipt.get("raw_product_uploaded") is not False:
+                  raise SystemExit("ERROR=AUTHOR_MAP_DRIVE_RETENTION_NOT_VERIFIED")
+          print("AUTHOR_MAP_DRIVE_RETENTION=PASS")
+          print("RAW_PRODUCT_UPLOADED=false")
+          PY
+
+      - name: Final map, browser and retention gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$OUT_ROOT/interactive-map.html" || { echo "ERROR=AUTHOR_MAP_RENDER_FAILED"; exit 1; }
+          test -s "$OUT_ROOT/author-map-provenance.json" || { echo "ERROR=AUTHOR_MAP_PROVENANCE_MISSING"; exit 1; }
+          test -s "$OUT_ROOT/browser-smoke.json" || { echo "ERROR=AUTHOR_MAP_BROWSER_REPORT_MISSING"; exit 1; }
+          test -s "$OUT_ROOT/author-map-rendered-evidence.zip" || { echo "ERROR=AUTHOR_MAP_EVIDENCE_BUNDLE_FAILED"; exit 1; }
+          test -s "$OUT_ROOT/drive-upload-receipt.json" || { echo "ERROR=AUTHOR_MAP_DRIVE_RECEIPT_MISSING"; exit 1; }
+          test -s "$OUT_ROOT/drive-receipt-copy.json" || { echo "ERROR=AUTHOR_MAP_DRIVE_COPY_RECEIPT_MISSING"; exit 1; }
+          python - "$OUT_ROOT/author-map-provenance.json" "$OUT_ROOT/browser-smoke.json" "$OUT_ROOT/drive-upload-receipt.json" "$OUT_ROOT/drive-receipt-copy.json" <<'PY'
+          import json,sys
+          provenance,smoke,drive,copy=[json.load(open(p,encoding="utf-8")) for p in sys.argv[1:]]
+          if provenance.get("status")!="PASS" or provenance.get("map_pairs")!=5 or provenance.get("raw_hdf5_read_or_downloaded") is not False:
+              raise SystemExit("ERROR=AUTHOR_MAP_PROVENANCE_GATE_FAILED")
+          if smoke.get("status")!="PASS" or smoke.get("rendered_state",{}).get("pairCount")!=5:
+              raise SystemExit("ERROR=AUTHOR_MAP_BROWSER_GATE_FAILED")
+          if smoke.get("checks",{}).get("responsiveViewports") is not True or len(smoke.get("responsive_viewports",[]))!=4:
+              raise SystemExit("ERROR=AUTHOR_MAP_RESPONSIVE_BROWSER_GATE_FAILED")
+          for receipt in (drive,copy):
+              if receipt.get("remote_verification")!="PASS" or receipt.get("raw_product_uploaded") is not False:
+                  raise SystemExit("ERROR=AUTHOR_MAP_DRIVE_GATE_FAILED")
+          print("KNOW_PLACE_AUTHOR_MAP_STATUS=PASS")
+          print("SOURCE_RUN_ID="+str(provenance["source_run_id"]))
+          print("MAP_PAIRS=5")
+          print("BROWSER_SMOKE=PASS")
+          print("DRIVE_REMOTE_VERIFICATION=PASS")
+          print("RAW_HDF5_READ_OR_DOWNLOADED=false")
+          print("HAZARD_DETECTION_STATUS=NOT_EVALUATED")
+          PY
+          {
+            echo "## Author-exact interactive measurement map"
+            echo
+            echo "- Source run: #40232441596"
+            echo "- Map: \`interactive-map.html\` (Leaflet/OpenStreetMap; requires internet access)"
+            echo "- Acquisition pairs: 5 exact P05023."
+            echo "- Browser smoke: PASS; selected interval 2026-07-26 → 2026-08-19."
+            echo "- Responsive viewport smoke: PASS at 360×800, 390×844, 768×1024 and 844×390; mobile/tablet screenshots retained."
+            echo "- Private Drive remote verification: PASS."
+            echo "- Raw HDF5: not downloaded by this map-render workflow."
+            echo "- Hazard detection: NOT_EVALUATED."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve interactive map and browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: know-place-author-interactive-map-40232441596
+          path: ${{ runner.temp }}/author-map-output/**
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,79 @@
+{
+  "schema_version": "know-place-independent-run-audit/1.0",
+  "run": {
+    "id": 40128950105,
+    "url": "https://github.com/moshiour0/SARGuardian-backend/actions/runs/40128950105",
+    "branch": "feat/know-place-analysis",
+    "commit": "f5189b9919323dc0d0cbffef40135aa81498f6d4",
+    "conclusion": "success"
+  },
+  "source": {
+    "archive_doi": "10.5281/zenodo.22730419",
+    "archive_sha256": "002c2ba173a03693431b79578ca28d6b11e1ec00423d7533e82198871576c5e3",
+    "archive_bytes": 183389034,
+    "exact_release": "P05023",
+    "products_count": 5,
+    "total_payload_bytes": 5473566720,
+    "crs_epsg": 32645,
+    "grid_shape_y_x": [4230, 4311],
+    "posting_m": 80,
+    "products": [
+      {"interval":"2026-06-20/2026-07-02","bytes":1090519040,"sha256":"d3670f0504576feac52f75a7e8f0ff12f5f5c2ef676a0329a16f66cb91300f05"},
+      {"interval":"2026-07-02/2026-07-14","bytes":1090519040,"sha256":"8a947f7fa4458afb564431514f36950a89e004d79e6f0e6bfb7461f7e867123c"},
+      {"interval":"2026-07-14/2026-07-26","bytes":1092616192,"sha256":"ac3eb50eb5c35cb70769b44492398d6b212e880b70558d4d7d2376c5d8e49313"},
+      {"interval":"2026-07-26/2026-08-19","bytes":1101004800,"sha256":"45e4641da04f235941b1e88262961e9e62ca05ce3ceb35fdac452649b13e416f"},
+      {"interval":"2026-08-19/2026-08-31","bytes":1098907648,"sha256":"4dbe3d82c2e03422abf9fc3ead2ad70c0734a80ec52cad87cd6659716fce5371"}
+    ]
+  },
+  "field_raster_parity": {
+    "status": "PASS",
+    "scope": "73x80 6-km site-series crop, not full native footprint",
+    "channels_per_pair": ["dE","dN","directional_coherence_R"],
+    "pair_count": 5,
+    "channel_comparisons_total": 15,
+    "finite_mask_mismatches_total": 0,
+    "absolute_tolerance": 0.000001,
+    "max_absolute_difference": 9.5367431640625e-7,
+    "pairs": [
+      {"interval":"2026-06-20/2026-07-02","finite_cells":{"dE":4062,"dN":4062,"R":4539},"mask_mismatches":0,"max_abs_difference":9.5367431640625e-7},
+      {"interval":"2026-07-02/2026-07-14","finite_cells":{"dE":4277,"dN":4277,"R":4676},"mask_mismatches":0,"max_abs_difference":4.76837158203125e-7},
+      {"interval":"2026-07-14/2026-07-26","finite_cells":{"dE":4361,"dN":4361,"R":4802},"mask_mismatches":0,"max_abs_difference":4.76837158203125e-7},
+      {"interval":"2026-07-26/2026-08-19","finite_cells":{"dE":4296,"dN":4296,"R":4657},"mask_mismatches":0,"max_abs_difference":4.76837158203125e-7},
+      {"interval":"2026-08-19/2026-08-31","finite_cells":{"dE":4100,"dN":4100,"R":4461},"mask_mismatches":0,"max_abs_difference":2.384185791015625e-7}
+    ],
+    "artifact_sha256": "6dcbbce1f1b08bfb434e42bc1db1c21bd6e99d16f06f89bb0b2bc90a58385cf6",
+    "derived_bundle_sha256": "1d62ea926923bdf17f3425cfc9ac61ce82165d634b1632ac19f59064464b83ba"
+  },
+  "table_s4_coverage": {
+    "workflow_checks_passed": 65,
+    "workflow_checks_total": 65,
+    "table_s4_metric_cells_total": 95,
+    "directly_checked_by_workflow": 45,
+    "additional_p1_resolved_flags_verified": 5,
+    "core_scale_metrics_independently_reproduced": 15,
+    "verified_cells_combined": 65,
+    "unverified_cells": 30,
+    "unverified_columns": ["P2_R_crown","P2_R_bg","P2_resolved","dispnull_crown_m","dispnull_null_med_m","dispnull_pctile"],
+    "core_scale_geometry_source": "Author-supplied candidates_attributed.gpkg feature nearest to crown point; the full-footprint screen itself was not rerun."
+  },
+  "retention": {
+    "derived_bundle_drive_verification": "PASS",
+    "cleanup_receipt_status": "PASS",
+    "raw_hdf5_deleted_count": 5,
+    "raw_hdf5_remaining_count": 0,
+    "raw_hdf5_uploaded": false,
+    "cleanup_receipt_source_manifest_sha256": "b856baea147b1a7dbbfee5501ad81a74d54bdb5bae26af35d5d3139403c6358b",
+    "cleanup_receipt_drive_verification": "PASS"
+  },
+  "status": {
+    "paper_reproduction": "PARTIAL_AUTHOR_TABLE_S4_METRICS_MATCH_FULL_FOOTPRINT_SCREEN_NOT_REPRODUCED",
+    "hazard_detection": "NOT_EVALUATED",
+    "operational_warning": "NOT_IMPLEMENTED"
+  },
+  "next_gates": [
+    "P2 halo-aware local-mean implementation and synthetic tests were added after this run; the 15 published Table S4 P2 comparisons remain unverified until a new explicitly authorized raw replay.",
+    "Displacement-null parity remains blocked until exact draw-level algorithm/source evidence is available; do not infer the null implementation.",
+    "Integrate per-pixel geometry on the full native footprint and recreate per-pair screen rasters, persistence, components and candidate ranking.",
+    "Verify native source-grid crown-mask parity and original terrain input provenance."
+  ]
+}

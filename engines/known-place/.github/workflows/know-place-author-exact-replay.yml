@@ -1,0 +1,625 @@
+name: Know Place Analysis - exact author P05023 replay
+
+# Push events register the isolated workflow but never authorize raw work.
+# Manual dispatch and reusable calls require the exact [run-know-place] marker.
+on:
+  push:
+    branches:
+      - feat/know-place-analysis
+    paths:
+      - "tools/know_place/author_exact_acquisition.py"
+      - "tools/know_place/author_raw_site_series.py"
+      - "tools/know_place/author_parity.py"
+      - "tools/know_place/author_footprint_replay.py"
+      - "tools/know_place/author_archive_raster_parity.py"
+      - "tools/know_place/author_exact_retention.py"
+      - "tools/know_place/scientific_status.py"
+      - "tools/know_place/upload_bundle_to_drive.py"
+      - "tools/know_place/footprint_geometry.py"
+      - "tools/know_place/footprint_screen.py"
+      - "tools/know_place/goff_io.py"
+      - "docs/know-place/reference/author_benchmark_v1.json"
+      - "docs/know-place/evidence/P2_LOCAL_MEAN_REFERENCE_IMPLEMENTATION_20261025.md"
+      - ".github/workflows/know-place-author-exact-replay.yml"
+  workflow_dispatch:
+    inputs:
+      consent_marker:
+        description: "Enter exactly [run-know-place] to allow five raw GOFF downloads"
+        required: false
+        default: ""
+        type: string
+      backend_code_ref:
+        description: "Immutable 40-character SARGuardian-backend commit to check out"
+        required: true
+        default: "5edf41a61d5b10b0f3d4bd8f67619d512cb1c204"
+        type: string
+      geometry_height_m:
+        description: "Exploratory geometry height in metres; not a datum correction"
+        required: true
+        default: "5151"
+        type: string
+      control_draws:
+        description: "Deterministic exploratory control draws"
+        required: true
+        default: "1000"
+        type: string
+      seed:
+        description: "Deterministic exploratory seed"
+        required: true
+        default: "260826"
+        type: string
+  workflow_call:
+    inputs:
+      backend_code_ref:
+        description: "Immutable 40-character SARGuardian-backend source commit to execute"
+        required: true
+        type: string
+      consent_marker:
+        description: "Must be exactly [run-know-place] before any raw HDF5 download"
+        required: false
+        type: string
+      geometry_height_m:
+        required: false
+        default: "5151"
+        type: string
+      control_draws:
+        required: false
+        default: "1000"
+        type: string
+      seed:
+        required: false
+        default: "260826"
+        type: string
+      bridge_authorized:
+        description: "True only when the branch-local consent bridge independently verified the exact commit-message marker"
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      EARTHDATA_TOKEN:
+        required: false
+      EARTHDATA_USERNAME:
+        required: false
+      EARTHDATA_PASSWORD:
+        required: false
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON:
+        required: false
+      GOOGLE_DRIVE_REFRESH_TOKEN:
+        required: false
+      GOOGLE_DRIVE_PARENT_FOLDER_ID:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: know-place-author-exact-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  trigger-gate:
+    name: Require explicit consent before any raw source operation
+    runs-on: ubuntu-24.04
+    outputs:
+      run_author_exact: ${{ steps.decide.outputs.run_author_exact }}
+    steps:
+      - name: Evaluate explicit consent without touching science data
+        id: decide
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_CONSENT_MARKER: ${{ inputs.consent_marker || '' }}
+          BRIDGE_AUTHORIZED: ${{ inputs.bridge_authorized || false }}
+        run: |
+          set -euo pipefail
+          run_author_exact=false
+          if [[ "$MANUAL_CONSENT_MARKER" == "[run-know-place]" ]] && { [[ "$EVENT_NAME" == "workflow_dispatch" || "$EVENT_NAME" == "workflow_call" ]] || [[ "$EVENT_NAME" == "push" && "$BRIDGE_AUTHORIZED" == "true" ]]; }; then
+            run_author_exact=true
+          fi
+          echo "run_author_exact=$run_author_exact" >> "$GITHUB_OUTPUT"
+          if [[ "$run_author_exact" != "true" ]]; then
+            echo "No exact [run-know-place] consent marker was supplied; no CMR query, download, analysis or Drive upload occurred." >> "$GITHUB_STEP_SUMMARY"
+            echo "AUTHOR_EXACT_RUN=SKIPPED_NO_EXPLICIT_CONSENT"
+            echo "RAW_SOURCE_DOWNLOADS=0"
+          else
+            echo "AUTHOR_EXACT_RUN=EXPLICIT_CONSENT_CONFIRMED"
+          fi
+
+  acquire-analyze-retain:
+    name: Acquire exact five P05023 HDF5 products, hash, analyse, retain derived results
+    needs: trigger-gate
+    if: needs.trigger-gate.outputs.run_author_exact == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+      EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+      EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+      DRIVE_VERSION_TAG: ${{ github.run_id }}-${{ github.run_attempt }}
+      RUN_ID_SAFE: KnowPlaceAuthorExact-${{ github.run_id }}-${{ github.run_attempt }}
+      PRODUCT_EXECUTION_LABEL: initial
+      RETENTION_PROFILE: derived-only
+      SCIENCE_COMMIT: 10639a916c9829850775410b3ed7de62e527770d
+
+    steps:
+      - name: Prepare run paths and check credentials before source acquisition
+        id: credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUN_ROOT="$RUNNER_TEMP/know-place-author-exact"
+          DERIVED_ROOT="$RUN_ROOT/derived"
+          echo "RUN_ROOT=$RUN_ROOT" >> "$GITHUB_ENV"
+          echo "DERIVED_ROOT=$DERIVED_ROOT" >> "$GITHUB_ENV"
+          umask 077
+          mkdir -p "$RUN_ROOT" "$DERIVED_ROOT"
+          chmod 700 "$RUN_ROOT" "$DERIVED_ROOT"
+          if [[ -z "$GOOGLE_DRIVE_OAUTH_CLIENT_JSON" || -z "$GOOGLE_DRIVE_REFRESH_TOKEN" || -z "$GOOGLE_DRIVE_PARENT_FOLDER_ID" ]]; then
+            echo "secrets_ready=false" >> "$GITHUB_OUTPUT"
+            echo "ERROR=DRIVE_SECRETS_REQUIRED_BEFORE_RAW_DOWNLOAD"
+            exit 0
+          fi
+          if [[ -z "$EARTHDATA_TOKEN" && ( -z "$EARTHDATA_USERNAME" || -z "$EARTHDATA_PASSWORD" ) ]]; then
+            echo "secrets_ready=false" >> "$GITHUB_OUTPUT"
+            echo "ERROR=EARTHDATA_TOKEN_OR_USERNAME_PASSWORD_REQUIRED"
+            exit 0
+          fi
+          echo "secrets_ready=true" >> "$GITHUB_OUTPUT"
+          echo "CREDENTIAL_PREFLIGHT=PASS"
+          echo "RAW_DOWNLOAD_CONSENT=PASS"
+
+      - name: Verify immutable backend source pin
+        if: steps.credentials.outputs.secrets_ready == 'true'
+        shell: bash
+        env:
+          BACKEND_CODE_REF: ${{ inputs.backend_code_ref || '' }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$BACKEND_CODE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "ERROR=BACKEND_CODE_REF_MUST_BE_IMMUTABLE_40_CHAR_SHA"
+            exit 1
+          fi
+          echo "BACKEND_CODE_REF_VERIFIED=$BACKEND_CODE_REF"
+
+      - name: Checkout SARGuardian-backend at the immutable source commit
+        if: steps.credentials.outputs.secrets_ready == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian-backend
+          ref: ${{ inputs.backend_code_ref }}
+
+      - name: Checkout pinned science acquisition helper
+        if: steps.credentials.outputs.secrets_ready == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian
+          ref: 10639a916c9829850775410b3ed7de62e527770d
+          path: science-source
+
+      - name: Verify pinned science revision
+        if: steps.credentials.outputs.secrets_ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git -C science-source rev-parse HEAD)"
+          test "$actual" = "$SCIENCE_COMMIT"
+          echo "SCIENCE_REVISION_VERIFIED=$actual"
+
+      - name: Set up Python 3.13
+        if: steps.credentials.outputs.secrets_ready == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install pinned analysis and retention dependencies
+        if: steps.credentials.outputs.secrets_ready == 'true'
+        shell: bash
+        run: python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r tools/know_place/requirements.txt -r tools/requirements-retention.txt
+
+      - name: Download and verify pinned author archive and extract only the three terrain rasters
+        id: author_archive
+        if: steps.credentials.outputs.secrets_ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="$RUN_ROOT/bhotekoshi2026_nisar_data-and-code_CC-BY-4.0.zip"
+          TERRAIN_ROOT="$RUN_ROOT/author-archive-terrain"
+          echo "AUTHOR_ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+          echo "AUTHOR_TERRAIN_ROOT=$TERRAIN_ROOT" >> "$GITHUB_ENV"
+          curl --fail --location --silent --show-error --retry 2 --retry-delay 2 \
+            --connect-timeout 30 --max-time 900 \
+            "https://zenodo.org/records/22730419/files/bhotekoshi2026_nisar_data-and-code_CC-BY-4.0.zip?download=1" \
+            --output "$ARCHIVE"
+          echo "002c2ba173a03693431b79578ca28d6b11e1ec00423d7533e82198871576c5e3  $ARCHIVE" | sha256sum --check -
+          python - "$ARCHIVE" "$TERRAIN_ROOT" <<'PY'
+          import hashlib,sys,zipfile
+          from pathlib import Path
+          archive_path,terrain_root=map(Path,sys.argv[1:])
+          expected={
+              "terrain/elev_m.tif":"d593f74142d930fb3f1f4a320950019f318842f933f4da64139ea4e214ecd8a1",
+              "terrain/slope_deg.tif":"e94d44a7f6e2078f59d7e6234ed075eaf1dda1683ca411a97bf749ab5cdfce7a",
+              "terrain/downslope_az_deg.tif":"2fae2feabca24b56acc61d4fad1d408192245c3061278d1f4844d3b853c6314b",
+          }
+          terrain_root.mkdir(parents=True,exist_ok=True)
+          with zipfile.ZipFile(archive_path) as z:
+              bad=z.testzip()
+              if bad:
+                  raise SystemExit("ERROR=AUTHOR_ARCHIVE_MEMBER_CRC_FAILED:"+bad)
+              for member,digest in expected.items():
+                  payload=z.read(member)
+                  if hashlib.sha256(payload).hexdigest()!=digest:
+                      raise SystemExit("ERROR=PINNED_TERRAIN_MEMBER_SHA256_MISMATCH:"+member)
+                  (terrain_root/Path(member).name).write_bytes(payload)
+                  print("PINNED_TERRAIN_EXTRACTED="+member)
+          print("AUTHOR_ARCHIVE_SHA256=PASS")
+          print("AUTHOR_ARCHIVE_CRC=PASS")
+          print("RAW_NISAR_HDF5_DOWNLOADS=0")
+          PY
+          echo "archive_ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Query exact CMR records, preflight authenticated URLs, download and analyse
+        id: analysis
+        if: steps.credentials.outputs.secrets_ready == 'true' && steps.author_archive.outputs.archive_ready == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          RUN_GEOMETRY_HEIGHT_M: ${{ inputs.geometry_height_m || '5151' }}
+          RUN_CONTROL_DRAWS: ${{ inputs.control_draws || '1000' }}
+          RUN_SEED: ${{ inputs.seed || '260826' }}
+        run: python -m tools.know_place.author_exact_acquisition --operation download-and-analyze --out-root "$RUN_ROOT" --science-root "$GITHUB_WORKSPACE/science-source" --terrain-root "$AUTHOR_TERRAIN_ROOT" --consent-marker "[run-know-place]" --geometry-height-m "$RUN_GEOMETRY_HEIGHT_M" --control-draws "$RUN_CONTROL_DRAWS" --seed "$RUN_SEED"
+
+      - name: Check source inputs exist for independent footprint audit
+        id: footprint_inputs
+        if: always() && steps.credentials.outputs.secrets_ready == 'true' && steps.author_archive.outputs.archive_ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -s "$RUN_ROOT/source-run/know-place-inputs.json" && -s "$RUN_ROOT/source-run/author-exact-source-manifest.json" ]]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+            echo "FOOTPRINT_INPUTS_AVAILABLE=true"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "FOOTPRINT_INPUTS_AVAILABLE=false"
+          fi
+
+      - name: Run full-footprint screen and compare archive golden outputs
+        id: footprint
+        if: always() && steps.credentials.outputs.secrets_ready == 'true' && steps.author_archive.outputs.archive_ready == 'true' && steps.footprint_inputs.outputs.present == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m tools.know_place.author_footprint_replay \
+            --config "$RUN_ROOT/source-run/know-place-inputs.json" \
+            --source-manifest "$RUN_ROOT/source-run/author-exact-source-manifest.json" \
+            --terrain-root "$AUTHOR_TERRAIN_ROOT" \
+            --author-archive "$AUTHOR_ARCHIVE" \
+            --out "$DERIVED_ROOT/footprint"
+
+      - name: Remove temporary public author archive and terrain after retaining the report
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f "${AUTHOR_ARCHIVE:-$RUN_ROOT/bhotekoshi2026_nisar_data-and-code_CC-BY-4.0.zip}"
+          rm -rf "${AUTHOR_TERRAIN_ROOT:-$RUN_ROOT/author-archive-terrain}"
+          echo "TEMP_AUTHOR_ARCHIVE_REMOVED=true"
+
+      - name: Finalize combined site and full-footprint scientific status
+        id: final_report
+        if: steps.footprint.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$DERIVED_ROOT/author-exact-analysis-status.json" "$DERIVED_ROOT/know-place-analysis-report.json" "$DERIVED_ROOT/author-raw-site-series-report.json" "$DERIVED_ROOT/footprint/author-footprint-replay-report.json" <<'PY'
+          import json,sys
+          from pathlib import Path
+          from tools.know_place.scientific_status import assess_reproduction_status
+          status_path,report_path,site_path,footprint_path=sys.argv[1:]
+          status,report,site,footprint=[json.loads(Path(path).read_text(encoding="utf-8")) for path in (status_path,report_path,site_path,footprint_path)]
+          assessment=assess_reproduction_status(status, site, footprint)
+          inventory=footprint.get("author_inventory_comparison",{})
+          table7=footprint.get("author_validated_zone_table_comparison",{})
+          raster=footprint.get("author_aggregate_raster_comparison",{})
+          score_audit=inventory.get("score_formula_audit",{})
+          report["footprint_screen_parity_status"]=footprint.get("footprint_screen_parity_status")
+          report["author_footprint_inventory_comparison"]=inventory
+          report["author_validated_zone_table_comparison"]=table7
+          report["author_footprint_raster_comparison"]=raster
+          report["candidate_score_formula_audit"]=score_audit
+          report["author_site_series_table_comparison"]=site.get("author_site_series_table_comparison",{})
+          report["author_p2_table_comparison"]=site.get("author_p2_table_comparison",{})
+          report["author_reproduction_assessment"]=assessment
+          report["paper_reproduction_status"]=assessment["paper_reproduction_status"]
+          report["hazard_detection_status"]="NOT_EVALUATED"
+          status["footprint_screen_parity_status"]=footprint.get("footprint_screen_parity_status")
+          status["footprint_screen_complete_and_archive_matched"]=assessment["footprint_screen_complete_and_archive_matched"]
+          status["author_site_series_complete_and_archive_matched"]=assessment["author_site_series_table_parity"]
+          status["author_p2_table_comparison_status"]=("PASS_AT_ARCHIVE_ROUNDING" if assessment["author_p2_table_parity"] else "MISMATCH")
+          p2=site.get("author_p2_table_comparison",{})
+          status["author_p2_table_comparisons_passed"]=p2.get("checks_passed",0)
+          status["author_p2_table_comparisons_total"]=p2.get("checks_total",0)
+          status["author_site_and_p2_complete_and_archive_matched"]=assessment["site_series_and_p2_complete_and_archive_matched"]
+          status["overall_scientific_screen_complete"]=assessment["overall_scientific_screen_complete"]
+          status["candidate_score_contract_conflict"]=score_audit.get("status")!="PASS_POSTPROCESSED_AUTHOR_SCORE_CONVENTION"
+          status["paper_reproduction_status"]=assessment["paper_reproduction_status"]
+          status["hazard_detection_status"]="NOT_EVALUATED"
+          site["paper_reproduction_status"]=assessment["paper_reproduction_status"]
+          site["author_reproduction_assessment"]=assessment
+          for path,value in ((report_path,report),(status_path,status),(site_path,site)):
+              Path(path).write_text(json.dumps(value,indent=2,ensure_ascii=False)+"\n",encoding="utf-8")
+          print("AUTHOR_SITE_SERIES_TABLE_PARITY="+assessment["site_series_table_parity_status"])
+          print("AUTHOR_P2_TABLE_PARITY="+assessment["p2_table_parity_status"])
+          print("AUTHOR_FOOTPRINT_SCREEN_PARITY="+assessment["footprint_parity_status"])
+          print("OVERALL_SITE_AND_FOOTPRINT_NUMERICS="+("PASS" if assessment["overall_scientific_screen_complete"] else "PARTIAL_BLOCKED"))
+          print("PAPER_REPRODUCTION_STATUS="+assessment["paper_reproduction_status"])
+          print("HAZARD_DETECTION_STATUS=NOT_EVALUATED")
+          PY
+
+      - name: Generate self-contained author-exact evidence dashboard
+        id: dashboard
+        if: always() && steps.analysis.outcome == 'success' && steps.credentials.outputs.secrets_ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m tools.know_place.author_dashboard --result-root "$DERIVED_ROOT" --output "$DERIVED_ROOT/dashboard.html"
+          test -s "$DERIVED_ROOT/dashboard.html"
+          {
+            echo "## Author-exact evidence dashboard"
+            echo
+            echo "Generated dashboard.html from the run's saved site-series arrays and footprint GeoTIFFs."
+            echo "The HTML embeds the scientific previews; external satellite-context images are linked to their publishers."
+            echo "Paper reproduction remains partial while displacement-null and exact crown-geometry/method parity are unresolved."
+            echo "Hazard detection remains NOT_EVALUATED."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write failure receipt if acquisition stops before derived evidence
+        if: always()
+        shell: bash
+        env:
+          ANALYSIS_OUTCOME: ${{ steps.analysis.outcome }}
+          SECRETS_READY: ${{ steps.credentials.outputs.secrets_ready }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$DERIVED_ROOT"
+          if [[ -z "$(find "$DERIVED_ROOT" -maxdepth 1 -type f -print -quit)" ]]; then
+            python - "$DERIVED_ROOT/author-exact-workflow-failure.json" "$ANALYSIS_OUTCOME" "$SECRETS_READY" "$GITHUB_RUN_ID" "$GITHUB_SHA" <<'PY'
+          import json,sys,datetime
+          path,outcome,secrets_ready,run_id,sha=sys.argv[1:]
+          value={"schema_version":"know-place-author-exact-workflow-failure/1.0","created_at_utc":datetime.datetime.now(datetime.timezone.utc).isoformat(),"analysis_step_outcome":outcome,"secrets_ready":secrets_ready=="true","workflow_run_id":run_id,"backend_commit":sha,"source_downloads":0,"paper_reproduction_status":"BLOCKED_RAW_GOFF_BYTES_AND_IMPLEMENTATION_PARITY_UNVERIFIED","hazard_detection_status":"NOT_EVALUATED"}
+          with open(path,"w",encoding="utf-8") as stream:
+              json.dump(value,stream,indent=2); stream.write("\n")
+          PY
+          fi
+
+      - name: Package derived outputs only and reject raw HDF5
+        id: bundle
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "$DERIVED_ROOT" <<'PY'
+          from pathlib import Path
+          import sys,zipfile
+          root=Path(sys.argv[1]).resolve()
+          target=root/"author-exact-derived-results.zip"
+          files=sorted(p for p in root.rglob("*") if p.is_file() and p != target and p.name not in {"drive-upload-receipt.json","drive-receipt-upload.json"})
+          if not files:
+              raise SystemExit("ERROR=AUTHOR_EXACT_DERIVED_OUTPUT_EMPTY")
+          if any(p.suffix.lower() in {".h5",".hdf5"} for p in files):
+              raise SystemExit("ERROR=RAW_HDF5_PRESENT_IN_DERIVED_OUTPUT")
+          with zipfile.ZipFile(target,"w",compression=zipfile.ZIP_DEFLATED,compresslevel=6) as archive:
+              for path in files:
+                  archive.write(path,path.relative_to(root))
+          print("AUTHOR_EXACT_DERIVED_BUNDLE_BYTES="+str(target.stat().st_size))
+          print("RAW_HDF5_IN_BUNDLE=0")
+          PY
+
+      - name: Upload derived bundle and receipts to private Google Drive
+        id: drive_upload
+        # Do not call the Drive client unless its Python dependencies installed successfully
+        # and the expected author archive step confirms the environment was usable.
+        if: always() && steps.author_archive.outcome == 'success' && steps.bundle.outcome == 'success' && steps.credentials.outputs.secrets_ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/drive_resumable_upload.py --root "$DERIVED_ROOT" --run-name "$RUN_ID_SAFE" --files "$DERIVED_ROOT/author-exact-derived-results.zip" --out "$DERIVED_ROOT/drive-upload-receipt.json"
+          test -s "$DERIVED_ROOT/drive-upload-receipt.json"
+          python tools/drive_resumable_upload.py --root "$DERIVED_ROOT" --run-name "$RUN_ID_SAFE" --files "$DERIVED_ROOT/drive-upload-receipt.json" --out "$DERIVED_ROOT/drive-receipt-upload.json"
+          python - "$DERIVED_ROOT/drive-upload-receipt.json" "$DERIVED_ROOT/drive-receipt-upload.json" <<'PY'
+          import json,sys
+          first,second=[json.load(open(path,encoding="utf-8")) for path in sys.argv[1:]]
+          for receipt in (first,second):
+              if receipt.get("remote_verification")!="PASS" or receipt.get("raw_product_uploaded") is not False:
+                  raise SystemExit("ERROR=AUTHOR_EXACT_DRIVE_RETENTION_NOT_VERIFIED")
+          print("AUTHOR_EXACT_DRIVE_RETENTION=PASS")
+          print("RAW_PRODUCT_UPLOADED=false")
+          PY
+
+      - name: Verify hashes, delete temporary raw GOFF, and write post-cleanup receipt
+        id: raw_cleanup
+        if: steps.drive_upload.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m tools.know_place.author_exact_retention \
+            --run-root "$RUN_ROOT" \
+            --derived-root "$DERIVED_ROOT" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT"
+          test -s "$DERIVED_ROOT/author-exact-raw-cleanup-receipt.json"
+          python tools/drive_resumable_upload.py \
+            --root "$DERIVED_ROOT" \
+            --run-name "$RUN_ID_SAFE" \
+            --files "$DERIVED_ROOT/author-exact-raw-cleanup-receipt.json" \
+            --out "$DERIVED_ROOT/drive-cleanup-receipt-upload.json"
+          python - "$DERIVED_ROOT/author-exact-raw-cleanup-receipt.json" "$DERIVED_ROOT/drive-cleanup-receipt-upload.json" <<'PY'
+          import hashlib,json,sys
+          from pathlib import Path
+          cleanup_path,upload_path=[Path(value) for value in sys.argv[1:]]
+          cleanup=json.loads(cleanup_path.read_text(encoding="utf-8"))
+          upload=json.loads(upload_path.read_text(encoding="utf-8"))
+          if cleanup.get("status")!="PASS" or cleanup.get("raw_hdf5_deleted_count")!=5 or cleanup.get("raw_hdf5_files_remaining_count")!=0:
+              raise SystemExit("ERROR=POST_DELETE_RAW_CLEANUP_RECEIPT_NOT_PASS")
+          if cleanup.get("raw_hdf5_uploaded") is not False or cleanup.get("raw_hdf5_deleted_after_verified_drive_retention") is not True:
+              raise SystemExit("ERROR=POST_DELETE_RAW_CLEANUP_EVIDENCE_INVALID")
+          if upload.get("remote_verification")!="PASS" or upload.get("raw_product_uploaded") is not False:
+              raise SystemExit("ERROR=POST_DELETE_CLEANUP_RECEIPT_NOT_DURABLY_UPLOADED")
+          files=upload.get("files",[])
+          expected_sha=hashlib.sha256(cleanup_path.read_bytes()).hexdigest()
+          matched=[row for row in files if row.get("name")=="author-exact-raw-cleanup-receipt.json"]
+          if len(matched)!=1 or matched[0].get("sha256")!=expected_sha or matched[0].get("bytes")!=cleanup_path.stat().st_size:
+              raise SystemExit("ERROR=POST_DELETE_CLEANUP_RECEIPT_REMOTE_BYTE_PARITY_FAILED")
+          print("AUTHOR_EXACT_RAW_CLEANUP=PASS")
+          print("RAW_HDF5_DELETED_COUNT=5")
+          print("RAW_HDF5_FILES_REMAINING=0")
+          print("RAW_CLEANUP_RECEIPT_DRIVE_VERIFICATION=PASS")
+          PY
+
+      - name: Preserve derived outputs and receipts as workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: know-place-author-exact-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/know-place-author-exact/derived/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Final scientific and retention gate
+        if: always()
+        shell: bash
+        env:
+          ANALYSIS_OUTCOME: ${{ steps.analysis.outcome }}
+          FOOTPRINT_OUTCOME: ${{ steps.footprint.outcome }}
+          FINAL_REPORT_OUTCOME: ${{ steps.final_report.outcome }}
+          DASHBOARD_OUTCOME: ${{ steps.dashboard.outcome }}
+          SECRETS_READY: ${{ steps.credentials.outputs.secrets_ready }}
+        run: |
+          set -euo pipefail
+          if [[ "$SECRETS_READY" != "true" ]]; then
+            echo "ERROR=RAW_REPLAY_CREDENTIAL_PREFLIGHT_FAILED"
+            exit 1
+          fi
+          if [[ "$ANALYSIS_OUTCOME" != "success" ]]; then
+            echo "ERROR=AUTHOR_EXACT_ANALYSIS_STEP_FAILED"
+            exit 1
+          fi
+          if [[ "$FOOTPRINT_OUTCOME" != "success" ]]; then
+            echo "ERROR=AUTHOR_FOOTPRINT_SCREEN_STEP_FAILED_OR_SKIPPED"
+            exit 1
+          fi
+          if [[ "$FINAL_REPORT_OUTCOME" != "success" ]]; then
+            echo "ERROR=AUTHOR_COMBINED_REPORT_UPDATE_FAILED_OR_SKIPPED"
+            exit 1
+          fi
+          if [[ "$DASHBOARD_OUTCOME" != "success" || ! -s "$DERIVED_ROOT/dashboard.html" ]]; then
+            echo "ERROR=AUTHOR_EVIDENCE_DASHBOARD_NOT_GENERATED"
+            exit 1
+          fi
+          python - "$DERIVED_ROOT/author-exact-analysis-status.json" "$DERIVED_ROOT/know-place-analysis-report.json" "$DERIVED_ROOT/author-raw-site-series-report.json" "$DERIVED_ROOT/author-exact-source-manifest.json" "$DERIVED_ROOT/drive-upload-receipt.json" "$DERIVED_ROOT/drive-receipt-upload.json" "$DERIVED_ROOT/author-exact-raw-cleanup-receipt.json" "$DERIVED_ROOT/drive-cleanup-receipt-upload.json" "$DERIVED_ROOT/footprint/author-footprint-replay-report.json" <<'PY'
+          import hashlib,json,sys
+          from pathlib import Path
+          status_path,report_path,author_site_path,source_path,drive1_path,drive2_path,cleanup_path,drive3_path,footprint_path=sys.argv[1:]
+          status,report,author_site,source,drive1,drive2,cleanup,drive3,footprint=[json.loads(Path(path).read_text(encoding="utf-8")) for path in (status_path,report_path,author_site_path,source_path,drive1_path,drive2_path,cleanup_path,drive3_path,footprint_path)]
+          if status.get("status")!="OUTPUTS_WRITTEN" or status.get("analysis_metrics_complete") is not True:
+              raise SystemExit("ERROR=AUTHOR_EXACT_METRICS_NOT_COMPLETE")
+          if report.get("structural_status")!="PASS" or report.get("status")!="SCIENTIFIC_METRICS_COMPUTED":
+              raise SystemExit("ERROR=AUTHOR_EXACT_REPORT_GATE_FAILED")
+          site_comparison=author_site.get("author_site_series_table_comparison",{})
+          p2_comparison=author_site.get("author_p2_table_comparison",{})
+          if author_site.get("status")!="SCIENTIFIC_METRICS_COMPUTED" or author_site.get("structural_status")!="PASS":
+              raise SystemExit("ERROR=AUTHOR_SITE_SERIES_REPORT_GATE_FAILED")
+          if author_site.get("method_profile")!="ARCHIVED_AUTHOR_SITE_SERIES_COMPATIBLE" or author_site.get("source_products_processed")!=5:
+              raise SystemExit("ERROR=AUTHOR_SITE_SERIES_PROFILE_OR_PAIR_COUNT_INVALID")
+          if site_comparison.get("status")!="PASS_AT_ARCHIVE_ROUNDING" or site_comparison.get("checks_passed")!=65 or site_comparison.get("checks_total")!=65 or site_comparison.get("mismatch_count")!=0:
+              raise SystemExit("ERROR=AUTHOR_SITE_SERIES_ARCHIVE_TABLE_PARITY_FAILED")
+          if p2_comparison.get("status")!="PASS_AT_ARCHIVE_ROUNDING" or p2_comparison.get("checks_passed")!=15 or p2_comparison.get("checks_total")!=15 or p2_comparison.get("mismatch_count")!=0:
+              raise SystemExit("ERROR=AUTHOR_P2_LOCAL_MEAN_TABLE_PARITY_FAILED")
+          if status.get("author_site_series_complete_and_archive_matched") is not True:
+              raise SystemExit("ERROR=AUTHOR_SITE_SERIES_OR_P2_COMPLETENESS_NOT_RECORDED")
+          if status.get("author_p2_table_comparison_status")!="PASS_AT_ARCHIVE_ROUNDING" or status.get("author_p2_table_comparisons_passed")!=15 or status.get("author_p2_table_comparisons_total")!=15:
+              raise SystemExit("ERROR=AUTHOR_P2_COMPLETENESS_NOT_RECORDED")
+          if footprint.get("status")!="FOOTPRINT_SCREEN_COMPUTED":
+              raise SystemExit("ERROR=AUTHOR_FOOTPRINT_REPORT_NOT_COMPUTED")
+          raster_check=footprint.get("author_aggregate_raster_comparison",{})
+          inventory_check=footprint.get("author_inventory_comparison",{})
+          table7_check=footprint.get("author_validated_zone_table_comparison",{})
+          score_audit=inventory_check.get("score_formula_audit",{})
+          if raster_check.get("status")!="PASS" or raster_check.get("raster_count")!=3 or raster_check.get("rasters_passed")!=3:
+              raise SystemExit("ERROR=AUTHOR_FOOTPRINT_AGGREGATE_RASTER_COMPARISON_FAILED")
+          if (inventory_check.get("status")!="PASS"
+              or inventory_check.get("expected_candidate_count")!=106
+              or inventory_check.get("computed_candidate_count")!=106
+              or inventory_check.get("computed_quality_pass_count")!=101
+              or inventory_check.get("score_formula_audit",{}).get("status")!="PASS_POSTPROCESSED_AUTHOR_SCORE_CONVENTION"
+              or inventory_check.get("ranking_order_comparison",{}).get("status")!="PASS"):
+              raise SystemExit("ERROR=AUTHOR_106_CANDIDATE_OR_FINAL_ZONAL_SCORE_PARITY_FAILED")
+          if (table7_check.get("status")!="PASS" or table7_check.get("expected_zone_count")!=101
+              or table7_check.get("computed_quality_zone_count")!=101 or table7_check.get("matched_centroid_count")!=101):
+              raise SystemExit("ERROR=AUTHOR_TABLE_S7_101_VALIDATED_ZONE_PARITY_FAILED")
+          if (footprint.get("candidate_summary",{}).get("component_count")!=106
+              or footprint.get("candidate_summary",{}).get("quality_pass_count")!=101):
+              raise SystemExit("ERROR=AUTHOR_SCREEN_COMPONENT_OR_QUALITY_COUNTS_MISMATCH")
+          if footprint.get("hazard_detection_status")!="NOT_EVALUATED":
+              raise SystemExit("ERROR=HAZARD_DETECTION_MUST_REMAIN_NOT_EVALUATED")
+          products=source.get("products",[])
+          if source.get("status")!="PASS_FIVE_EXACT_HDF5_DOWNLOADED_HASHED_AND_GRID_VALIDATED" or len(products)!=5:
+              raise SystemExit("ERROR=AUTHOR_EXACT_SOURCE_MANIFEST_GATE_FAILED")
+          if any(p.get("release_id")!="P05023" or p.get("download_status")!="PASS" or not p.get("source_sha256") for p in products):
+              raise SystemExit("ERROR=AUTHOR_SOURCE_HASH_RECEIPT_MISSING")
+          if source.get("source_downloads")!=5 or source.get("author_exact_source_sha256_count")!=5:
+              raise SystemExit("ERROR=AUTHOR_SOURCE_DOWNLOAD_HASH_COUNT_MISMATCH")
+          for receipt in (drive1,drive2):
+              if receipt.get("remote_verification")!="PASS" or receipt.get("raw_product_uploaded") is not False:
+                  raise SystemExit("ERROR=AUTHOR_EXACT_DRIVE_RETENTION_NOT_VERIFIED")
+          if report.get("paper_reproduction_status")!="PARTIAL_AUTHOR_SITE_AND_FOOTPRINT_NUMERICS_MATCH_DISPLACEMENT_NULL_STILL_UNVERIFIED":
+              raise SystemExit("ERROR=COMBINED_PARTIAL_REPRODUCTION_STATUS_NOT_ALIGNED")
+          if report.get("footprint_screen_parity_status")!=footprint.get("footprint_screen_parity_status"):
+              raise SystemExit("ERROR=COMBINED_REPORT_FOOTPRINT_STATUS_NOT_RECORDED")
+          if report.get("candidate_score_formula_audit",{}).get("status")!=score_audit.get("status"):
+              raise SystemExit("ERROR=COMBINED_REPORT_SCORE_FORMULA_AUDIT_NOT_RECORDED")
+          if source.get("raw_source_byte_identity")!="FIVE_EXACT_AUTHOR_SOURCE_HASHES_PINNED":
+              raise SystemExit("ERROR=AUTHOR_SOURCE_BYTE_IDENTITY_NOT_VERIFIED")
+          if report.get("hazard_detection_status")!="NOT_EVALUATED":
+              raise SystemExit("ERROR=HAZARD_DETECTION_MUST_REMAIN_NOT_EVALUATED")
+          if cleanup.get("status")!="PASS" or cleanup.get("raw_hdf5_deleted_count")!=5 or cleanup.get("raw_hdf5_files_remaining_count")!=0:
+              raise SystemExit("ERROR=RAW_HDF5_POST_DELETE_RECEIPT_NOT_PASS")
+          if cleanup.get("source_manifest_sha256")!=status.get("source_manifest_sha256"):
+              raise SystemExit("ERROR=RAW_CLEANUP_SOURCE_MANIFEST_HASH_MISMATCH")
+          if cleanup.get("source_files_hash_verified_before_delete")!=5 or cleanup.get("raw_hdf5_uploaded") is not False:
+              raise SystemExit("ERROR=RAW_CLEANUP_SOURCE_INTEGRITY_GATE_FAILED")
+          if cleanup.get("remote_derived_bundle_verification")!="PASS" or cleanup.get("remote_upload_receipt_copy_verification")!="PASS":
+              raise SystemExit("ERROR=RAW_CLEANUP_NOT_ORDERED_AFTER_DURABLE_DRIVE_RETENTION")
+          if drive3.get("remote_verification")!="PASS" or drive3.get("raw_product_uploaded") is not False:
+              raise SystemExit("ERROR=RAW_CLEANUP_RECEIPT_UPLOAD_NOT_VERIFIED")
+          clean_files=drive3.get("files",[])
+          clean_sha=hashlib.sha256(Path(cleanup_path).read_bytes()).hexdigest()
+          matched=[row for row in clean_files if row.get("name")=="author-exact-raw-cleanup-receipt.json"]
+          if len(matched)!=1 or matched[0].get("sha256")!=clean_sha:
+              raise SystemExit("ERROR=RAW_CLEANUP_RECEIPT_DRIVE_SHA256_MISMATCH")
+          if score_audit.get("status")!="PASS_POSTPROCESSED_AUTHOR_SCORE_CONVENTION":
+              raise SystemExit("ERROR=AUTHOR_FINAL_ZONAL_SCORE_FORMULA_PARITY_FAILED")
+          print("AUTHOR_EXACT_MEASUREMENT_STATUS=PASS")
+          print("AUTHOR_SITE_SERIES_TABLE_PARITY=PASS_AT_ARCHIVE_ROUNDING")
+          print("AUTHOR_SITE_SERIES_TABLE_CHECKS=65/65")
+          print("AUTHOR_P2_TABLE_PARITY=PASS_AT_ARCHIVE_ROUNDING")
+          print("AUTHOR_P2_TABLE_CHECKS=15/15")
+          print("AUTHOR_FOOTPRINT_SCREEN_PARITY=PASS_AUTHOR_AGGREGATE_RASTERS_AND_CANDIDATE_INVENTORY")
+          print("AUTHOR_FOOTPRINT_AGGREGATE_RASTERS=3/3")
+          print("AUTHOR_CANDIDATE_INVENTORY=106/106")
+          print("AUTHOR_QUALITY_ZONES=101/101")
+          print("AUTHOR_FINAL_ZONAL_SCORE_FORMULA=PASS")
+          print("AUTHOR_FINAL_SCORE_RANKING_ORDER=PASS")
+          print("AUTHOR_TABLE_S7_VALIDATED_ZONES=101/101")
+          print("AUTHOR_SOURCE_BYTE_IDENTITY=FIVE_EXACT_AUTHOR_SOURCE_HASHES_PINNED")
+          print("RAW_HDF5_DELETED_AFTER_VERIFIED_DERIVED_RETENTION=5")
+          print("RAW_HDF5_FILES_REMAINING=0")
+          print("POST_DELETE_CLEANUP_RECEIPT_DRIVE_VERIFICATION=PASS")
+          print("PAPER_REPRODUCTION_STATUS=PARTIAL_AUTHOR_SITE_AND_FOOTPRINT_NUMERICS_MATCH_DISPLACEMENT_NULL_STILL_UNVERIFIED")
+          print("HAZARD_DETECTION_STATUS=NOT_EVALUATED")
+          print("AUTHOR_EXACT_DRIVE_RETENTION=PASS")
+          PY

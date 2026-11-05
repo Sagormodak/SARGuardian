@@ -1,0 +1,243 @@
+import json
+import os
+from pathlib import Path
+import uuid
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+DRIVE_API_URL = "https://www.googleapis.com/drive/v3/files"
+DRIVE_UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files"
+DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
+REQUIRED_SCOPE = "https://www.googleapis.com/auth/drive"
+
+
+class DriveClientError(RuntimeError):
+    def __init__(
+        self,
+        code: str,
+        status: int | None = None,
+        api_reason: str | None = None,
+    ):
+        super().__init__(code)
+        self.code = code
+        self.status = status
+        # Google API reason is a short machine-readable token (for example
+        # "notFound"). Never retain or log the raw response message, which can
+        # contain resource identifiers.
+        self.api_reason = api_reason
+
+
+class DriveClient:
+    def __init__(self, client_id: str, client_secret: str, refresh_token: str):
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.refresh_token = refresh_token
+        self.access_token: str | None = None
+
+    @classmethod
+    def from_environment(cls) -> "DriveClient":
+        raw_client = os.environ.get("GOOGLE_DRIVE_OAUTH_CLIENT_JSON", "").strip()
+        raw_refresh = os.environ.get("GOOGLE_DRIVE_REFRESH_TOKEN", "").strip()
+        if not raw_client or not raw_refresh:
+            raise DriveClientError("DRIVE_CONFIGURATION_INVALID")
+        # Keep the OAuth client document strict, but accept a refresh token in
+        # the same three formats already supported by tools/drive_resumable_upload.py:
+        # plain text, a JSON string, or a JSON object containing refresh_token.
+        try:
+            document = json.loads(raw_client)
+        except (TypeError, json.JSONDecodeError):
+            raise DriveClientError("DRIVE_CONFIGURATION_INVALID") from None
+        client = document.get("installed") or document.get("web") or document
+        if not isinstance(client, dict):
+            raise DriveClientError("DRIVE_CONFIGURATION_INVALID")
+        try:
+            parsed_refresh = json.loads(raw_refresh)
+        except json.JSONDecodeError:
+            # GitHub Actions secrets are commonly stored as the token's raw string.
+            parsed_refresh = raw_refresh
+        if isinstance(parsed_refresh, dict):
+            refresh_token = parsed_refresh.get("refresh_token")
+        elif isinstance(parsed_refresh, str):
+            refresh_token = parsed_refresh
+        else:
+            refresh_token = None
+        client_id = client.get("client_id")
+        client_secret = client.get("client_secret")
+        if not all(isinstance(value, str) and value for value in (client_id, client_secret, refresh_token)):
+            raise DriveClientError("DRIVE_CONFIGURATION_INVALID")
+        return cls(client_id, client_secret, refresh_token.strip())
+
+    def refresh_access_token(self) -> int:
+        payload = urlencode({
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "grant_type": "refresh_token",
+            "refresh_token": self.refresh_token,
+        }).encode("utf-8")
+        response = self._request_json(
+            Request(
+                TOKEN_URL,
+                data=payload,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                method="POST",
+            ),
+            "DRIVE_TOKEN_REFRESH_FAILED",
+        )
+        token = response.get("access_token")
+        if not isinstance(token, str) or not token:
+            raise DriveClientError("DRIVE_TOKEN_REFRESH_FAILED")
+        self.access_token = token
+        return 200
+
+    def _authorized_request(self, url: str, method: str = "GET", data: bytes | None = None, content_type: str | None = None) -> Request:
+        if self.access_token is None:
+            self.refresh_access_token()
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        if content_type is not None:
+            headers["Content-Type"] = content_type
+        return Request(url, data=data, headers=headers, method=method)
+
+    def _request_json(self, request: Request, error_code: str, retries: int = 0) -> dict:
+        for attempt in range(retries + 1):
+            try:
+                with urlopen(request, timeout=60) as response:
+                    document = json.loads(response.read())
+                if not isinstance(document, dict):
+                    raise DriveClientError("DRIVE_API_RESPONSE_INVALID")
+                return document
+            except HTTPError as exc:
+                if attempt == retries:
+                    api_reason = None
+                    try:
+                        error_document = json.loads(exc.read())
+                        error = error_document.get("error", {}) if isinstance(error_document, dict) else {}
+                        errors = error.get("errors", []) if isinstance(error, dict) else []
+                        candidate = errors[0].get("reason") if errors and isinstance(errors[0], dict) else None
+                        if isinstance(candidate, str) and candidate.replace("_", "").replace("-", "").isalnum():
+                            api_reason = candidate[:80]
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        pass
+                    raise DriveClientError(error_code, exc.code, api_reason) from None
+            except (URLError, OSError, TimeoutError, json.JSONDecodeError):
+                if attempt == retries:
+                    raise DriveClientError(error_code) from None
+        raise DriveClientError(error_code)
+
+    def about_email(self) -> tuple[int, str | None]:
+        response = self._request_json(
+            self._authorized_request("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)"),
+            "DRIVE_ACCOUNT_LOOKUP_FAILED",
+            retries=2,
+        )
+        user = response.get("user")
+        email = user.get("emailAddress") if isinstance(user, dict) else None
+        return 200, email if isinstance(email, str) else None
+
+    def get_file(self, file_id: str) -> dict:
+        return self._request_json(
+            self._authorized_request(
+                f"{DRIVE_API_URL}/{file_id}?{urlencode({'fields': 'id,name,mimeType,parents,driveId', 'supportsAllDrives': 'true'})}"
+            ),
+            "DRIVE_FILE_LOOKUP_FAILED",
+            retries=2,
+        )
+
+    def list_children(self, parent_id: str) -> list[dict]:
+        """List every child of a My Drive or shared-drive folder.
+
+        The user corpus plus includeItemsFromAllDrives covers both My Drive
+        and shared-drive items the authenticated account can access. Pagination
+        is required because Drive may return fewer than pageSize entries.
+        """
+        query = {
+            "q": f"'{self._escape(parent_id)}' in parents and trashed = false",
+            "fields": "nextPageToken,incompleteSearch,files(id,name,mimeType,parents,driveId)",
+            "spaces": "drive",
+            "corpora": "user",
+            "includeItemsFromAllDrives": "true",
+            "supportsAllDrives": "true",
+            "pageSize": "1000",
+        }
+        files: list[dict] = []
+        page_token: str | None = None
+        seen_page_tokens: set[str] = set()
+        while True:
+            page_query = dict(query)
+            if page_token:
+                if page_token in seen_page_tokens:
+                    raise DriveClientError("DRIVE_LIST_PAGINATION_LOOP")
+                seen_page_tokens.add(page_token)
+                page_query["pageToken"] = page_token
+            response = self._request_json(
+                self._authorized_request(f"{DRIVE_API_URL}?{urlencode(page_query)}"),
+                "DRIVE_LIST_FAILED",
+                retries=2,
+            )
+            if response.get("incompleteSearch") is True:
+                raise DriveClientError("DRIVE_LIST_INCOMPLETE")
+            page_files = response.get("files")
+            if not isinstance(page_files, list):
+                raise DriveClientError("DRIVE_LIST_FAILED")
+            files.extend(file for file in page_files if isinstance(file, dict))
+            next_page_token = response.get("nextPageToken")
+            if not isinstance(next_page_token, str) or not next_page_token:
+                return files
+            page_token = next_page_token
+
+    def create_folder(self, parent_id: str, name: str) -> str:
+        metadata = json.dumps({"name": name, "mimeType": DRIVE_FOLDER_MIME, "parents": [parent_id]}).encode("utf-8")
+        response = self._request_json(
+            self._authorized_request(
+                f"{DRIVE_API_URL}?{urlencode({'supportsAllDrives': 'true', 'fields': 'id'})}",
+                method="POST",
+                data=metadata,
+                content_type="application/json; charset=UTF-8",
+            ),
+            "DRIVE_FOLDER_CREATE_FAILED",
+        )
+        folder_id = response.get("id")
+        if not isinstance(folder_id, str) or not folder_id:
+            raise DriveClientError("DRIVE_FOLDER_CREATE_FAILED")
+        return folder_id
+
+    def upload_file(self, parent_id: str, path: Path, mime_type: str) -> str:
+        boundary = f"SARGuardian{uuid.uuid4().hex}"
+        metadata = json.dumps({"name": path.name, "parents": [parent_id]}).encode("utf-8")
+        body = b"\r\n".join((
+            f"--{boundary}".encode("ascii"),
+            b"Content-Type: application/json; charset=UTF-8", b"", metadata,
+            f"--{boundary}".encode("ascii"),
+            f"Content-Type: {mime_type}".encode("ascii"),
+            b"Content-Transfer-Encoding: binary", b"", path.read_bytes(),
+            f"--{boundary}--".encode("ascii"), b"",
+        ))
+        response = self._request_json(
+            self._authorized_request(
+                f"{DRIVE_UPLOAD_URL}?{urlencode({'uploadType': 'multipart', 'supportsAllDrives': 'true', 'fields': 'id'})}",
+                method="POST",
+                data=body,
+                content_type=f"multipart/related; boundary={boundary}",
+            ),
+            "DRIVE_FILE_UPLOAD_FAILED",
+        )
+        file_id = response.get("id")
+        if not isinstance(file_id, str) or not file_id:
+            raise DriveClientError("DRIVE_FILE_UPLOAD_FAILED")
+        return file_id
+
+    def download_file(self, file_id: str) -> bytes:
+        request = self._authorized_request(
+            f"{DRIVE_API_URL}/{file_id}?{urlencode({'alt': 'media', 'supportsAllDrives': 'true'})}"
+        )
+        try:
+            with urlopen(request, timeout=60) as response:
+                return response.read()
+        except (HTTPError, URLError, OSError, TimeoutError):
+            raise DriveClientError("DRIVE_FILE_DOWNLOAD_FAILED") from None
+
+    @staticmethod
+    def _escape(value: str) -> str:
+        return value.replace("\\", "\\\\").replace("'", "\\'")

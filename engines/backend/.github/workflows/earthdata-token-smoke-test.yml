@@ -1,0 +1,70 @@
+name: Earthdata Token Smoke Test
+
+# Manual-only credential check. Never downloads or retains source HDF5.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-earthdata-token:
+    name: Authenticate with Earthdata token and probe one NISAR product
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+    steps:
+      - name: Checkout backend test harness
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned scientific acquisition module
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian
+          ref: ab547ecc82bcc4d6ccef545a59852536c2beacc6
+          path: science-source
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Require a configured Earthdata user token
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${EARTHDATA_TOKEN:-}" ]]; then
+            echo "::error::Repository Actions secret EARTHDATA_TOKEN is missing or empty."
+            exit 1
+          fi
+          echo "EARTHDATA_TOKEN_SECRET_PRESENT=yes"
+
+      - name: Install only the scientific probe dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r science-source/requirements.txt
+          python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r tools/requirements-retention.txt
+
+      - name: Probe known-good GUNW product without downloading it
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/download_nisar_product.py \
+            --product-type GUNW \
+            --maturity PROVISIONAL \
+            --granule-name "NISAR_L2_PR_GUNW_026_048_D_074_028_4000_SH_20260723T125813_20260723T125848_20260816T125812_20260816T125846_P05023_N_F_J_001" \
+            --science-root "$PWD/science-source" \
+            --aoi source \
+            --out-dir "$RUNNER_TEMP/earthdata-token-smoke-test-no-download" \
+            --probe-only
+
+      - name: Confirm this test did not download source data
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e "$RUNNER_TEMP/earthdata-token-smoke-test-no-download"
+          echo "RAW_DOWNLOAD_PERFORMED=no"
+          echo "GOOGLE_DRIVE_UPLOAD_PERFORMED=no"

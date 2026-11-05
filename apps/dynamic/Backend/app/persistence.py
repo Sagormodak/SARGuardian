@@ -1,0 +1,460 @@
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+from datetime import UTC, datetime, timedelta
+from functools import lru_cache
+from typing import Any, Protocol
+from uuid import UUID, uuid4
+
+from .config import SettingsError, get_settings
+
+try:
+    from supabase import Client, ClientOptions, create_client
+except ImportError:  # pragma: no cover - exercised by configuration tests
+    Client = Any  # type: ignore[assignment,misc]
+    ClientOptions = None
+    create_client = None
+
+
+class PersistenceConfigurationError(RuntimeError):
+    pass
+
+
+class PersistenceError(RuntimeError):
+    pass
+
+
+class PersistenceConflictError(PersistenceError):
+    """An atomic job update lost a race to another lifecycle event."""
+
+
+class PreflightNotFoundError(PersistenceError):
+    pass
+
+
+class PreflightExpiredError(PersistenceError):
+    pass
+
+
+MODERN_SUPABASE_SECRET_KEY_PREFIX = "sb_secret_"
+LEGACY_SERVICE_ROLE_KEY_PREFIX = "eyJ"
+
+
+def _is_modern_supabase_key(api_key: str) -> bool:
+    # A publishable key maps to the low-privilege anon role and must never be
+    # accepted for this server-owned persistence client.
+    return api_key.startswith(MODERN_SUPABASE_SECRET_KEY_PREFIX)
+
+
+def _validate_service_role_key(api_key: str) -> bool:
+    """Validate a server-side Supabase key and return whether it is an opaque secret key."""
+    if api_key.startswith("sb_publishable_"):
+        raise PersistenceConfigurationError(
+            "SUPABASE_SERVICE_ROLE_KEY is a publishable key; configure a server-only "
+            "sb_secret_ key or legacy service_role JWT."
+        )
+    if _is_modern_supabase_key(api_key):
+        return True
+    if api_key.startswith(LEGACY_SERVICE_ROLE_KEY_PREFIX) and api_key.count(".") == 2:
+        try:
+            payload_segment = api_key.split(".")[1]
+            payload_segment += "=" * (-len(payload_segment) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(payload_segment))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            claims = None
+        if isinstance(claims, dict) and claims.get("role") == "service_role":
+            return False
+        raise PersistenceConfigurationError(
+            "SUPABASE_SERVICE_ROLE_KEY is a legacy JWT without the service_role claim; "
+            "configure the project's server-only service key."
+        ) from None
+    raise PersistenceConfigurationError(
+        "SUPABASE_SERVICE_ROLE_KEY must be a server-only sb_secret_ key or legacy service_role JWT."
+    )
+
+
+def _normalize_modern_key_headers(client: Any, api_key: str) -> None:
+    """Make PostgREST use an opaque secret key as `apikey`, never as Bearer."""
+    options = getattr(client, "options", None)
+    headers = getattr(options, "headers", None)
+    if not isinstance(headers, dict):
+        raise PersistenceConfigurationError("Supabase client headers could not be configured safely.")
+
+    for name in tuple(headers):
+        if name.lower() in {"authorization", "apikey", "api-key"}:
+            del headers[name]
+    headers["apikey"] = api_key
+
+
+def _verify_server_role_access(client: Any) -> None:
+    """Run a read-only, zero-row query to catch invalid/underprivileged server keys early."""
+    try:
+        client.table("displacement_jobs").select("id").limit(0).execute()
+    except Exception:
+        raise PersistenceConfigurationError(
+            "Supabase server-side access check failed for public.displacement_jobs. "
+            "Verify SUPABASE_SERVICE_ROLE_KEY is a server-only key and the migration grants are applied."
+        ) from None
+
+
+class JobStore(Protocol):
+    def save_preflight(self, owner_uid: str, request_snapshot: dict[str, Any], manifest_snapshot: dict[str, Any]) -> UUID: ...
+    def get_preflight(self, owner_uid: str, preflight_id: UUID) -> dict[str, Any] | None: ...
+    def get_job_by_idempotency(self, owner_uid: str, idempotency_key: str) -> dict[str, Any] | None: ...
+    def create_job(self, values: dict[str, Any]) -> dict[str, Any]: ...
+    def list_jobs(self, owner_uid: str, limit: int = 100) -> list[dict[str, Any]]: ...
+    def get_job(self, owner_uid: str, job_id: UUID) -> dict[str, Any] | None: ...
+    def get_displacement_job_by_idempotency(self, owner_uid: str, idempotency_key: str) -> dict[str, Any] | None: ...
+    def create_displacement_job(self, values: dict[str, Any]) -> dict[str, Any]: ...
+    def list_displacement_jobs(self, owner_uid: str, limit: int = 20) -> list[dict[str, Any]]: ...
+    def list_active_displacement_jobs(self, owner_uid: str) -> list[dict[str, Any]]: ...
+    def find_active_displacement_job(self, owner_uid: str, aoi_wkt: str, start_date: str, end_date: str) -> dict[str, Any] | None: ...
+    def get_displacement_job(self, owner_uid: str, job_id: UUID) -> dict[str, Any] | None: ...
+    def get_displacement_job_unscoped(self, job_id: UUID) -> dict[str, Any] | None: ...
+    def update_displacement_job(self, job_id: UUID, values: dict[str, Any], *, expected_state: str | None = None, expected_sequence: int | None = None) -> dict[str, Any]: ...
+    def get_river_shift_job_by_idempotency(self, owner_uid: str, idempotency_key: str) -> dict[str, Any] | None: ...
+    def create_river_shift_job(self, values: dict[str, Any]) -> dict[str, Any]: ...
+    def list_river_shift_jobs(self, owner_uid: str, limit: int = 20) -> list[dict[str, Any]]: ...
+    def list_active_river_shift_jobs(self, owner_uid: str) -> list[dict[str, Any]]: ...
+    def get_river_shift_job(self, owner_uid: str, job_id: UUID) -> dict[str, Any] | None: ...
+    def get_river_shift_job_unscoped(self, job_id: UUID) -> dict[str, Any] | None: ...
+    def update_river_shift_job(self, job_id: UUID, values: dict[str, Any], *, expected_state: str | None = None, expected_sequence: int | None = None) -> dict[str, Any]: ...
+
+
+def request_fingerprint(request_snapshot: dict[str, Any], manifest_snapshot: dict[str, Any]) -> str:
+    payload = json.dumps({"request": request_snapshot, "manifest": manifest_snapshot}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+class SupabaseJobStore:
+    def __init__(self, client: Client, preflight_ttl_seconds: int) -> None:
+        self.client = client
+        self.preflight_ttl_seconds = preflight_ttl_seconds
+
+    @staticmethod
+    def _data(response: Any) -> list[dict[str, Any]]:
+        data = getattr(response, "data", None)
+        return data if isinstance(data, list) else []
+
+    def save_preflight(self, owner_uid: str, request_snapshot: dict[str, Any], manifest_snapshot: dict[str, Any]) -> UUID:
+        preflight_id = uuid4()
+        expires_at = datetime.now(UTC) + timedelta(seconds=self.preflight_ttl_seconds)
+        values = {
+            "id": str(preflight_id),
+            "owner_uid": owner_uid,
+            "request_fingerprint": request_fingerprint(request_snapshot, manifest_snapshot),
+            "request_snapshot": request_snapshot,
+            "manifest_snapshot": manifest_snapshot,
+            "expires_at": expires_at.isoformat(),
+        }
+        try:
+            response = self.client.table("catalog_preflights").insert(values).select("id").execute()
+        except Exception as exc:
+            raise PersistenceError("Could not persist the catalogue preflight.") from None
+        if not self._data(response):
+            raise PersistenceError("Catalogue preflight persistence returned no record.")
+        return preflight_id
+
+    def get_preflight(self, owner_uid: str, preflight_id: UUID) -> dict[str, Any] | None:
+        try:
+            response = (
+                self.client.table("catalog_preflights")
+                .select("*")
+                .eq("id", str(preflight_id))
+                .eq("owner_uid", owner_uid)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise PersistenceError("Could not read the catalogue preflight.") from None
+        rows = self._data(response)
+        return rows[0] if rows else None
+
+    def get_job_by_idempotency(self, owner_uid: str, idempotency_key: str) -> dict[str, Any] | None:
+        try:
+            response = (
+                self.client.table("processing_jobs")
+                .select("*")
+                .eq("owner_uid", owner_uid)
+                .eq("idempotency_key", idempotency_key)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise PersistenceError("Could not check job idempotency.") from None
+        rows = self._data(response)
+        return rows[0] if rows else None
+
+    def create_job(self, values: dict[str, Any]) -> dict[str, Any]:
+        existing = self.get_job_by_idempotency(values["owner_uid"], values["idempotency_key"])
+        if existing:
+            return existing
+        try:
+            response = self.client.table("processing_jobs").insert(values).select("*").execute()
+        except Exception:
+            # A concurrent request may have won the unique idempotency constraint.
+            existing = self.get_job_by_idempotency(values["owner_uid"], values["idempotency_key"])
+            if existing:
+                return existing
+            raise PersistenceError("Could not persist the processing job.") from None
+        rows = self._data(response)
+        if not rows:
+            raise PersistenceError("Job persistence returned no record.")
+        return rows[0]
+
+    def list_jobs(self, owner_uid: str, limit: int = 100) -> list[dict[str, Any]]:
+        try:
+            response = (
+                self.client.table("processing_jobs")
+                .select("*")
+                .eq("owner_uid", owner_uid)
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+        except Exception as exc:
+            raise PersistenceError("Could not list processing jobs.") from None
+        return self._data(response)
+
+    def get_job(self, owner_uid: str, job_id: UUID) -> dict[str, Any] | None:
+        try:
+            response = (
+                self.client.table("processing_jobs")
+                .select("*")
+                .eq("owner_uid", owner_uid)
+                .eq("id", str(job_id))
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise PersistenceError("Could not read the processing job.") from None
+        rows = self._data(response)
+        return rows[0] if rows else None
+
+    def get_displacement_job_by_idempotency(self, owner_uid: str, idempotency_key: str) -> dict[str, Any] | None:
+        try:
+            response = self.client.table("displacement_jobs").select("*").eq("owner_uid", owner_uid).eq("idempotency_key", idempotency_key).limit(1).execute()
+        except Exception:
+            raise PersistenceError("Could not check displacement job idempotency.") from None
+        rows = self._data(response)
+        return rows[0] if rows else None
+
+    def create_displacement_job(self, values: dict[str, Any]) -> dict[str, Any]:
+        existing = self.get_displacement_job_by_idempotency(values["owner_uid"], values["idempotency_key"])
+        if existing:
+            return existing
+        try:
+            response = self.client.table("displacement_jobs").insert(values).select("*").execute()
+        except Exception:
+            existing = self.get_displacement_job_by_idempotency(values["owner_uid"], values["idempotency_key"])
+            if existing:
+                return existing
+            raise PersistenceError("Could not persist the displacement job.") from None
+        rows = self._data(response)
+        if not rows:
+            raise PersistenceError("Displacement job persistence returned no record.")
+        return rows[0]
+
+    def list_displacement_jobs(self, owner_uid: str, limit: int = 20) -> list[dict[str, Any]]:
+        try:
+            response = (
+                self.client.table("displacement_jobs")
+                .select("*")
+                .eq("owner_uid", owner_uid)
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+        except Exception:
+            raise PersistenceError("Could not list displacement jobs.") from None
+        return self._data(response)
+
+    def find_active_displacement_job(self, owner_uid: str, aoi_wkt: str, start_date: str, end_date: str) -> dict[str, Any] | None:
+        try:
+            response = (
+                self.client.table("displacement_jobs")
+                .select("*")
+                .eq("owner_uid", owner_uid)
+                .eq("aoi_wkt", aoi_wkt)
+                .eq("start_date", start_date)
+                .eq("end_date", end_date)
+                .in_("state", ["queued", "dispatching", "running"])
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+        except Exception:
+            raise PersistenceError("Could not check for an active displacement job.") from None
+        rows = self._data(response)
+        return rows[0] if rows else None
+
+    def list_active_displacement_jobs(self, owner_uid: str) -> list[dict[str, Any]]:
+        try:
+            response = (self.client.table("displacement_jobs").select("*").eq("owner_uid", owner_uid)
+                        .in_("state", ["queued", "dispatching", "running"]).limit(2).execute())
+        except Exception:
+            raise PersistenceError("Could not check account processing capacity.") from None
+        return self._data(response)
+
+    def get_displacement_job(self, owner_uid: str, job_id: UUID) -> dict[str, Any] | None:
+        try:
+            response = self.client.table("displacement_jobs").select("*").eq("owner_uid", owner_uid).eq("id", str(job_id)).limit(1).execute()
+        except Exception:
+            raise PersistenceError("Could not read the displacement job.") from None
+        rows = self._data(response)
+        return rows[0] if rows else None
+
+    def get_displacement_job_unscoped(self, job_id: UUID) -> dict[str, Any] | None:
+        try:
+            response = self.client.table("displacement_jobs").select("*").eq("id", str(job_id)).limit(1).execute()
+        except Exception:
+            raise PersistenceError("Could not read the displacement job.") from None
+        rows = self._data(response)
+        return rows[0] if rows else None
+
+    def update_displacement_job(self, job_id: UUID, values: dict[str, Any], *, expected_state: str | None = None, expected_sequence: int | None = None) -> dict[str, Any]:
+        try:
+            query = self.client.table("displacement_jobs").update(values).eq("id", str(job_id))
+            if expected_state is not None:
+                query = query.eq("state", expected_state)
+            if expected_sequence is not None:
+                query = query.eq("callback_sequence", expected_sequence)
+            response = query.select("*").execute()
+        except Exception:
+            raise PersistenceError("Could not update the displacement job.") from None
+        rows = self._data(response)
+        if not rows:
+            if expected_state is not None or expected_sequence is not None:
+                raise PersistenceConflictError("Job state changed concurrently; refresh before retrying.")
+            raise PersistenceError("Displacement job was not found for update.")
+        return rows[0]
+
+
+    def get_river_shift_job_by_idempotency(self, owner_uid: str, idempotency_key: str) -> dict[str, Any] | None:
+        try:
+            response = (self.client.table("river_shift_jobs").select("*")
+                        .eq("owner_uid", owner_uid).eq("idempotency_key", idempotency_key)
+                        .limit(1).execute())
+        except Exception:
+            raise PersistenceError("Could not check RiverShift job idempotency.") from None
+        rows = self._data(response)
+        return rows[0] if rows else None
+
+    def create_river_shift_job(self, values: dict[str, Any]) -> dict[str, Any]:
+        existing = self.get_river_shift_job_by_idempotency(values["owner_uid"], values["idempotency_key"])
+        if existing:
+            return existing
+        try:
+            response = self.client.table("river_shift_jobs").insert(values).select("*").execute()
+        except Exception:
+            existing = self.get_river_shift_job_by_idempotency(values["owner_uid"], values["idempotency_key"])
+            if existing:
+                return existing
+            active = self.list_active_river_shift_jobs(values["owner_uid"])
+            if active:
+                raise PersistenceConflictError("An active RiverShift job already exists for this account.") from None
+            raise PersistenceError("Could not persist the RiverShift job.") from None
+        rows = self._data(response)
+        if not rows:
+            raise PersistenceError("RiverShift job persistence returned no record.")
+        return rows[0]
+
+    def list_river_shift_jobs(self, owner_uid: str, limit: int = 20) -> list[dict[str, Any]]:
+        try:
+            response = (
+                self.client.table("river_shift_jobs")
+                .select("*")
+                .eq("owner_uid", owner_uid)
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+        except Exception:
+            raise PersistenceError("Could not list RiverShift jobs.") from None
+        return self._data(response)
+
+    def list_active_river_shift_jobs(self, owner_uid: str) -> list[dict[str, Any]]:
+        try:
+            response = (
+                self.client.table("river_shift_jobs")
+                .select("*")
+                .eq("owner_uid", owner_uid)
+                .in_("state", ["queued", "dispatching", "running"])
+                .order("created_at", desc=True)
+                .limit(2)
+                .execute()
+            )
+        except Exception:
+            raise PersistenceError("Could not check active RiverShift jobs.") from None
+        return self._data(response)
+
+    def get_river_shift_job(self, owner_uid: str, job_id: UUID) -> dict[str, Any] | None:
+        try:
+            response = (self.client.table("river_shift_jobs").select("*")
+                        .eq("owner_uid", owner_uid).eq("id", str(job_id)).limit(1).execute())
+        except Exception:
+            raise PersistenceError("Could not read the RiverShift job.") from None
+        rows = self._data(response)
+        return rows[0] if rows else None
+
+    def get_river_shift_job_unscoped(self, job_id: UUID) -> dict[str, Any] | None:
+        try:
+            response = self.client.table("river_shift_jobs").select("*").eq("id", str(job_id)).limit(1).execute()
+        except Exception:
+            raise PersistenceError("Could not read the RiverShift worker job.") from None
+        rows = self._data(response)
+        return rows[0] if rows else None
+
+    def update_river_shift_job(
+        self, job_id: UUID, values: dict[str, Any], *,
+        expected_state: str | None = None, expected_sequence: int | None = None,
+    ) -> dict[str, Any]:
+        try:
+            query = self.client.table("river_shift_jobs").update(values).eq("id", str(job_id))
+            if expected_state is not None:
+                query = query.eq("state", expected_state)
+            if expected_sequence is not None:
+                query = query.eq("callback_sequence", expected_sequence)
+            response = query.select("*").execute()
+        except Exception:
+            raise PersistenceError("Could not update the RiverShift job.") from None
+        rows = self._data(response)
+        if not rows:
+            if expected_state is not None or expected_sequence is not None:
+                raise PersistenceConflictError("RiverShift job state changed concurrently; refresh before retrying.")
+            raise PersistenceError("RiverShift job was not found for update.")
+        return rows[0]
+
+
+@lru_cache(maxsize=1)
+def get_job_store() -> SupabaseJobStore:
+    try:
+        settings = get_settings()
+    except SettingsError as exc:
+        raise PersistenceConfigurationError(str(exc)) from None
+    url = settings.supabase_url
+    service_role_key = settings.supabase_service_role_key
+    if not url or not service_role_key:
+        raise PersistenceConfigurationError("Supabase persistence is not configured on this server.")
+    modern_key = _validate_service_role_key(service_role_key)
+    if create_client is None or ClientOptions is None:
+        raise PersistenceConfigurationError("The Supabase Python SDK is not installed on this server.")
+    options_headers = {"Authorization": ""} if modern_key else None
+    try:
+        client = create_client(
+            url,
+            service_role_key,
+            options=ClientOptions(
+                auto_refresh_token=False,
+                persist_session=False,
+                **({"headers": options_headers} if options_headers is not None else {}),
+            ),
+        )
+    except Exception as exc:
+        raise PersistenceConfigurationError("Supabase persistence could not be initialized.") from None
+    if modern_key:
+        _normalize_modern_key_headers(client, service_role_key)
+    _verify_server_role_access(client)
+    return SupabaseJobStore(client, settings.preflight_ttl_seconds)

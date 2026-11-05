@@ -1,0 +1,27 @@
+name: Know Place Author-Exact P05023 Run (consent bridge)
+
+# Used only where API workflow_dispatch is unavailable. A request-file update
+# plus the exact commit-message consent marker invokes the reusable author workflow.
+# The legacy mixed-release replay has a separate, stricter consent token.
+on:
+  push:
+    branches:
+      - feat/know-place-analysis
+    paths:
+      - "docs/know-place/AUTHOR_EXACT_P05023_RUN_20261026.md"
+
+permissions:
+  contents: read
+
+jobs:
+  acquire-analyze-retain-author-exact:
+    if: contains(github.event.head_commit.message, '[run-know-place]')
+    uses: ./.github/workflows/know-place-author-exact-replay.yml
+    with:
+      backend_code_ref: "9747a726b78563738aaddb965de17a6e2174387e"
+      consent_marker: "[run-know-place]"
+      bridge_authorized: true
+      geometry_height_m: "5151"
+      control_draws: "1000"
+      seed: "260826"
+    secrets: inherit

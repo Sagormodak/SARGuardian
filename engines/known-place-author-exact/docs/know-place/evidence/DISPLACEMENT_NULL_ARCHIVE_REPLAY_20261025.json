@@ -1,0 +1,136 @@
+{
+  "schema_version": "know-place-displacement-null-summary/1.0",
+  "status": "PASS_AT_PUBLISHED_TABLE_PRECISION",
+  "generated_by": {
+    "workflow_run_id": 40219393283,
+    "workflow_url": "https://github.com/moshiour0/SARGuardian-backend/actions/runs/40219393283",
+    "full_report_artifact_id": 12608431799,
+    "full_report_artifact_zip_sha256": "6fd4a6b80fb1ae17aa7a68d0be8379a8e6522b88ddff0e18b7386b7cda091ddd",
+    "full_report_json_sha256": "e0cdd09008d70e0b044005251b598f0c3ee8143055429d25e236eef1d731130f"
+  },
+  "author_archive": {
+    "doi": "10.5281/zenodo.22730419",
+    "bytes": 183389034,
+    "sha256": "002c2ba173a03693431b79578ca28d6b11e1ec00423d7533e82198871576c5e3",
+    "published_table": "tables/displacement_null.json",
+    "published_table_sha256": "b8a16de84a0c3f732daf7d3d3cd261596edbe312a432d7f65978a1a5947ac207"
+  },
+  "method": {
+    "seed": 20260907,
+    "rng": "numpy.default_rng / PCG64; shared stream in chronological pair order",
+    "draws_per_pair": 1200,
+    "centre_domain": "finite displacement magnitude centres sampled without replacement",
+    "region": "pixel-index disk with nominal area matching valid crown displacement count",
+    "acceptance": "at least 60% valid support",
+    "percentile": "strict fraction of accepted null medians below observed crown median",
+    "exact_original_generator": "NOT_PRESENT_IN_REVIEWED_ZENODO_ARCHIVE",
+    "original_draw_sequence_identity": "UNVERIFIED_NO_ORIGINAL_DRAW_OR_REJECTION_HISTORY"
+  },
+  "numeric_result": {
+    "displacement_null_fields_matched": 15,
+    "displacement_null_fields_total": 15,
+    "table_s4_numeric_values_matched": 95,
+    "table_s4_numeric_values_total": 95,
+    "rounding": {
+      "crown_median_m": 0.01,
+      "null_median_m": 0.01,
+      "percentile_percentage_points": 0.1
+    }
+  },
+  "pairs": [
+    {
+      "interval": "2026-06-20/2026-07-02",
+      "source_field": "fields/offsets_20260620_20260702.tif",
+      "source_field_sha256": "9b2ad8628a0d85dff0e589aeac8df4dbb71866800f5f13517936c3a231ccc6a1",
+      "valid_crown_displacement_pixels": 283,
+      "crown_median_m": 0.9949599837141708,
+      "published_crown_m": 0.99,
+      "null_median_m": 0.17210503942229632,
+      "published_null_median_m": 0.17,
+      "percentile": 94.94584837545126,
+      "published_percentile": 94.9,
+      "accepted_draws": 831,
+      "tried_draws": 1200,
+      "draw_vector_sha256": "52934a6e98221362170bdeca9ca1d2a7f7839a750b406ced942df2f9b615a3b9",
+      "status": "PASS_AT_PUBLISHED_TABLE_PRECISION"
+    },
+    {
+      "interval": "2026-07-02/2026-07-14",
+      "source_field": "fields/offsets_20260702_20260714.tif",
+      "source_field_sha256": "d5ffcbb8fe53bfb467837e2e3032cd4889051e4b47eff06da9276cac84df66f1",
+      "valid_crown_displacement_pixels": 294,
+      "crown_median_m": 0.5390713345742981,
+      "published_crown_m": 0.54,
+      "null_median_m": 0.2096060967075445,
+      "published_null_median_m": 0.21,
+      "percentile": 87.52969121140143,
+      "published_percentile": 87.5,
+      "accepted_draws": 842,
+      "tried_draws": 1200,
+      "draw_vector_sha256": "f439aa5ded977f5cb4ca4b61e4af0001ddbccbde8c600714611a44db87991078",
+      "status": "PASS_AT_PUBLISHED_TABLE_PRECISION"
+    },
+    {
+      "interval": "2026-07-14/2026-07-26",
+      "source_field": "fields/offsets_20260714_20260726.tif",
+      "source_field_sha256": "3421e697bf279292aaf3a11d4d2e90f1f74fc2a574fb1dbc276806552caf32bd",
+      "valid_crown_displacement_pixels": 296,
+      "crown_median_m": 0.2955509705544377,
+      "published_crown_m": 0.3,
+      "null_median_m": 0.13957509166227455,
+      "published_null_median_m": 0.14,
+      "percentile": 80.95794392523365,
+      "published_percentile": 81,
+      "accepted_draws": 856,
+      "tried_draws": 1200,
+      "draw_vector_sha256": "7305a149bbfeb1fa1bfd2bb70e5b725d51b9fa1e86dab712940fa008edbae17f",
+      "status": "PASS_AT_PUBLISHED_TABLE_PRECISION"
+    },
+    {
+      "interval": "2026-07-26/2026-08-19",
+      "source_field": "fields/offsets_20260726_20260819.tif",
+      "source_field_sha256": "0ac703908f1483f03469eae64dfe7d4f2722853386da419edafb6a378a4afc74",
+      "valid_crown_displacement_pixels": 292,
+      "crown_median_m": 0.9645103487638451,
+      "published_crown_m": 0.96,
+      "null_median_m": 0.14060227287138363,
+      "published_null_median_m": 0.14,
+      "percentile": 94.74912485414235,
+      "published_percentile": 94.7,
+      "accepted_draws": 857,
+      "tried_draws": 1200,
+      "draw_vector_sha256": "636dd06fe0c166535512ae193ff091380a2e7d2ebf73f6881866e992e0bc26a0",
+      "status": "PASS_AT_PUBLISHED_TABLE_PRECISION"
+    },
+    {
+      "interval": "2026-08-19/2026-08-31",
+      "source_field": "fields/offsets_20260819_20260831.tif",
+      "source_field_sha256": "2bf4685f932725107c5bc5bf4ea2abf5fce62115ccf151177e84a3ff6a554156",
+      "valid_crown_displacement_pixels": 195,
+      "crown_median_m": 0.32783178119763107,
+      "published_crown_m": 0.33,
+      "null_median_m": 0.09204483348277975,
+      "published_null_median_m": 0.09,
+      "percentile": 81.33333333333333,
+      "published_percentile": 81.3,
+      "accepted_draws": 900,
+      "tried_draws": 1200,
+      "draw_vector_sha256": "f7e762ae55f1051c8cfe0957f504b44f2e650abfc8da90545536ffe7f70e8fb6",
+      "status": "PASS_AT_PUBLISHED_TABLE_PRECISION"
+    }
+  ],
+  "scientific_status": {
+    "paper_reproduction": "PARTIAL_AUTHOR_SITE_AND_FOOTPRINT_NUMERICS_MATCH_DISPLACEMENT_NULL_STILL_UNVERIFIED",
+    "exact_displacement_null_source_method": "UNVERIFIED",
+    "hazard_detection": "NOT_EVALUATED",
+    "operational_warning": "NOT_IMPLEMENTED",
+    "raw_hdf5_read_or_download_in_this_audit": false
+  },
+  "limitations": [
+    "All five null numeric rows match the published table at stored precision under the fixed source-inspired reconstruction.",
+    "The reviewed archive does not contain the displacement-null-specific generator or original draw/rejection history.",
+    "Numeric output agreement does not prove exact source-code or original draw-sequence identity.",
+    "Accepted counts belong to this reconstruction and are not asserted to be original-author counts.",
+    "No hazard-detection skill was measured."
+  ]
+}

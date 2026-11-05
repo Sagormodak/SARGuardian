@@ -1,0 +1,106 @@
+name: SARGuardian AOI branch code validation
+
+on:
+  push:
+    branches:
+      - feat/e2e-aoi-wkt-date-dashboard
+      - feat/final-aoi-science-integration
+    paths:
+      - "tools/**"
+      - ".github/workflows/sarguardian-aoi-*.yml"
+      - ".github/workflows/sarguardian-aoi-*.yaml"
+      - ".github/workflows/sarguardian-streaming-batch.yml"
+      - ".github/workflows/sarguardian-product-worker.yml"
+      - ".github/workflows/sarguardian-aoi-code-validation.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "tools/**"
+      - ".github/workflows/sarguardian-aoi-*.yml"
+      - ".github/workflows/sarguardian-aoi-*.yaml"
+      - ".github/workflows/sarguardian-streaming-batch.yml"
+      - ".github/workflows/sarguardian-product-worker.yml"
+      - ".github/workflows/sarguardian-aoi-code-validation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  static-and-parser-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout backend feature branch
+        uses: actions/checkout@v4
+
+      - name: Checkout dynamic-WKT scientific parser
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian
+          ref: 10639a916c9829850775410b3ed7de62e527770d
+          path: science-source
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install static test tools
+        run: python -m pip install --disable-pip-version-check pytest pyyaml requests numpy h5py
+
+      - name: Compile every backend Python tool
+        run: python -m compileall -q tools
+
+      - name: Syntax-check the generated dashboard JavaScript
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source = Path("tools/aggregate_aoi_run.py").read_text(encoding="utf-8")
+          marker = 'doc = r"""'
+          start = source.find(marker)
+          if start < 0:
+              raise SystemExit("ERROR=DASHBOARD_HTML_TEMPLATE_NOT_FOUND")
+          start += len(marker)
+          end = source.find('"""', start)
+          if end < 0:
+              raise SystemExit("ERROR=DASHBOARD_HTML_TEMPLATE_UNTERMINATED")
+          html = source[start:end]
+          script_marker = "<script>\\n"
+          script_start = html.find(script_marker)
+          if script_start < 0:
+              script_marker = "<script>"
+              script_start = html.find(script_marker)
+              if script_start < 0:
+                  raise SystemExit("ERROR=DASHBOARD_INTERACTIVE_SCRIPT_NOT_FOUND")
+              script_start += len(script_marker)
+          else:
+              script_start += len(script_marker)
+          script_end = html.find("</script>", script_start)
+          if script_end < 0:
+              raise SystemExit("ERROR=DASHBOARD_INTERACTIVE_SCRIPT_UNTERMINATED")
+          Path("/tmp/sarguardian-dashboard.js").write_text(html[script_start:script_end], encoding="utf-8")
+          print("DASHBOARD_JS_EXTRACTED=/tmp/sarguardian-dashboard.js")
+          PY
+          node --check /tmp/sarguardian-dashboard.js
+
+      - name: Parse workflow YAML syntax
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          files = sorted(Path(".github/workflows").glob("sarguardian-aoi-*.yml"))
+          if not files:
+              raise SystemExit("ERROR=AOI_WORKFLOW_FILES_MISSING")
+          for path in files:
+              with path.open(encoding="utf-8") as handle:
+                  yaml.compose(handle, Loader=yaml.BaseLoader)
+              print(f"YAML_SYNTAX_PASS={path}")
+          PY
+
+      - name: Test WKT parser, GOFF metadata-layer discovery, AOI discovery, validator identity and dashboard integrity
+        env:
+          PYTHONPATH: ${{ github.workspace }}/science-source/src
+        run: python -m pytest -q science-source/tests/test_aoi_wkt.py science-source/tests/test_goff_reader.py tools/tests/test_discover_aoi_products.py tools/tests/test_validate_aoi_derived_outputs.py tools/tests/test_plan_aoi_retries.py tools/tests/test_aggregate_aoi_run.py tools/tests/test_run_export_science_diagnostics.py

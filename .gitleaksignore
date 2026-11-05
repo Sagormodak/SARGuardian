@@ -1,0 +1,29 @@
+# Exact fingerprints of synthetic test identifiers and dummy Maps keys.
+# Reviewed in upstream security-scan-report.md; additional branch copies have identical five-line contexts.
+261e83d289e770af4ac766b0929d815981199e4a:Backend/tests/test_displacements.py:generic-api-key:383
+29025bd72e6e34438731b4233e389f9cf6afc01f:Frontend/src/api/catalog.test.ts:generic-api-key:21
+34d2d62b535a3660de08f92f08e053ec464db988:apps/api/tests/test_displacements.py:generic-api-key:132
+34d2d62b535a3660de08f92f08e053ec464db988:apps/api/tests/test_displacements.py:generic-api-key:393
+34d2d62b535a3660de08f92f08e053ec464db988:apps/api/tests/test_displacements.py:generic-api-key:76
+34d2d62b535a3660de08f92f08e053ec464db988:apps/api/tests/test_jobs.py:generic-api-key:112
+34d2d62b535a3660de08f92f08e053ec464db988:apps/api/tests/test_jobs.py:generic-api-key:128
+34d2d62b535a3660de08f92f08e053ec464db988:apps/api/tests/test_jobs.py:generic-api-key:57
+34d2d62b535a3660de08f92f08e053ec464db988:apps/api/tests/test_jobs.py:generic-api-key:94
+5b7d6edaea0381fad9ee2dbed762f1aa01967c9e:Backend/tests/test_main.py:generic-api-key:267
+5b7d6edaea0381fad9ee2dbed762f1aa01967c9e:Backend/tests/test_main.py:generic-api-key:278
+5b7d6edaea0381fad9ee2dbed762f1aa01967c9e:Backend/tests/test_main.py:generic-api-key:381
+7289f2f2221aa571fbf3f8e9be25049b1b8c90db:Frontend/src/api/catalog.test.ts:generic-api-key:21
+7289f2f2221aa571fbf3f8e9be25049b1b8c90db:Frontend/src/api/catalog.test.ts:generic-api-key:36
+95933fe87496e2c14cb2e7c1d27032e353da464b:Backend/tests/test_jobs.py:generic-api-key:112
+95933fe87496e2c14cb2e7c1d27032e353da464b:Backend/tests/test_jobs.py:generic-api-key:128
+95933fe87496e2c14cb2e7c1d27032e353da464b:Backend/tests/test_jobs.py:generic-api-key:57
+95933fe87496e2c14cb2e7c1d27032e353da464b:Backend/tests/test_jobs.py:generic-api-key:94
+9a7a4016d70ff2fa06d059392ab6c92a010acb31:Backend/tests/test_displacements.py:generic-api-key:58
+cbd261f87a2cc65dc9a45fa66484b6ed3ca67a90:Backend/tests/test_displacements.py:generic-api-key:383
+cbd261f87a2cc65dc9a45fa66484b6ed3ca67a90:Backend/tests/test_main.py:generic-api-key:267
+cbd261f87a2cc65dc9a45fa66484b6ed3ca67a90:Backend/tests/test_main.py:generic-api-key:278
+cbd261f87a2cc65dc9a45fa66484b6ed3ca67a90:Backend/tests/test_main.py:generic-api-key:381
+cbd261f87a2cc65dc9a45fa66484b6ed3ca67a90:Frontend/src/api/catalog.test.ts:generic-api-key:21
+cbd261f87a2cc65dc9a45fa66484b6ed3ca67a90:Frontend/src/api/catalog.test.ts:generic-api-key:36
+d214981da7063debfdd6911c0ed1e1d0c03b6b01:Frontend/src/api/catalog.test.ts:generic-api-key:21
+e79e64629cb82fc0b40ee2dc3050b3dad4e716b4:Backend/tests/test_displacements.py:generic-api-key:92

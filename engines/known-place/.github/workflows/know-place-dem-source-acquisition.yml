@@ -1,0 +1,201 @@
+name: Know Place — acquire public Copernicus GLO-90 source tiles
+
+on:
+  push:
+    branches:
+      - feat/know-place-analysis
+    paths:
+      - ".github/workflows/know-place-dem-source-acquisition.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: know-place-dem-source-acquisition
+  cancel-in-progress: false
+
+jobs:
+  acquire-and-hash-dem:
+    name: Download and verify 16 public terrain-source tiles
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out isolated Know Place branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install raster metadata reader
+        run: python -m pip install --disable-pip-version-check rasterio==1.4.3
+
+      - name: Download each current public GLO-90 tile once and record SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/know-place-dem-source"
+          TILES="$ROOT/tiles"
+          mkdir -p "$TILES"
+          python - "$TILES" "$ROOT" <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from urllib.parse import urlparse
+
+          tiles_dir = Path(sys.argv[1])
+          out_root = Path(sys.argv[2])
+          base = "https://copernicus-dem-90m.s3.eu-central-1.amazonaws.com/"
+          rows = []
+          # The author's prep_terrain.py describes a 4-degree x 4-degree
+          # tile mosaic covering 83–87 E and 27–31 N: 16 one-degree tiles.
+          for lat in range(27, 31):
+              for lon in range(83, 87):
+                  prefix = f"Copernicus_DSM_COG_30_N{lat:02d}_00_E{lon:03d}_00_DEM"
+                  url = base + prefix + "/" + prefix + ".tif"
+                  target = tiles_dir / (prefix + ".tif")
+                  # Exactly one download attempt; fail on any HTTP/network error.
+                  subprocess.run([
+                      "curl", "--fail", "--location", "--silent", "--show-error",
+                      "--connect-timeout", "20", "--max-time", "600",
+                      url, "--output", str(target)
+                  ], check=True)
+                  if not target.is_file() or target.stat().st_size == 0:
+                      raise SystemExit(f"ERROR=EMPTY_TILE:{prefix}")
+                  digest = hashlib.sha256()
+                  with target.open("rb") as stream:
+                      for block in iter(lambda: stream.read(1024 * 1024), b""):
+                          digest.update(block)
+                  rows.append({
+                      "tile_id": f"N{lat:02d}_E{lon:03d}",
+                      "south": lat, "north": lat + 1,
+                      "west": lon, "east": lon + 1,
+                      "file": target.name, "bytes": target.stat().st_size,
+                      "sha256": digest.hexdigest(),
+                      "source_url": url,
+                      "source_host": urlparse(url).hostname,
+                      "downloaded_at_utc": datetime.now(timezone.utc).isoformat(),
+                      "download_status": "DOWNLOADED_AND_SHA256_HASHED",
+                      "original_author_tile_identity": "UNVERIFIED_CURRENT_PUBLIC_MIRROR_COPY",
+                  })
+                  print(f"TILE_OK={prefix} bytes={target.stat().st_size} sha256={digest.hexdigest()}")
+          if len(rows) != 16:
+              raise SystemExit(f"ERROR=EXPECTED_16_TILES_GOT_{len(rows)}")
+          manifest = {
+              "schema_version": "know-place-copernicus-glo90-acquisition/1.0",
+              "status": "DOWNLOADED_SHA256_PINNED_PENDING_RASTER_PROFILE_CHECK",
+              "repository": "moshiour0/SARGuardian-backend",
+              "branch": os.environ.get("GITHUB_REF_NAME"),
+              "commit_sha": os.environ.get("GITHUB_SHA"),
+              "source_dataset": "Copernicus DEM GLO-90 / COP-DEM_GLO-90-DGED (public AWS mirror)",
+              "source_bucket": "s3://copernicus-dem-90m/",
+              "source_base_url": base,
+              "area_bbox_wgs84": {"west": 83, "south": 27, "east": 87, "north": 31},
+              "expected_tile_count": 16,
+              "tile_count": len(rows),
+              "tile_manifest": rows,
+              "vertical_reference_note": (
+                  "Copernicus DEM documentation specifies EGM2008 vertical reference. "
+                  "The TIFF profiles are inspected separately; no vertical transformation "
+                  "or datum correction is applied by this acquisition workflow."
+              ),
+              "provenance_limit": (
+                  "These are freshly retrieved current public-mirror tiles. Without the "
+                  "author's original 16 input-file hashes or original tile copies, this "
+                  "does not establish byte identity with the tiles used in the paper."
+              ),
+              "licence_and_attribution": (
+                  "Copernicus DEM GLO-90 free-use terms apply. Attribute the adapted DEM "
+                  "as: produced using Copernicus WorldDEM-90 © DLR e.V. 2010-2014 and "
+                  "© Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS "
+                  "by the European Union and ESA; all rights reserved."
+              ),
+              "documentation": [
+                  "https://copernicus-dem-90m.s3.amazonaws.com/readme.html",
+                  "https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM",
+                  "https://doi.org/10.5270/ESA-c5d3d65"
+              ],
+              "raw_nisar_goff_downloaded": False,
+              "hazard_detection_status": "NOT_EVALUATED",
+          }
+          out_root.mkdir(parents=True, exist_ok=True)
+          (out_root / "copernicus-glo90-source-manifest.json").write_text(
+              json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Verify all tile raster profiles and geographic bounds
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT="$RUNNER_TEMP/know-place-dem-source"
+          python - "$ROOT/tiles" "$ROOT/copernicus-glo90-source-manifest.json" <<'PY'
+          import json
+          import math
+          import sys
+          from pathlib import Path
+          import rasterio
+
+          tiles_dir = Path(sys.argv[1])
+          manifest_path = Path(sys.argv[2])
+          data = json.loads(manifest_path.read_text(encoding="utf-8"))
+          checked = []
+          for row in data["tile_manifest"]:
+              path = tiles_dir / row["file"]
+              with rasterio.open(path) as src:
+                  if src.count != 1:
+                      raise SystemExit(f"ERROR=EXPECTED_SINGLE_BAND:{path.name}:{src.count}")
+                  if src.crs is None or not src.crs.is_geographic:
+                      raise SystemExit(f"ERROR=EXPECTED_GEOGRAPHIC_CRS:{path.name}:{src.crs}")
+                  b = src.bounds
+                  if not (
+                      math.isclose(b.left, row["west"], abs_tol=0.02)
+                      and math.isclose(b.right, row["east"], abs_tol=0.02)
+                      and math.isclose(b.bottom, row["south"], abs_tol=0.02)
+                      and math.isclose(b.top, row["north"], abs_tol=0.02)
+                  ):
+                      raise SystemExit(f"ERROR=TILE_BOUNDS_MISMATCH:{path.name}:{b}")
+                  row["raster_profile"] = {
+                      "driver": src.driver, "width": src.width, "height": src.height,
+                      "count": src.count, "dtype": src.dtypes[0], "crs": src.crs.to_string(),
+                      "bounds": {"left": b.left, "bottom": b.bottom, "right": b.right, "top": b.top},
+                      "transform": list(src.transform)[:6],
+                      "nodata": src.nodata,
+                  }
+                  checked.append(path.name)
+                  print(f"RASTER_PROFILE_PASS={path.name} {src.width}x{src.height} {src.crs}")
+          if len(checked) != 16:
+              raise SystemExit(f"ERROR=EXPECTED_16_PROFILE_CHECKS_GOT_{len(checked)}")
+          data["status"] = "PASS_16_TILES_DOWNLOADED_HASHED_AND_RASTER_PROFILE_CHECKED"
+          data["profile_checked_count"] = len(checked)
+          manifest_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+          print("DEM_SOURCE_ACQUISITION=PASS")
+          print("DEM_TILE_COUNT=16")
+          print("RAW_NISAR_GOFF_DOWNLOADS=0")
+          PY
+          {
+            echo "## Copernicus GLO-90 source acquisition"
+            echo
+            echo "- Sixteen public tiles were downloaded once each, SHA-256 pinned, and checked for CRS and expected one-degree bounds."
+            echo "- Original author tile byte identity remains unverified; no vertical transformation was applied."
+            echo "- Raw NISAR GOFF downloads: 0."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload verified source tiles and manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: know-place-copernicus-glo90-source-tiles-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/know-place-dem-source/tiles/*.tif
+            ${{ runner.temp }}/know-place-dem-source/copernicus-glo90-source-manifest.json
+          if-no-files-found: error
+          retention-days: 30

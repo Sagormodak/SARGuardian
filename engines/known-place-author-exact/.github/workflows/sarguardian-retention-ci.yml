@@ -1,0 +1,76 @@
+name: SARGuardian retention and streaming regression tests
+
+on:
+  pull_request:
+    paths:
+      - "tools/**"
+      - "tests/**"
+      - ".github/workflows/**"
+      - "requirements*.txt"
+  push:
+    branches:
+      - main
+      - feat/streaming-science-pipeline
+      - feat/known-place-independent-reference-20261102
+    paths:
+      - "tools/**"
+      - "tests/**"
+      - ".github/workflows/**"
+      - "requirements*.txt"
+
+permissions:
+  contents: read
+
+jobs:
+  regression-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install backend and data-retention test dependencies without pip cache
+        run: |
+          python -m pip install --disable-pip-version-check --no-cache-dir -r requirements-dev.txt
+          python -m pip install --disable-pip-version-check --no-cache-dir -r tools/requirements-retention.txt
+          # The repository-wide regression suite also collects Known Place and
+          # dashboard geospatial tests; install their pinned runtime dependencies.
+          python -m pip install --disable-pip-version-check --no-cache-dir -r tools/know_place/requirements.txt pillow matplotlib
+      - name: Compile Python tools and tests
+        run: python -m compileall -q tools tests
+      - name: Run repository regression suite
+        run: python -m pytest -q
+      - name: Check workflow YAML syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path); puts "YAML_PARSE_PASS=#{path}" }' \
+            .github/workflows/sarguardian-retention-pilot.yml \
+            .github/workflows/sarguardian-product-worker.yml \
+            .github/workflows/sarguardian-streaming-batch.yml \
+            .github/workflows/sarguardian-reassemble-existing.yml \
+            .github/workflows/sarguardian-live-validation.yml \
+            .github/workflows/sarguardian-retention-ci.yml
+
+  pinned-science-regression:
+    name: Test the maintained SARGuardian science engine
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout pinned science repository
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian
+          # Test the maintained upstream suite; the live baseline workflow remains immutably pinned for reproducibility.
+          ref: 9fcb543ef28a7f6fe70a379aed9cfe3e43e277ec
+          path: science-source
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install the science engine's pinned dependencies
+        run: python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r science-source/requirements.txt
+      - name: Run the full pinned scientific test suite
+        working-directory: science-source
+        run: python -m pytest tests/ -q

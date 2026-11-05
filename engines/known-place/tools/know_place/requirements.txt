@@ -1,0 +1,10 @@
+# Know Place AOI runner runtime.
+# Major numerical/archive dependencies align with the verified catalog workflow.
+# The runner records exact installed package versions in every run manifest.
+numpy==2.4.6
+h5py==3.16.0
+scipy==1.18.1
+asf_search==13.0.1
+rasterio>=1.4.4,<2
+affine>=2.4,<3
+pyproj>=3.7,<4

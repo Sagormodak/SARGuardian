@@ -1,0 +1,507 @@
+import { resolveApiBaseUrl } from './apiOrigin';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  createQueuedJob,
+  createRiverShiftJob,
+  downloadDisplacementArtifact,
+  getDisplacementJob,
+  getInteractiveDashboardHtml,
+  getProcessingJob,
+  listDisplacementJobs,
+  listProcessingJobs,
+  listRiverShiftJobs,
+  searchNisarCatalog,
+} from './catalog';
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
+
+describe('Authenticated interactive dashboard API contract', () => {
+  const user = { getIdToken: vi.fn().mockResolvedValue('firebase-id-token') };
+
+  const healthyResponse = () => ({
+    ok: true,
+    status: 200,
+    headers: { get: vi.fn().mockReturnValue('application/json; charset=utf-8') },
+    json: async () => ({ status: 'ok', service: 'sarguardian-catalogue-api' }),
+  });
+
+  it('sends the Firebase token and the same restricted Google Maps browser key as AOI selection', async () => {
+    vi.stubEnv('VITE_GOOGLE_MAPS_API_KEY', 'AIzaSyFakeRestrictedKey123456789012345');
+    const html = '<!doctype html><html><body>dashboard</body></html>';
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(healthyResponse())
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: { get: vi.fn().mockReturnValue('text/html; charset=utf-8') },
+        text: async () => html,
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getInteractiveDashboardHtml('736bd4e6-8963-43be-a916-bc62336c8557', user)).resolves.toBe(html);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/health');
+    expect(fetchMock.mock.calls[0][1].cache).toBe('no-store');
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      'http://localhost:8000/api/displacement-jobs/736bd4e6-8963-43be-a916-bc62336c8557/dashboard',
+    );
+    expect(fetchMock.mock.calls[1][1].headers).toEqual({
+      Authorization: 'Bearer firebase-id-token',
+      Accept: 'text/html',
+      'X-SARGuardian-Google-Maps-Key': 'AIzaSyFakeRestrictedKey123456789012345',
+    });
+    expect(fetchMock.mock.calls[1][1].cache).toBe('no-store');
+  });
+  it('retries the API wake-up after a Render cold-start response before fetching the saved dashboard', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('VITE_GOOGLE_MAPS_API_KEY', 'AIzaSyFakeRestrictedKey123456789012345');
+    const html = '<!doctype html><html><body>dashboard</body></html>';
+    const statuses: string[] = [];
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        headers: { get: vi.fn().mockReturnValue('text/html') },
+      })
+      .mockResolvedValueOnce(healthyResponse())
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: { get: vi.fn().mockReturnValue('text/html; charset=utf-8') },
+        text: async () => html,
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const pending = getInteractiveDashboardHtml(
+      '736bd4e6-8963-43be-a916-bc62336c8557',
+      user,
+      (message) => statuses.push(message),
+    );
+    await vi.runAllTimersAsync();
+
+    await expect(pending).resolves.toBe(html);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/health');
+    expect(fetchMock.mock.calls[1][0]).toBe('http://localhost:8000/health');
+    expect(fetchMock.mock.calls[2][0]).toContain('/api/displacement-jobs/');
+    expect(statuses.some((message) => message.includes('Waking the result service'))).toBe(true);
+    expect(statuses[statuses.length - 1]).toContain('Retrieving the saved result');
+  });
+
+  it('retries transient Drive-backed dashboard failures without dispatching another workflow', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('VITE_GOOGLE_MAPS_API_KEY', 'AIzaSyFakeRestrictedKey123456789012345');
+    const html = '<!doctype html><html><body>dashboard</body></html>';
+    const statuses: string[] = [];
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(healthyResponse())
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        json: async () => ({ detail: 'Private dashboard storage is unavailable. Retry in a moment.' }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: { get: vi.fn().mockReturnValue('text/html; charset=utf-8') },
+        text: async () => html,
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const pending = getInteractiveDashboardHtml(
+      '736bd4e6-8963-43be-a916-bc62336c8557',
+      user,
+      (message) => statuses.push(message),
+    );
+    await vi.runAllTimersAsync();
+
+    await expect(pending).resolves.toBe(html);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/health');
+    expect(fetchMock.mock.calls[1][0]).toContain('/dashboard');
+    expect(fetchMock.mock.calls[2][0]).toContain('/dashboard');
+    expect(statuses.some((message) => message.includes('Retrying saved dashboard retrieval'))).toBe(true);
+  });
+
+  it('does not request dashboard HTML when the frontend Maps key is missing', async () => {
+    vi.stubEnv('VITE_GOOGLE_MAPS_API_KEY', '');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getInteractiveDashboardHtml('736bd4e6-8963-43be-a916-bc62336c8557', user))
+      .rejects.toThrow('Google Maps is not configured');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+});
+
+describe('Owner-authenticated archived artifact download API contract', () => {
+  const jobId = '736bd4e6-8963-43be-a916-bc62336c8557';
+  const user = { getIdToken: vi.fn().mockResolvedValue('firebase-id-token') };
+
+  it('streams a retained result bundle through the account API, not a private Drive URL', async () => {
+    const bundle = new Blob(['verified result bundle'], { type: 'application/zip' });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true, status: 200,
+        headers: { get: vi.fn().mockReturnValue('application/json') },
+        json: async () => ({ status: 'ok' }),
+      })
+      .mockResolvedValueOnce({ ok: true, blob: async () => bundle });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(downloadDisplacementArtifact(jobId, 2, user)).resolves.toBe(bundle);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/health');
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      `http://localhost:8000/api/displacement-jobs/${jobId}/artifacts/2`,
+    );
+    expect(fetchMock.mock.calls[1][1].headers).toEqual({
+      Authorization: 'Bearer firebase-id-token',
+    });
+  });
+
+  it('retries a transient private-Drive artifact response without repeating scientific processing', async () => {
+    vi.useFakeTimers();
+    const bundle = new Blob(['verified result bundle'], { type: 'application/zip' });
+    const statuses: string[] = [];
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: vi.fn().mockReturnValue('application/json') },
+        json: async () => ({ status: 'ok' }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        json: async () => ({ detail: 'Private result storage is unavailable. Retry the download.' }),
+      })
+      .mockResolvedValueOnce({ ok: true, blob: async () => bundle });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const pending = downloadDisplacementArtifact(jobId, 2, user, (message) => statuses.push(message));
+    await vi.runAllTimersAsync();
+
+    await expect(pending).resolves.toBe(bundle);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/health');
+    expect(fetchMock.mock.calls[1][0]).toContain('/artifacts/2');
+    expect(fetchMock.mock.calls[2][0]).toContain('/artifacts/2');
+    expect(statuses.some((message) => message.includes('Retrying saved result package retrieval'))).toBe(true);
+  });
+
+  it('surfaces private-storage authorization failures to the Archive UI', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: { get: vi.fn().mockReturnValue('application/json') },
+        json: async () => ({ status: 'ok' }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        json: async () => ({ detail: 'This result belongs to another account.' }),
+      });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(downloadDisplacementArtifact(jobId, 0, user))
+      .rejects.toThrow('This result belongs to another account.');
+  });
+});
+
+describe('NISAR catalogue preflight API contract', () => {
+  const user = { getIdToken: vi.fn().mockResolvedValue('firebase-id-token') };
+
+  it('sends the manually drawn polygon coordinates unchanged', async () => {
+    const response = {
+      mode: 'catalog-preflight-only',
+      checked_at: '2026-10-15T00:00:00Z',
+      data_downloaded: false,
+      scientific_analysis_performed: false,
+      query: { platform: 'NISAR', product_type: 'GUNW', start_date: '2026-08-01', end_date: '2026-08-15', aoi_area_km2: 1 },
+      product_count: 0,
+      truncated: false,
+      products_with_unknown_size: 0,
+      estimated_full_granule_volume_gib: 0,
+      estimated_full_granule_volume_is_complete: true,
+      products: [],
+      next_step: 'none',
+      warnings: [],
+    };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => response });
+    vi.stubGlobal('fetch', fetchMock);
+    const coordinates = [[85.3, 27.7], [85.301, 27.7], [85.301, 27.701], [85.3, 27.7]] as [number, number][];
+
+    await searchNisarCatalog({ coordinates, startDate: '2026-08-01', endDate: '2026-08-15', productType: 'GUNW' }, user);
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).coordinates).toEqual(coordinates);
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer firebase-id-token',
+    });
+    expect(user.getIdToken).toHaveBeenCalledOnce();
+  });
+
+  it('supports the GOFF product family requested by the catalogue toggle', async () => {
+    const response = {
+      mode: 'catalog-preflight-only', checked_at: '2026-10-15T00:00:00Z', data_downloaded: false, scientific_analysis_performed: false,
+      query: { platform: 'NISAR', product_type: 'GOFF', start_date: '2026-08-01', end_date: '2026-08-15', aoi_area_km2: 1 },
+      product_count: 0, truncated: false, products_with_unknown_size: 0, estimated_full_granule_volume_gib: 0,
+      estimated_full_granule_volume_is_complete: true, products: [], next_step: 'none', warnings: [],
+    };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => response });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await searchNisarCatalog({
+      coordinates: [[85.3, 27.7], [85.301, 27.7], [85.301, 27.701], [85.3, 27.7]],
+      startDate: '2026-08-01', endDate: '2026-08-15', productType: 'GOFF',
+    }, user);
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).product_type).toBe('GOFF');
+  });
+
+  it('requests both GUNW and GOFF metadata when the Both archive control is selected', async () => {
+    const response = {
+      mode: 'catalog-preflight-only', checked_at: '2026-10-15T00:00:00Z', data_downloaded: false, scientific_analysis_performed: false,
+      query: { platform: 'NISAR', product_type: 'BOTH', start_date: '2026-08-01', end_date: '2026-08-15', aoi_area_km2: 1 },
+      product_count: 0, truncated: false, products_with_unknown_size: 0, estimated_full_granule_volume_gib: 0,
+      estimated_full_granule_volume_is_complete: true, products: [], next_step: 'none', warnings: [],
+    };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => response });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await searchNisarCatalog({
+      coordinates: [[85.3, 27.7], [85.301, 27.7], [85.301, 27.701], [85.3, 27.7]],
+      startDate: '2026-08-01', endDate: '2026-08-15', productType: 'BOTH',
+    }, user);
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).product_type).toBe('BOTH');
+  });
+
+  it('surfaces an archive API failure to the caller', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      json: async () => ({ detail: 'Archive service unavailable.' }),
+    }));
+
+    await expect(searchNisarCatalog({
+      coordinates: [[85.3, 27.7], [85.301, 27.7], [85.301, 27.701], [85.3, 27.7]],
+      startDate: '2026-08-01',
+      endDate: '2026-08-15',
+      productType: 'GUNW',
+    }, user)).rejects.toThrow('Archive service unavailable.');
+  });
+
+  it('uses the compact user-facing message when the archive cannot be reached', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network unavailable')));
+
+    await expect(searchNisarCatalog({
+      coordinates: [[85.3, 27.7], [85.301, 27.7], [85.301, 27.701], [85.3, 27.7]],
+      startDate: '2026-08-01',
+      endDate: '2026-08-15',
+      productType: 'GUNW',
+    }, user)).rejects.toThrow('Could not reach the NISAR archive. Check your connection or try again.');
+  });
+
+  it('reports missing authentication and token failures without requesting the API', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const input = {
+      coordinates: [[85.3, 27.7], [85.301, 27.7], [85.301, 27.701], [85.3, 27.7]] as [number, number][],
+      startDate: '2026-08-01',
+      endDate: '2026-08-15',
+      productType: 'GUNW' as const,
+    };
+
+    await expect(searchNisarCatalog(input, null)).rejects.toThrow('Sign in before checking');
+    const tokenFailureUser = { getIdToken: vi.fn().mockRejectedValue(new Error('expired')) };
+    await expect(searchNisarCatalog(input, tokenFailureUser)).rejects.toThrow('Firebase sign-in token');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('creates a confirmed queued job with the Firebase bearer token', async () => {
+    const response = {
+      id: 'job-1',
+      owner_uid: 'firebase-user',
+      preflight_id: 'preflight-1',
+      product_family: 'GUNW',
+      state: 'queued',
+      request_snapshot: {},
+      manifest_snapshot: {},
+      created_at: '2026-10-15T00:00:00Z',
+      updated_at: '2026-10-15T00:00:00Z',
+    };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => response });
+    vi.stubGlobal('fetch', fetchMock);
+    const jobUser = { getIdToken: vi.fn().mockResolvedValue('firebase-id-token') };
+
+    await createQueuedJob('preflight-1', 'sarguardian-idempotency-001', jobUser);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/api/jobs');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({
+      preflight_id: 'preflight-1',
+      idempotency_key: 'sarguardian-idempotency-001',
+      confirm: true,
+    });
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer firebase-id-token',
+    });
+  });
+
+  it('loads owner-scoped job list and detail through the existing endpoints', async () => {
+    const job = { id: 'job-1', state: 'queued' };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [job] })
+      .mockResolvedValueOnce({ ok: true, json: async () => job });
+    vi.stubGlobal('fetch', fetchMock);
+    const jobUser = { getIdToken: vi.fn().mockResolvedValue('firebase-id-token') };
+
+    await listProcessingJobs(jobUser);
+    await getProcessingJob('job-1', jobUser);
+
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/api/jobs');
+    expect(fetchMock.mock.calls[1][0]).toBe('http://localhost:8000/api/jobs/job-1');
+  });
+
+  it('bypasses browser caches when refreshing displacement status', async () => {
+    const job = { id: 'displacement-1', state: 'running' };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => [job] })
+      .mockResolvedValueOnce({ ok: true, json: async () => job });
+    vi.stubGlobal('fetch', fetchMock);
+    const jobUser = { getIdToken: vi.fn().mockResolvedValue('firebase-id-token') };
+
+    await listDisplacementJobs(jobUser);
+    await getDisplacementJob('displacement-1', jobUser);
+
+    expect(fetchMock.mock.calls[0][1].cache).toBe('no-store');
+    expect(fetchMock.mock.calls[1][1].cache).toBe('no-store');
+  });
+
+  it('does not request job creation without an authenticated user', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(createQueuedJob('preflight-1', 'sarguardian-idempotency-001', null)).rejects.toThrow('Sign in');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('submits the exact RiverShift discovery filters with the authenticated processing request', async () => {
+    const job = { id: 'river-job-1', state: 'dispatching' };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => job });
+    vi.stubGlobal('fetch', fetchMock);
+    const jobUser = { getIdToken: vi.fn().mockResolvedValue('firebase-id-token') };
+
+    await expect(createRiverShiftJob({
+      aoiWkt: 'POLYGON ((89 25, 89.1 25, 89.1 25.1, 89 25))',
+      startDate: '2026-06-20',
+      endDate: '2026-09-18',
+      analysisMode: 'event_based',
+      eventDate: '2026-07-23',
+      maturity: 'PROVISIONAL',
+      mainBandPolarization: 'HH+HV',
+      flightDirection: 'DESCENDING',
+      frameCoverage: 'FULL',
+      frequency: 'frequencyA',
+      covarianceTerm: 'HHHH',
+      thresholdMethod: 'otsu',
+      idempotencyKey: 'river-shift-request-0001',
+    }, jobUser)).resolves.toEqual(job);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/api/river-shift/jobs');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      aoi_wkt: 'POLYGON ((89 25, 89.1 25, 89.1 25.1, 89 25))',
+      start_date: '2026-06-20',
+      end_date: '2026-09-18',
+      analysis_mode: 'event_based',
+      event_date: '2026-07-23',
+      maturity: 'PROVISIONAL',
+      main_band_polarization: 'HH+HV',
+      flight_direction: 'DESCENDING',
+      frame_coverage: 'FULL',
+      frequency: 'frequencyA',
+      covariance_term: 'HHHH',
+      threshold_method: 'otsu',
+      threshold_db: null,
+      idempotency_key: 'river-shift-request-0001',
+    });
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer firebase-id-token',
+    });
+  });
+
+  it('submits a General River Change Scan without an Event Date', async () => {
+    const job = { id: 'river-general-1', state: 'dispatching' };
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => job });
+    vi.stubGlobal('fetch', fetchMock);
+    const jobUser = { getIdToken: vi.fn().mockResolvedValue('firebase-id-token') };
+
+    await expect(createRiverShiftJob({
+      aoiWkt: 'POLYGON ((89 25, 89.1 25, 89.1 25.1, 89 25.1, 89 25))',
+      startDate: '2026-06-20',
+      endDate: '2026-09-18',
+      analysisMode: 'general_scan',
+      eventDate: null,
+      maturity: 'PROVISIONAL',
+      mainBandPolarization: null,
+      flightDirection: null,
+      frameCoverage: 'ALL',
+      frequency: 'frequencyA',
+      covarianceTerm: 'HHHH',
+      thresholdMethod: 'otsu',
+      idempotencyKey: 'river-general-request-0001',
+    }, jobUser)).resolves.toEqual(job);
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.analysis_mode).toBe('general_scan');
+    expect(body.event_date).toBeNull();
+  });
+
+  it('restores the most recent River Shift jobs through an owner-authenticated no-store request', async () => {
+    const jobs = [{ id: 'river-job-1', state: 'running' }];
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => jobs });
+    vi.stubGlobal('fetch', fetchMock);
+    const jobUser = { getIdToken: vi.fn().mockResolvedValue('firebase-id-token') };
+
+    await expect(listRiverShiftJobs(jobUser, 7)).resolves.toEqual(jobs);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toBe('http://localhost:8000/api/river-shift/jobs?limit=7');
+    expect(fetchMock.mock.calls[0][1].cache).toBe('no-store');
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer firebase-id-token',
+    });
+  });
+
+});
+
+
+describe('API base URL environment fallback', () => {
+  it('keeps the local API origin for development when no override exists', () => {
+    expect(resolveApiBaseUrl(undefined, true)).toBe('http://localhost:8000');
+  });
+
+  it('uses the deployed API origin outside development when no override exists', () => {
+    expect(resolveApiBaseUrl(undefined, false)).toBe('https://sarguardian-backend-api.vercel.app');
+  });
+
+  it('prefers an explicit project environment override in every environment', () => {
+    expect(resolveApiBaseUrl('https://api.example.test///', false)).toBe('https://api.example.test');
+    expect(resolveApiBaseUrl(' https://api.example.test/ ', true)).toBe('https://api.example.test');
+  });
+
+  it('rejects an explicitly configured empty or whitespace-only URL by using the environment fallback', () => {
+    expect(resolveApiBaseUrl('   ', false)).toBe('https://sarguardian-backend-api.vercel.app');
+  });
+});

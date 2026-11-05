@@ -1,0 +1,33 @@
+--- source/Backend/app/known_place.py
++++ apps/dynamic/Backend/app/known_place.py
+@@ -14,6 +14,7 @@
+ from zipfile import BadZipFile, ZipFile
+ import json
+ import math
++import os
+ import re
+ from typing import Any, Literal
+ from urllib.error import HTTPError, URLError
+@@ -27,18 +28,18 @@
+ from science_adapter.geometry import validate_wkt
+ 
+ # Generic two-polygon measurement runs in the scientific backend repository.
+-KNOWN_PLACE_REPOSITORY = "moshiour0/SARGuardian-backend"
++KNOWN_PLACE_REPOSITORY = os.getenv("KNOWN_PLACE_REPOSITORY", "moshiour0/SARGuardian-backend").strip()
+ KNOWN_PLACE_WORKFLOW = "know-place-aoi-dispatcher.yml"
+-KNOWN_PLACE_REF = "main"
++KNOWN_PLACE_REF = os.getenv("KNOWN_PLACE_REF", "main").strip()
+ KNOWN_PLACE_WORKFLOW_PAGE = (
+     f"https://github.com/{KNOWN_PLACE_REPOSITORY}/actions/workflows/{KNOWN_PLACE_WORKFLOW}"
+ )
+ 
+ # The fixed author-exact paper launcher remains separate from the generic AOI workflow,
+ # but its entry point lives in the backend repository covered by the server Actions token.
+-KNOWN_PLACE_PAPER_REPOSITORY = "moshiour0/SARGuardian-backend"
++KNOWN_PLACE_PAPER_REPOSITORY = os.getenv("KNOWN_PLACE_PAPER_REPOSITORY", KNOWN_PLACE_REPOSITORY).strip()
+ KNOWN_PLACE_PAPER_WORKFLOW = "know-place-paper-reproduction-dispatcher.yml"
+-KNOWN_PLACE_PAPER_REF = "main"
++KNOWN_PLACE_PAPER_REF = os.getenv("KNOWN_PLACE_PAPER_REF", KNOWN_PLACE_REF).strip()
+ KNOWN_PLACE_PAPER_WORKFLOW_PAGE = (
+     f"https://github.com/{KNOWN_PLACE_PAPER_REPOSITORY}/actions/workflows/{KNOWN_PLACE_PAPER_WORKFLOW}"
+ )

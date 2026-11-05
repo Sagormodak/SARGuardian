@@ -1,0 +1,50 @@
+{
+  "schema_version": "know-place-aoi-request/1.0",
+  "aoi": {
+    "type": "Polygon",
+    "crs": "EPSG:4326",
+    "wkt": "POLYGON ((85.524500000 28.284700000, 85.540000000 28.284700000, 85.540000000 28.297000000, 85.524500000 28.297000000, 85.524500000 28.284700000))"
+  },
+  "date_range": {
+    "start": "2026-06-20",
+    "end": "2026-08-31",
+    "inclusive": true
+  },
+  "hazard_mode": "ice_rock_avalanche",
+  "analysis_mode": "retrospective_validation",
+  "source_adapters": [
+    "NISAR_GOFF"
+  ],
+  "polarization": "HH",
+  "product_selection": {
+    "track": "098",
+    "direction": "A",
+    "preferred_granules": [
+      "NISAR_L2_PR_GOFF_023_098_A_016_024_4000_SH_20260620T233921_20260620T233956_20260702T233920_20260702T233955_X05026_N_F_J_001.h5",
+      "NISAR_L2_PR_GOFF_024_098_A_016_025_4000_SH_20260702T233920_20260702T233955_20260714T233920_20260714T233954_P05023_F_F_J_001.h5",
+      "NISAR_L2_PR_GOFF_025_098_A_016_026_4000_SH_20260714T233920_20260714T233954_20260726T233919_20260726T233954_P05023_N_F_J_001.h5",
+      "NISAR_L2_PR_GOFF_026_098_A_016_028_4000_SH_20260726T233919_20260726T233954_20260819T233918_20260819T233953_P05023_N_F_J_001.h5",
+      "NISAR_L2_PR_GOFF_028_098_A_016_029_4000_SH_20260819T233918_20260819T233953_20260831T233918_20260831T233952_P05023_N_F_J_001.h5"
+    ],
+    "allowed_maturities": [
+      "PROVISIONAL"
+    ]
+  },
+  "reference": {
+    "policy": "external_reference_polygon_component_median",
+    "polygon_wkt": "POLYGON ((85.500000000 28.265000000, 85.565000000 28.265000000, 85.565000000 28.318000000, 85.500000000 28.318000000, 85.500000000 28.265000000))",
+    "fallback_buffer_m": 2000
+  },
+  "geometry_policy": {
+    "constant_hae_m": 5151
+  },
+  "quality_policy": {
+    "minimum_snr": 5,
+    "maximum_horizontal_magnitude_m": 10,
+    "magnitude_policy": "reject_above_threshold"
+  },
+  "coherence_policy": {
+    "window_size": 5,
+    "minimum_valid_neighbours": 1
+  }
+}

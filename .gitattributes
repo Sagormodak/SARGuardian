@@ -1,0 +1,2 @@
+# Preserve imported bytes on every platform; do not normalize scientific fixtures.
+* -text

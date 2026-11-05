@@ -1,0 +1,161 @@
+{
+  "schema_version": "know-place-author-exact-raw-replay-audit/1.0",
+  "run_id": 40114703362,
+  "run_url": "https://github.com/moshiour0/SARGuardian-backend/actions/runs/40114703362",
+  "run_result": "success",
+  "run_started_at_utc": "2026-10-24T17:07:42Z",
+  "run_completed_at_utc": "2026-10-24T17:09:48Z",
+  "run_commit": "3b01615c7dfce923efc241eb45af2133c05fd5fb",
+  "branch": "feat/know-place-analysis",
+  "main_sha": "2218dfeb73353080d8d94bd733d9e7bd9a848886",
+  "consent_marker": "[run-know-place]",
+  "run_profile": "author-exact-p05023",
+  "analysis_mode": "exploratory",
+  "geometry_height_m": 5151,
+  "control_seed": 260826,
+  "requested_control_draws": 1000,
+  "source_manifest_sha256": "69947d44fa7d332bc02b2c4c79143ab00eec34bf8e3acc5c3198793b9212d1b5",
+  "config_sha256": "eba3f0f66b84f66f634ffbf4c6e71be181f9799b7808de6e7a75b3a10f0aa787",
+  "acquisition_module_sha256": "f8b6f7225399e478a1f2fa2716479a97d8031b346155d6093e0e02c0e728c2af",
+  "total_source_bytes": 5473566720,
+  "grid_contract": {
+    "width": 4311,
+    "height": 4230,
+    "epsg": 32645,
+    "x_posting_m": 80,
+    "y_posting_m": -80,
+    "products_downloaded": 5,
+    "source_sha256_count": 5,
+    "products_grid_validated": 5
+  },
+  "source_products": [
+    {
+      "interval": "2026-06-20/2026-07-02",
+      "cmr_id": "G4248299988-ASF",
+      "granule_name": "NISAR_L2_PR_GOFF_023_098_A_016_024_4000_SH_20260620T233921_20260620T233956_20260702T233920_20260702T233955_P05023_N_F_J_001",
+      "bytes": 1090519040,
+      "sha256": "d3670f0504576feac52f75a7e8f0ff12f5f5c2ef676a0329a16f66cb91300f05"
+    },
+    {
+      "interval": "2026-07-02/2026-07-14",
+      "cmr_id": "G4261120661-ASF",
+      "granule_name": "NISAR_L2_PR_GOFF_024_098_A_016_025_4000_SH_20260702T233920_20260702T233955_20260714T233920_20260714T233954_P05023_F_F_J_001",
+      "bytes": 1090519040,
+      "sha256": "8a947f7fa4458afb564431514f36950a89e004d79e6f0e6bfb7461f7e867123c"
+    },
+    {
+      "interval": "2026-07-14/2026-07-26",
+      "cmr_id": "G4264302811-ASF",
+      "granule_name": "NISAR_L2_PR_GOFF_025_098_A_016_026_4000_SH_20260714T233920_20260714T233954_20260726T233919_20260726T233954_P05023_N_F_J_001",
+      "bytes": 1092616192,
+      "sha256": "ac3eb50eb5c35cb70769b44492398d6b212e880b70558d4d7d2376c5d8e49313"
+    },
+    {
+      "interval": "2026-07-26/2026-08-19",
+      "cmr_id": "G4286855543-ASF",
+      "granule_name": "NISAR_L2_PR_GOFF_026_098_A_016_028_4000_SH_20260726T233919_20260726T233954_20260819T233918_20260819T233953_P05023_N_F_J_001",
+      "bytes": 1101004800,
+      "sha256": "45e4641da04f235941b1e88262961e9e62ca05ce3ceb35fdac452649b13e416f"
+    },
+    {
+      "interval": "2026-08-19/2026-08-31",
+      "cmr_id": "G4296814366-ASF",
+      "granule_name": "NISAR_L2_PR_GOFF_028_098_A_016_029_4000_SH_20260819T233918_20260819T233953_20260831T233918_20260831T233952_P05023_N_F_J_001",
+      "bytes": 1098907648,
+      "sha256": "4dbe3d82c2e03422abf9fc3ead2ad70c0734a80ec52cad87cd6659716fce5371"
+    }
+  ],
+  "metrics": [
+    {
+      "interval": "2026-06-20/2026-07-02",
+      "valid_crown_pixels": 283,
+      "crown_median_horizontal_magnitude_m": 0.9943123547961075,
+      "crown_mean_vector_magnitude_m": 0.9147599456003104,
+      "crown_mean_vector_azimuth_deg": 293.8212007138621,
+      "crown_median_directional_coherence_R": 0.7347061972972475
+    },
+    {
+      "interval": "2026-07-02/2026-07-14",
+      "valid_crown_pixels": 294,
+      "crown_median_horizontal_magnitude_m": 0.5411068848780846,
+      "crown_mean_vector_magnitude_m": 0.6837518707256515,
+      "crown_mean_vector_azimuth_deg": 279.7022410440213,
+      "crown_median_directional_coherence_R": 0.5858313029999391
+    },
+    {
+      "interval": "2026-07-14/2026-07-26",
+      "valid_crown_pixels": 296,
+      "crown_median_horizontal_magnitude_m": 0.29529859448471285,
+      "crown_mean_vector_magnitude_m": 0.7457728751950973,
+      "crown_mean_vector_azimuth_deg": 273.99772806850154,
+      "crown_median_directional_coherence_R": 0.5863381199446323
+    },
+    {
+      "interval": "2026-07-26/2026-08-19",
+      "valid_crown_pixels": 292,
+      "crown_median_horizontal_magnitude_m": 0.9660632427418332,
+      "crown_mean_vector_magnitude_m": 1.7222463853055725,
+      "crown_mean_vector_azimuth_deg": 277.79338622423063,
+      "crown_median_magnitude_rate_m_per_day": 0.04025263511424305,
+      "crown_median_directional_coherence_R": 0.8528504684137075,
+      "reference_box_median_directional_coherence_R": 0.6813258169445546,
+      "pointwise_window_R": 0.8689953135817299,
+      "pointwise_window_centres": 150
+    },
+    {
+      "interval": "2026-08-19/2026-08-31",
+      "valid_crown_pixels": 195,
+      "crown_median_horizontal_magnitude_m": 0.3278405131580561,
+      "crown_mean_vector_magnitude_m": 0.6931926635612814,
+      "crown_mean_vector_azimuth_deg": 276.8350212942991,
+      "crown_median_directional_coherence_R": 0.4894286058730235
+    }
+  ],
+  "control_diagnostics": {
+    "accepted_draws": 638,
+    "rejected_draws": 362,
+    "control_median_of_median_displacement_m": 0.12781193244378536,
+    "displacement_empirical_percentile": 96.08150470219435,
+    "directional_coherence_empirical_percentile": 89.0282131661442,
+    "method_label": "exploratory deterministic circular controls; author supplement equivalence unverified"
+  },
+  "derived_github_artifact": {
+    "id": 12567509703,
+    "name": "know-place-author-exact-40114703362-1",
+    "bytes": 830510,
+    "sha256": "d49b6aa10da27138de6b8b8f2af6a4b5d3ffd86a8ccb87cef7765e3c597a0b59"
+  },
+  "derived_drive_bundle": {
+    "file_id": "1mz14C9s0KXqgMcVczrTM-aPmzvSjDg9f",
+    "bytes": 414897,
+    "sha256": "c82f68a11ff00f22aa5cb280116c319948c14a17bf07c8d7d3795c0f2c9aa28e",
+    "md5": "c4e00112269860d7578d021a5e68cb61",
+    "remote_verification": "PASS",
+    "raw_product_uploaded": false,
+    "url": "https://drive.google.com/file/d/1mz14C9s0KXqgMcVczrTM-aPmzvSjDg9f/view?usp=drivesdk"
+  },
+  "drive_receipt_copy": {
+    "file_id": "1gjzldW86sMNDsvw2R_UTvmr74Lw4l7E3",
+    "bytes": 888,
+    "sha256": "c4a4d9e66609f19ecc7b5b9ea71de43326bdbd300a51e26680b4d713353c91ff",
+    "remote_verification": "PASS",
+    "raw_product_uploaded": false
+  },
+  "status": {
+    "analysis_status": "SCIENTIFIC_METRICS_COMPUTED",
+    "structural_status": "PASS",
+    "source_sha256_count": 5,
+    "source_products_grid_validated": 5,
+    "paper_reproduction_status": "BLOCKED_AUTHOR_CROWN_GEOMETRY_AND_METHOD_PARITY_UNVERIFIED",
+    "historical_artifact_pre_fix_paper_status": "BLOCKED_RAW_GOFF_BYTES_AND_IMPLEMENTATION_PARITY_UNVERIFIED",
+    "hazard_detection_status": "NOT_EVALUATED",
+    "comparison_status": "NOT_COMPARABLE_EXACT_CROWN_GEOMETRY_UNVERIFIED"
+  },
+  "status_correction": {
+    "fix_commit": "ef7b9018ac9bcfe416ae859a4abc1041c8c06969",
+    "test_fix_commit": "5354a344ce19eac652fa8102c790fce18e18ec13",
+    "validation_run_id": 40115947045,
+    "validation_result": "PASS_217_TESTS_2.62_SECONDS",
+    "note": "Historical artifact remains immutable with its pre-fix status label. Source-byte receipts are verified. Raw files were not re-downloaded solely to regenerate the historical artifact."
+  }
+}

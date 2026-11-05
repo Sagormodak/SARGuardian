@@ -1,0 +1,391 @@
+name: Know Place Analysis isolated validation
+
+on:
+  push:
+    branches:
+      - feat/know-place-analysis
+      - feat/known-place-independent-reference-20261102
+      - fix/known-place-enclosing-reference-20261102
+      - fix/known-place-drive-shared-drive-support-20261102
+    paths:
+      - "tools/know_place/**"
+      - "tools/tests/test_know_place_*.py"
+      - "tools/requirements-retention.txt"
+      - "app/storage/drive_client.py"
+      - ".github/workflows/know-place-analysis-validation.yml"
+      - ".github/workflows/know-place-retained-crown-audit.yml"
+      - ".github/workflows/know-place-displacement-null-audit.yml"
+      - ".github/workflows/know-place-analysis-run.yml"
+      - ".github/workflows/know-place-analysis-reanalysis.yml"
+      - ".github/workflows/know-place-aoi-analysis.yml"
+      - ".github/workflows/know-place-dem-source-acquisition.yml"
+      - ".github/workflows/know-place-terrain-datum-sensitivity.yml"
+      - ".github/workflows/know-place-author-exact-replay.yml"
+      - ".github/workflows/know-place-author-exact-consent-bridge.yml"
+      - ".github/workflows/know-place-author-map-render.yml"
+      - ".github/workflows/know-place-generic-map-browser-smoke.yml"
+      - "tools/tests/fixtures/generic_aoi_map_report.json"
+      - "tools/tests/test_know_place_generic_fixture.py"
+      - ".github/workflows/know-place-generic-aoi-consent-bridge.yml"
+      - ".github/workflows/know-place-generic-aoi-drive-retry.yml"
+      - ".github/workflows/know-place-author-dashboard.yml"
+      - ".github/workflows/sarguardian-aoi-wkt-dispatcher.yml"
+      - ".github/workflows/know-place-retained-crown-audit.yml"
+      - "docs/KNOW_PLACE_ANALYSIS_*.md"
+  pull_request:
+    branches:
+      - feat/final-aoi-science-integration
+      - feat/know-place-analysis
+    paths:
+      - "tools/know_place/**"
+      - "tools/tests/test_know_place_*.py"
+      - "tools/requirements-retention.txt"
+      - "app/storage/drive_client.py"
+      - ".github/workflows/know-place-analysis-validation.yml"
+      - ".github/workflows/know-place-analysis-run.yml"
+      - ".github/workflows/know-place-analysis-reanalysis.yml"
+      - ".github/workflows/know-place-aoi-analysis.yml"
+      - ".github/workflows/know-place-author-exact-replay.yml"
+      - ".github/workflows/know-place-author-exact-consent-bridge.yml"
+      - ".github/workflows/know-place-author-map-render.yml"
+      - ".github/workflows/know-place-generic-aoi-consent-bridge.yml"
+      - ".github/workflows/know-place-generic-aoi-drive-retry.yml"
+      - ".github/workflows/know-place-author-dashboard.yml"
+      - ".github/workflows/know-place-retained-crown-audit.yml"
+      - ".github/workflows/know-place-displacement-null-audit.yml"
+      - ".github/workflows/sarguardian-aoi-wkt-dispatcher.yml"
+      - "docs/KNOW_PLACE_ANALYSIS_*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: know-place-analysis-validation
+  cancel-in-progress: false
+
+jobs:
+  pure-kernel-tests:
+    name: Scientific kernel, HDF5 schema, geometry and workflow tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout isolated Know Place Analysis branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Enforce one authoritative ASF client pin across dependency files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          def requirements(path):
+              lines = Path(path).read_text(encoding="utf-8").splitlines()
+              return [
+                  line.strip()
+                  for line in lines
+                  if line.strip() and not line.lstrip().startswith("#")
+              ]
+          runtime = requirements("tools/know_place/requirements.txt")
+          retention = requirements("tools/requirements-retention.txt")
+          pattern = re.compile(r"^asf[-_]search(?:\s*([<>=!~]+)\s*([^;\s]+))?", re.I)
+          runtime_pins = [line for line in runtime if pattern.match(line)]
+          retention_pins = [line for line in retention if pattern.match(line)]
+          if runtime_pins != ["asf_search==13.0.1"]:
+              raise SystemExit(f"ERROR=KNOW_PLACE_ASF_CLIENT_PIN_NOT_AUTHORITATIVE:{runtime_pins}")
+          if retention_pins:
+              raise SystemExit(f"ERROR=RETENTION_REQUIREMENTS_MUST_NOT_REPIN_ASF_CLIENT:{retention_pins}")
+          print("DEPENDENCY_ASF_CLIENT_SINGLE_PIN=PASS")
+          print("KNOW_PLACE_ASF_CLIENT=13.0.1")
+          print("RETENTION_ASF_CLIENT_PINS=0")
+          PY
+
+      - name: Install test/runtime requirements
+        run: python -m pip install --disable-pip-version-check numpy pytest h5py scipy pyproj pyyaml rasterio affine
+
+      - name: Compile every isolated analysis and datum-sensitivity module app/storage/drive_client.py
+        run: python -m py_compile tools/know_place/paper_method.py tools/know_place/goff_io.py tools/know_place/geometry.py tools/know_place/analyze.py tools/know_place/catalog.py tools/know_place/reanalyse_saved_arrays.py tools/know_place/aoi_request.py tools/know_place/series.py tools/know_place/aoi_runner.py tools/know_place/dashboard.py tools/know_place/author_dashboard.py tools/know_place/uncertainty.py tools/know_place/upload_bundle_to_drive.py tools/know_place/event_validation.py tools/know_place/select_threshold.py tools/know_place/motion_features.py tools/know_place/author_catalog.py tools/know_place/author_parity.py tools/know_place/verify_author_fields.py tools/know_place/footprint_screen.py tools/know_place/footprint_geometry.py tools/know_place/terrain_vertical_datum.py tools/know_place/author_exact_acquisition.py tools/know_place/author_exact_retention.py tools/know_place/author_raw_site_series.py tools/know_place/author_archive_raster_parity.py tools/know_place/author_footprint_replay.py tools/know_place/displacement_null.py tools/know_place/displacement_null_archive_reconstruction.py tools/know_place/crown_mask_audit.py tools/know_place/scientific_status.py
+
+      - name: Parse all isolated Know Place workflows and the branch Run Workflow launcher as YAML
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          paths = [
+              Path(".github/workflows/know-place-analysis-validation.yml"),
+              Path(".github/workflows/know-place-analysis-run.yml"),
+              Path(".github/workflows/know-place-analysis-reanalysis.yml"),
+              Path(".github/workflows/know-place-aoi-analysis.yml"),
+              Path(".github/workflows/know-place-dem-source-acquisition.yml"),
+              Path(".github/workflows/know-place-terrain-datum-sensitivity.yml"),
+              Path(".github/workflows/know-place-author-exact-replay.yml"),
+              Path(".github/workflows/know-place-author-exact-consent-bridge.yml"),
+              Path(".github/workflows/know-place-author-map-render.yml"),
+              Path(".github/workflows/know-place-generic-map-browser-smoke.yml"),
+              Path(".github/workflows/know-place-generic-aoi-consent-bridge.yml"),
+              Path(".github/workflows/know-place-generic-aoi-drive-retry.yml"),
+              Path(".github/workflows/know-place-author-dashboard.yml"),
+              Path(".github/workflows/sarguardian-aoi-wkt-dispatcher.yml"),
+              Path(".github/workflows/know-place-retained-crown-audit.yml"),
+              Path(".github/workflows/know-place-displacement-null-audit.yml"),
+          ]
+          for path in paths:
+              with path.open(encoding="utf-8") as stream:
+                  yaml.compose(stream, Loader=yaml.BaseLoader)
+              print(f"WORKFLOW_YAML_SYNTAX_PASS={path}")
+          PY
+
+      - name: Run scientific known-answer, raw-reader, geometry, catalog and integration tests
+        run: >-
+          python -m pytest -q --confcutdir=tools/tests
+          tools/tests/test_know_place_paper_method.py
+          tools/tests/test_know_place_goff_io.py
+          tools/tests/test_know_place_geometry.py
+          tools/tests/test_know_place_catalog.py
+          tools/tests/test_know_place_analyze.py
+          tools/tests/test_know_place_reanalyse_saved_arrays.py
+          tools/tests/test_know_place_aoi_request.py
+          tools/tests/test_know_place_series.py
+          tools/tests/test_know_place_aoi_runner.py
+          tools/tests/test_know_place_aoi_runner_integration.py
+          tools/tests/test_know_place_geotiff.py
+          tools/tests/test_know_place_dashboard.py
+          tools/tests/test_know_place_interactive_map.py
+          tools/tests/test_know_place_generic_fixture.py
+          tools/tests/test_know_place_author_map_adapter.py
+          tools/tests/test_know_place_author_dashboard.py
+          tools/tests/test_know_place_uncertainty.py
+          tools/tests/test_know_place_upload_bundle.py
+          tools/tests/test_know_place_event_validation.py
+          tools/tests/test_know_place_motion_features.py
+          tools/tests/test_know_place_author_reference_data.py
+          tools/tests/test_know_place_author_catalog.py
+          tools/tests/test_know_place_author_archive.py
+          tools/tests/test_know_place_author_parity.py
+          tools/tests/test_know_place_author_fields_verifier.py
+          tools/tests/test_know_place_footprint_screen.py tools/tests/test_know_place_footprint_geometry.py tools/tests/test_know_place_terrain_vertical_datum.py
+          tools/tests/test_know_place_author_exact_acquisition.py
+          tools/tests/test_know_place_author_exact_retention.py
+          tools/tests/test_know_place_multisite_benchmark.py
+          tools/tests/test_know_place_author_raw_site_series.py tools/tests/test_know_place_author_archive_raster_parity.py tools/tests/test_know_place_author_footprint_replay.py tools/tests/test_know_place_scientific_status.py tools/tests/test_know_place_author_footprint_workflow.py tools/tests/test_know_place_displacement_null.py tools/tests/test_know_place_displacement_null_archive_reconstruction.py tools/tests/test_know_place_crown_mask_audit.py
+
+      - name: Install pinned actionlint binary and verify its checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output /tmp/actionlint.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  /tmp/actionlint.tar.gz" | sha256sum --check -
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          /tmp/actionlint -version
+
+      - name: Run semantic GitHub Actions workflow validation
+        run: /tmp/actionlint .github/workflows/know-place-analysis-validation.yml .github/workflows/know-place-analysis-run.yml .github/workflows/know-place-analysis-reanalysis.yml .github/workflows/know-place-aoi-analysis.yml .github/workflows/know-place-dem-source-acquisition.yml .github/workflows/know-place-terrain-datum-sensitivity.yml .github/workflows/know-place-author-exact-replay.yml .github/workflows/know-place-author-exact-consent-bridge.yml .github/workflows/know-place-author-map-render.yml .github/workflows/know-place-generic-map-browser-smoke.yml .github/workflows/know-place-generic-aoi-consent-bridge.yml .github/workflows/know-place-generic-aoi-drive-retry.yml .github/workflows/know-place-author-dashboard.yml .github/workflows/sarguardian-aoi-wkt-dispatcher.yml .github/workflows/know-place-retained-crown-audit.yml
+
+  live-asf-catalog-contract:
+    name: Live ASF identity gates for historical and author-exact granules (no downloads)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout isolated Know Place Analysis branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install pinned Know Place catalog and dry-run runtime dependencies
+        run: python -m pip install --disable-pip-version-check --no-cache-dir -r tools/know_place/requirements.txt
+
+      - name: Query ASF for the five exact candidate granules without downloading them
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m tools.know_place.catalog --out "${{ runner.temp }}/know-place-catalog-manifest.json"
+          python - "${{ runner.temp }}/know-place-catalog-manifest.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1],encoding="utf-8"))
+          rows=d.get("products",[])
+          if d.get("status")!="PASS" or len(rows)!=5:
+              raise SystemExit("ERROR=ASF_CATALOG_NOT_FIVE_EXACT_PRODUCTS")
+          for p in rows:
+              print("ASF_CATALOG_IDENTITY=PASS {} {}->{} {} {}".format(
+                  p["previous_product_id"],p["reference_date"],p["secondary_date"],
+                  p["release_id"],p["catalog_maturity"]))
+          print("RAW_PRODUCT_DOWNLOADS=0")
+          PY
+
+      - name: Preserve live historical catalog evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: know-place-live-asf-catalog-evidence
+          path: ${{ runner.temp }}/know-place-catalog-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Query the five exact author-published P05023 products without downloading them
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m tools.know_place.author_catalog --out "${{ runner.temp }}/know-place-author-catalog-manifest.json"
+          python - "${{ runner.temp }}/know-place-author-catalog-manifest.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1],encoding="utf-8"))
+          rows=d.get("products",[])
+          if d.get("status") not in {"PASS","BLOCKED"} or len(rows)!=5:
+              raise SystemExit("ERROR=ASF_AUTHOR_CATALOG_MANIFEST_INVALID")
+          if any(p.get("release_id")!="P05023" or p.get("source_sha256") is not None for p in rows):
+              raise SystemExit("ERROR=ASF_AUTHOR_IDENTITY_GATE_SCHEMA_CONFLICT")
+          for p in rows:
+              print("ASF_AUTHOR_PRODUCT_IDENTITY={} {} {} {}".format(
+                  p["catalog_identity_status"],p["interval"],p["release_id"],
+                  p.get("catalog_maturity") or "UNRESOLVED"))
+          print("AUTHOR_CATALOG_IDENTITY_GATE={}".format(
+              "PASS" if d.get("status")=="PASS" else "BLOCKED"))
+          print("RAW_SOURCE_BYTE_IDENTITY=UNVERIFIED")
+          print("AUTHOR_SOURCE_SHA256_COUNT={}".format(
+              sum(p.get("source_sha256") is not None for p in rows)))
+          print("PAPER_REPRODUCTION_STATUS=BLOCKED_RAW_GOFF_BYTES_AND_IMPLEMENTATION_PARITY_UNVERIFIED")
+          print("HAZARD_DETECTION_STATUS=NOT_EVALUATED")
+          print("SOURCE_DOWNLOADS=0")
+          PY
+
+      - name: Preserve live author-identity evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: know-place-author-live-asf-catalog-evidence
+          path: ${{ runner.temp }}/know-place-author-catalog-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Resolve all five author-exact CMR HTTP data links without downloading payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m tools.know_place.author_exact_acquisition --operation catalog --out-root "${{ runner.temp }}/know-place-author-exact-catalog"
+          python - "${{ runner.temp }}/know-place-author-exact-catalog/author-exact-catalog-manifest.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1],encoding="utf-8"))
+          rows=d.get("products",[])
+          if d.get("status")!="PASS" or len(rows)!=5 or d.get("exact_cmr_confirmed_count")!=5:
+              raise SystemExit("ERROR=AUTHOR_EXACT_CMR_ACCESS_CATALOG_NOT_FIVE")
+          if d.get("source_downloads")!=0 or any(p.get("source_sha256") is not None for p in rows):
+              raise SystemExit("ERROR=CMR_CATALOG_STEP_MUST_NOT_DOWNLOAD_OR_INVENT_SOURCE_HASHES")
+          if any(p.get("release_id")!="P05023" or not p.get("exact_data_url") for p in rows):
+              raise SystemExit("ERROR=AUTHOR_EXACT_P05023_DATA_URL_MISSING")
+          print("AUTHOR_EXACT_CMR_DATA_URLS_CONFIRMED=5")
+          print("SOURCE_DOWNLOADS=0")
+          print("PAPER_REPRODUCTION_STATUS=BLOCKED_RAW_GOFF_BYTES_AND_IMPLEMENTATION_PARITY_UNVERIFIED")
+          PY
+
+      - name: Preserve exact-author CMR access evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: know-place-author-exact-live-cmr-access-evidence
+          path: ${{ runner.temp }}/know-place-author-exact-catalog/author-exact-catalog-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Run the failing arbitrary-AOI catalog-only request against live ASF (no raw downloads)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "${RUNNER_TEMP}/know-place-live-aoi-request.json" <<'PY'
+          import json,sys
+          from pathlib import Path
+          request = {
+              "schema_version": "know-place-aoi-request/1.0",
+              "aoi": {
+                  "type": "Polygon",
+                  "crs": "EPSG:4326",
+                  "wkt": "POLYGON ((85.5245 28.2847, 85.5400 28.2847, 85.5400 28.2970, 85.5245 28.2970, 85.5245 28.2847))",
+              },
+              "date_range": {"start":"2026-06-20","end":"2026-08-31","inclusive":True},
+              "hazard_mode": "ice_rock_avalanche",
+              "analysis_mode": "exploratory",
+              "source_adapters": ["NISAR_GOFF"],
+              "polarization": "HH",
+              "product_selection": {
+                  "allowed_maturities": ["PROVISIONAL"],
+                  "preferred_granules": [],
+                  "allowed_release_ids": ["P05023"],
+                  "track": "098",
+                  "direction": "A",
+              },
+              "quality_policy": {
+                  "minimum_snr": 5.0,
+                  "maximum_horizontal_magnitude_m": 10.0,
+                  "magnitude_policy": "flag_above_threshold_keep",
+              },
+              "coherence_policy": {"window_size": 5, "minimum_valid_neighbours": 1},
+              "geometry_policy": {},
+          }
+          Path(sys.argv[1]).write_text(json.dumps(request,indent=2)+"\n",encoding="utf-8")
+          PY
+          python -m tools.know_place.aoi_runner \
+            --request "${RUNNER_TEMP}/know-place-live-aoi-request.json" \
+            --out "${RUNNER_TEMP}/know-place-live-aoi-output" \
+            --dry-run
+          python - "${RUNNER_TEMP}/know-place-live-aoi-output" <<'PY'
+          import json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          run_dirs=[p for p in root.iterdir() if p.is_dir()]
+          if len(run_dirs)!=1:
+              raise SystemExit("ERROR=LIVE_AOI_DRY_RUN_OUTPUT_DIRECTORY_COUNT")
+          run_dir=run_dirs[0]
+          result=json.loads((run_dir/"result.json").read_text(encoding="utf-8"))
+          catalog=json.loads((run_dir/"source-evidence"/"catalog-manifest.json").read_text(encoding="utf-8"))
+          manifest=json.loads((run_dir/"manifest.json").read_text(encoding="utf-8"))
+          if result.get("status")!="CATALOG_AND_SERIES_PLAN_READY":
+              raise SystemExit("ERROR=LIVE_AOI_DRY_RUN_STATUS_INVALID")
+          if result.get("measurement_status")!="NOT_RUN_DRY_RUN":
+              raise SystemExit("ERROR=LIVE_AOI_DRY_RUN_MUST_NOT_COMPUTE_MEASUREMENTS")
+          if int(result.get("source_candidates",0))<1:
+              raise SystemExit("ERROR=LIVE_AOI_DRY_RUN_NO_PROVISIONAL_CANDIDATES")
+          pairs=result.get("pairwise_series_plan",{}).get("pairs",[])
+          if not pairs:
+              raise SystemExit("ERROR=LIVE_AOI_DRY_RUN_NO_SELECTED_PAIRS")
+          if any(pair.get("release_id")!="P05023" for pair in pairs):
+              raise SystemExit("ERROR=LIVE_AOI_DRY_RUN_SELECTED_RELEASE_MISMATCH")
+          if catalog.get("query",{}).get("short_name_filter")!=["NISAR_L2_GOFF_PROVISIONAL_V1"]:
+              raise SystemExit("ERROR=LIVE_AOI_COLLECTION_FILTER_NOT_RECORDED")
+          selected_names={pair.get("granule_name") for pair in pairs}
+          selected_rows=[row for row in catalog.get("candidates",[]) if row.get("granule_name") in selected_names]
+          if len(selected_rows)!=len(selected_names):
+              raise SystemExit("ERROR=LIVE_AOI_SELECTED_CANDIDATE_EVIDENCE_MISSING")
+          if any(row.get("maturity")!="PROVISIONAL" or row.get("release_id")!="P05023" for row in selected_rows):
+              raise SystemExit("ERROR=LIVE_AOI_SELECTED_CANDIDATE_RELEASE_OR_MATURITY_MISMATCH")
+          for relative in ("visuals/dashboard.html","visuals/interactive-map.html"):
+              if not (run_dir/relative).is_file():
+                  raise SystemExit("ERROR=LIVE_AOI_EXPECTED_MAP_OUTPUT_MISSING")
+          if manifest.get("dry_run") is not True or manifest.get("sources")!=[]:
+              raise SystemExit("ERROR=LIVE_AOI_DRY_RUN_SOURCE_EVIDENCE_INVALID")
+          print("LIVE_ARBITRARY_AOI_CATALOG_DRY_RUN=PASS")
+          print("PROVISIONAL_CANDIDATES={}".format(result["source_candidates"]))
+          print("SELECTED_P05023_PAIRS={}".format(len(pairs)))
+          print("INTERACTIVE_MAP_OUTPUT=PASS")
+          print("RAW_HDF5_DOWNLOADS=0")
+          print("MEASUREMENT_STATUS=NOT_RUN_DRY_RUN")
+          PY
+
+      - name: Preserve live arbitrary-AOI catalog dry-run evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: know-place-live-arbitrary-aoi-dry-run
+          path: |
+            ${{ runner.temp }}/know-place-live-aoi-request.json
+            ${{ runner.temp }}/know-place-live-aoi-output/**
+          if-no-files-found: error
+          retention-days: 14

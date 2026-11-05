@@ -1,0 +1,231 @@
+name: SARGuardian AOI WKT E2E (safe branch dispatcher)
+
+# This feature-branch definition intentionally shares the dispatcher's default-branch path.
+# Select branch feat/know-place-analysis in Actions to access Know Place engine inputs.
+on:
+  workflow_dispatch:
+    inputs:
+      run_profile:
+        description: "Exact author benchmark replay, or arbitrary AOI/date measurement"
+        required: true
+        type: choice
+        options:
+          - author-exact-p05023
+          - generic-aoi-date
+          - render-author-dashboard
+        default: author-exact-p05023
+      consent_marker:
+        description: "Required for raw source downloads: enter exactly [run-know-place]"
+        required: false
+        default: ""
+        type: string
+      aoi_wkt:
+        description: "Generic mode: single-ring WGS84 POLYGON; coordinates are longitude latitude"
+        required: true
+        type: string
+        default: "POLYGON ((85.5245 28.2847, 85.5400 28.2847, 85.5400 28.2970, 85.5245 28.2970, 85.5245 28.2847))"
+      start_date:
+        description: "Generic mode: inclusive UTC start date YYYY-MM-DD"
+        required: true
+        type: string
+        default: "2026-06-20"
+      end_date:
+        description: "Generic mode: inclusive UTC end date YYYY-MM-DD"
+        required: true
+        type: string
+        default: "2026-08-31"
+      hazard_mode:
+        description: "Context metadata only; this engine does not classify hazards"
+        required: true
+        type: choice
+        options:
+          - landslide
+          - glacier_collapse
+          - ice_rock_avalanche
+          - mixed
+        default: ice_rock_avalanche
+      analysis_mode:
+        description: "Exploratory or retrospective measurement metadata; independent scoring is a separate step"
+        required: true
+        type: choice
+        options:
+          - exploratory
+          - retrospective_validation
+        default: exploratory
+      polarization:
+        description: "NISAR L-SAR frequency-A polarization"
+        required: true
+        type: choice
+        options:
+          - HH
+          - HV
+          - VV
+          - VH
+        default: HH
+      track:
+        description: "Optional three-digit track; ANY keeps independent orbit chains separate"
+        required: true
+        type: string
+        default: "098"
+      direction:
+        description: "Flight direction"
+        required: true
+        type: choice
+        options:
+          - ANY
+          - A
+          - D
+        default: A
+      allowed_release_ids:
+        description: "Generic mode: optional comma-separated exact release IDs. Blank does not auto-select if same-interval release variants conflict."
+        required: false
+        default: ""
+        type: string
+      reference_wkt:
+        description: "Optional stable reference polygon; blank uses a 2 km local context (stability is assumed, not guaranteed)"
+        required: false
+        default: ""
+        type: string
+      geometry_height_m:
+        description: "Generic mode only: optional constant ellipsoidal height in metres; blank uses a geometry-axis median approximation, not a DEM"
+        required: false
+        default: ""
+        type: string
+      coherence_neighbours:
+        description: "Minimum valid neighbours in the 5x5 coherence window for sensitivity runs"
+        required: true
+        type: choice
+        options:
+          - "1"
+          - "5"
+          - "10"
+          - "15"
+          - "20"
+          - "25"
+        default: "1"
+      execute_downloads:
+        description: "Generic mode: false means catalog/series dry run; true downloads source GOFF, computes derived products and uploads results to Drive"
+        required: true
+        type: boolean
+        default: false
+      author_geometry_height_m:
+        description: "Exact author-series exploratory constant height; not a datum correction and not evidence of paper parity"
+        required: true
+        type: string
+        default: "5151"
+      control_draws:
+        description: "Author-series deterministic spatial-control draws"
+        required: true
+        type: string
+        default: "1000"
+      seed:
+        description: "Author-series deterministic seed"
+        required: true
+        type: string
+        default: "260826"
+      source_run_id:
+        description: "Render from an existing successful author-exact run; no raw NISAR payload download"
+        required: true
+        type: string
+        default: "40170290176"
+      source_attempt:
+        description: "Attempt number of the retained source artifact"
+        required: true
+        type: string
+        default: "1"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: know-place-dispatch-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  validate_consent:
+    name: Validate profile and require explicit consent before any raw source operation
+    runs-on: ubuntu-24.04
+    outputs:
+      authorized: ${{ steps.check.outputs.authorized }}
+    steps:
+      - name: Gate any operation that downloads source HDF5
+        id: check
+        shell: bash
+        env:
+          RUN_PROFILE: ${{ inputs.run_profile }}
+          EXECUTE_DOWNLOADS: ${{ inputs.execute_downloads }}
+          CONSENT_MARKER: ${{ inputs.consent_marker || '' }}
+        run: |
+          set -euo pipefail
+          raw_requested=false
+          if [[ "$RUN_PROFILE" == "author-exact-p05023" ]]; then
+            raw_requested=true
+          elif [[ "$RUN_PROFILE" == "generic-aoi-date" && "$EXECUTE_DOWNLOADS" == "true" ]]; then
+            raw_requested=true
+          fi
+          if [[ "$raw_requested" == "true" && "$CONSENT_MARKER" != "[run-know-place]" ]]; then
+            echo "ERROR=EXPLICIT_RAW_DOWNLOAD_CONSENT_MARKER_REQUIRED"
+            echo "ACTION_REQUIRED=Re-run with consent_marker exactly [run-know-place], including both square brackets."
+            {
+              echo "## Raw-source consent check failed"
+              echo
+              echo "The selected profile requires the exact consent value [run-know-place]."
+              echo "Include both square brackets; run-know-place by itself does not authorize source downloads."
+              echo "No raw source, analysis or Drive operation was performed."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "No raw source, analysis or Drive operation has started."
+            exit 1
+          fi
+          echo "authorized=true" >> "$GITHUB_OUTPUT"
+          echo "RUN_PROFILE=$RUN_PROFILE"
+          echo "RAW_DOWNLOAD_CONSENT_REQUIRED=$raw_requested"
+          if [[ "$raw_requested" == "true" ]]; then
+            echo "EXPLICIT_CONSENT=PASS"
+          else
+            echo "RAW_SOURCE_DOWNLOADS=0"
+          fi
+
+  author_exact_p05023:
+    name: Acquire and analyze the five exact author P05023 pairs
+    needs: validate_consent
+    if: inputs.run_profile == 'author-exact-p05023' && needs.validate_consent.outputs.authorized == 'true'
+    uses: moshiour0/SARGuardian-backend/.github/workflows/know-place-author-exact-replay.yml@feat/know-place-analysis
+    with:
+      consent_marker: ${{ inputs.consent_marker }}
+      geometry_height_m: ${{ inputs.author_geometry_height_m }}
+      control_draws: ${{ inputs.control_draws }}
+      seed: ${{ inputs.seed }}
+    secrets: inherit
+
+  generic_aoi_date:
+    name: Run the arbitrary AOI/date displacement measurement engine
+    needs: validate_consent
+    if: inputs.run_profile == 'generic-aoi-date' && needs.validate_consent.outputs.authorized == 'true'
+    uses: moshiour0/SARGuardian-backend/.github/workflows/know-place-aoi-analysis.yml@feat/know-place-analysis
+    with:
+      aoi_wkt: ${{ inputs.aoi_wkt }}
+      start_date: ${{ inputs.start_date }}
+      end_date: ${{ inputs.end_date }}
+      hazard_mode: ${{ inputs.hazard_mode }}
+      analysis_mode: ${{ inputs.analysis_mode }}
+      polarization: ${{ inputs.polarization }}
+      track: ${{ inputs.track }}
+      direction: ${{ inputs.direction }}
+      allowed_release_ids: ${{ inputs.allowed_release_ids }}
+      reference_wkt: ${{ inputs.reference_wkt }}
+      geometry_height_m: ${{ inputs.geometry_height_m }}
+      coherence_neighbours: ${{ inputs.coherence_neighbours }}
+      consent_marker: ${{ inputs.consent_marker }}
+      execute_downloads: ${{ inputs.execute_downloads }}
+    secrets: inherit
+
+  render_author_dashboard:
+    name: Render dashboard from retained author-exact evidence (no raw downloads)
+    needs: validate_consent
+    if: inputs.run_profile == 'render-author-dashboard' && needs.validate_consent.outputs.authorized == 'true'
+    uses: moshiour0/SARGuardian-backend/.github/workflows/know-place-author-dashboard.yml@feat/know-place-analysis
+    with:
+      source_run_id: ${{ inputs.source_run_id }}
+      source_attempt: ${{ inputs.source_attempt }}
+    secrets: inherit
