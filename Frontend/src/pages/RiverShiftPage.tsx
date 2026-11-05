@@ -1013,7 +1013,7 @@ export function RiverShiftPage({ onHome, user, firebaseConfigured, authState, on
           }
         };
         autocomplete.addEventListener('gmp-select', placeSelectListener);
-      } catch (error) {
+      } catch {
         if (!cancelled) {
           setAoiSearchError(
             'Map search is unavailable. Enable Places API (New) for the Google Cloud project used by VITE_GOOGLE_MAPS_API_KEY, then reload RiverShift.',
