@@ -15,6 +15,10 @@ The Jamuna–Chowhali run is the concrete demonstration case. It is not a countr
 - RiverShift submits the user's WGS84 polygon and date range to NASA CMR; it does not use a Bangladesh-only catalogue query or substitute a built-in Jamuna AOI: [catalogue discovery implementation](https://github.com/moshiour0/SARGuardian-backend/blob/main/tools/river_shift/discover_gcov_products.py).
 - The request is geospatially parameterised; AOI and date window are supplied per job: [Dynamic AOI/catalogue implementation](https://github.com/moshiour0/SARGuardian_Dynamic/blob/main/Backend/app/river_shift.py) and [RiverShift job implementation](https://github.com/moshiour0/SARGuardian_Dynamic/blob/main/Backend/app/river_shift_jobs.py).
 
+**Inspect the mission footprint directly:** [ASF/NISAR Reference Observation Plan — interactive global acquisition map](https://experience.arcgis.com/experience/6052a864cd01459393884a7f751558e3) · [ASF Data Search — NISAR PROVISIONAL L-band products](https://search.asf.alaska.edu/) · [ASF data availability and global footprint explanation](https://nisar-docs.asf.alaska.edu/availability-overview/).
+
+The map documents the mission's observation plan/collection footprint. The ASF search catalogue shows products that have actually been released. Neither map alone guarantees a four-date, compatible GCOV series or valid raster support for a particular AOI; RiverShift checks those separately.
+
 ## Current operating envelope
 
 These are processing gates, not country restrictions:
