@@ -12,7 +12,7 @@ This folder provides a first local scientific workflow:
 6. Screen persistent erosion/deposition candidates.
 7. Validate a binary water mask against an independently prepared reference raster.
 8. Measure signed bankline displacement along independently digitised transects.
-9. Audit whether at least four compatible GCOV dates cover the AOI sufficiently.
+9. Audit whether at least three compatible GCOV dates cover the AOI sufficiently using the standalone catalogue-feasibility utility.
 10. Export an observed-date water time series for discrete, evidence-preserving dashboard playback.
 11. Optionally compare a NISAR binary water mask with Copernicus Sentinel-2 L2A SCL and MNDWI water screens.
 
@@ -80,7 +80,7 @@ For signed bankline movement, supply two dated banklines and user-oriented trans
 See `README_08_measure_bankline_migration.md` and `river_shift/README_06_transects.md` before running it.
 
 ### GCOV time-series feasibility audit
-Run `audit_gcov_acquisitions.py` against the NASA CMR UMM-G 1.6.7 catalogue manifest before downloading or analysing products. It requires at least four distinct dates matching maturity, direction, relative orbit, frame, bandwidth, polarization, processing type, observation source, CRID, orbit accuracy, frame coverage and center; the requested frequency/diagonal term must be encoded as available. Each date must meet the AOI footprint threshold. This is only a product-level review gate; HDF5 layers, valid masks and exact grids remain to be checked. The default minimum is 90%.
+Run `audit_gcov_acquisitions.py` against the NASA CMR UMM-G 1.6.7 catalogue manifest for standalone catalogue-feasibility review. This utility defaults to **three** eligible dates (configurable with `--minimum-dates`) and **90%** per-date AOI footprint coverage, while matching maturity, direction, relative orbit, frame, bandwidth, polarization, processing type, observation source, CRID, orbit accuracy, frame coverage and center. The authenticated live RiverShift API/worker applies a stricter **four distinct acquisition-date** requirement and separately verifies compatible orbit/frame groups, HDF5 layers and valid raster support before processing. Catalogue coverage alone is not proof of usable pixels.
 
 The GitHub Actions workflow `.github/workflows/river-shift-gcov-audit.yml` runs public catalogue discovery and footprint feasibility without downloading imagery. It is launched manually with the user-selected AOI/date window. The processing workflow `.github/workflows/river-shift-gcov-process.yml` runs only after an authenticated user submits a RiverShift job.
 
