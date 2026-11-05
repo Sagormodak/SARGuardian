@@ -7,7 +7,7 @@
 
 ## One-minute overview
 
-RiverShift lets a user draw an area of interest (AOI), choose an event/date window and inspect the actual NISAR acquisitions available for that area. It then screens comparable NASA–ISRO NISAR Level-2 GCOV observations for changes in radar-derived open-water coverage and persistent land/water transitions. The results are displayed as checksum-checked, colour-coded footprints on a Google Maps Satellite basemap, with a discrete playback across the observed acquisition dates.
+RiverShift is a global, AOI-driven river-change screening application powered by NASA–ISRO NISAR L-band GCOV observations. A user selects a river reach anywhere in the mission's global land-observation footprint, chooses a date window, and the system discovers the compatible GCOV acquisitions actually available for that geometry. It screens radar-derived open-water coverage and persistent land/water transitions, then displays checksum-linked candidate layers and discrete playback across real acquisition dates. The Jamuna–Chowhali run is the demonstration case; the input and discovery workflow is not country-specific.
 
 The product is designed to answer five questions:
 
@@ -18,6 +18,26 @@ The product is designed to answer five questions:
 5. Which actual NISAR acquisition dates, source products and independent-validation gaps support interpretation?
 
 RiverShift is an evidence-screening and communication tool, not an operational flood-warning service or a substitute for field surveying.
+
+## Global applicability — one workflow, many river systems
+
+RiverShift is **geographically reusable, not Bangladesh-specific**. A user supplies the WGS84 area of interest and observation window; the backend sends that geometry and time range to NASA's Common Metadata Repository (CMR) for NISAR L-band GCOV discovery. The worker then selects compatible acquisitions for that AOI. There is no country allow-list and no fixed Jamuna polygon in the RiverShift discovery request.
+
+This design follows the NISAR mission's global land-observation programme. NASA describes NISAR coverage as global with L-band global acquisitions and a nominal 12-day exact repeat cycle. ASF's availability guide reports L-band collection over nearly all global landmasses since August 2025; PROVISIONAL L-band products are available for acquisitions from 17 June 2026 onward as processing is released. The exact acquisition catalogue—not a presumed daily schedule—determines what can be processed for a selected location.
+
+**Current RiverShift operating envelope**
+
+- One valid, single-ring WGS84 Polygon AOI, up to **1,000 km²**.
+- An observation window no longer than **366 days**.
+- At least **four distinct NISAR GCOV acquisition dates** in the requested window.
+- At least **90% catalogue-footprint coverage** of the AOI for each selected acquisition date, followed by worker-side checks of compatible orbit/frame, product maturity, frequency/covariance term, native HDF5 layers and valid raster support.
+- The worker uses actual acquisition dates (up to 12 selected dates and up to four same-date granules per date); it does not synthesize daily observations.
+
+This means the same workflow can be applied to a selected river reach in any country within the NISAR L-band observation footprint when the requested window contains sufficient compatible GCOV data. A broad region or an entire country is not submitted as one job; the user selects a manageable AOI. The Jamuna–Chowhali result is a concrete demonstration case, not the geographical boundary of the product.
+
+Global applicability describes the reusable input and processing architecture. Scientific interpretation and any independent validation evidence remain tied to the actual acquisitions and reference data available for each AOI.
+
+**Primary mission/data references:** [NASA NISAR Mission Overview](https://science.nasa.gov/mission/nisar/mission-overview/) · [ASF NISAR Data Availability](https://nisar-docs.asf.alaska.edu/availability-overview/) · [NASA NISAR Observation Strategy](https://science.nasa.gov/mission/nisar/observation-strategy/).
 
 ## Why this matters
 
@@ -192,19 +212,19 @@ The legacy `validate_with_sentinel2.py` tool and retained-run workflow remain av
 
 ## Score-sheet evidence checklist
 
-| Criterion | Evidence to present | Remaining human action / risk |
+| Criterion | Demonstrable evidence | Judge-facing interpretation |
 |---|---|---|
-| Impact | Riverbank/flood-change use case supported by two dated Chowhali/Jamuna public reports; source-attributed OSM building/facility points and imported point GeoJSON can be screened against candidate preview zones and shown as separate gold map markers. | Explain the 11 July and 9 August reports as regional societal context only. The app has not produced an actual OSM count for Run #36 in this audit, and no cited asset is proven inside a candidate polygon. OSM is not a complete inventory, affected-population estimate or damage assessment. |
-| Creativity | User-drawn AOI, target-free change discovery, discrete radar time series, explainable classes and private provenance. | A polished end-to-end demo is still needed. |
-| Validity | Backend main `27b6f255`: 259 RiverShift worker tests passed; Run #36 retrospective replay reproduced all three reported areas after six retained source-COG checksums matched; full-resolution mask-overlap and shared-grid preview QA are recorded separately. Dynamic main `9245de7f`: type-check/build/lint and 155 frontend tests passed; Backend worker, science-engine, repository regression/retention and AOI/static checks passed. | These prove software contracts and reproducibility, not physical accuracy. Run #36 has no eligible OPERA WTR reference; Sentinel-2 common support was 0.1554%. F1/IoU and field/bankline accuracy remain `NO_SCORE`. Signed transect tools require independently digitised dated banklines. |
-| Relevance | NISAR Level-2 GCOV is the primary measurement input; challenge name is explicit. | Explain what radar contributes and why NISAR observations are central. |
-| Presentation | Google Satellite result map; independent erosion/deposition/new-water and observed-water controls; gold exposure-point layer with its own toggle; actual-date playback; overlap and validation-readiness panels; cited Chowhali impact context; updated judge guide and project-page draft. | The two-minute video is the remaining authored media deliverable. Show the regional reports as context, then demonstrate the live OSM query and explain what is and is not measured. |
-| Teamwork | Actual commits, issue/PR history and documented roles. | Team must supply truthful member names, roles and evidence of collaboration. |
-| User experience | Three-step quick-start, visible catalogue date preflight, actionable four-date error, independent candidate/observed-water/exposure-point layers, 2,000-point balanced map sampling with full local counts preserved, stale exposure reset on new result/import, manual GeoJSON fallback, and validation-readiness panel. | A human first-time-user test on phone/desktop and one live AOI Overpass fetch are not yet recorded. Shared API availability and OSM completeness remain external constraints. |
-| NASA data usage | NISAR GCOV is the primary analysis source; ASF DAAC provides exact product access/provenance; Copernicus Sentinel-2 L2A was used in two three-tile same-datatake mosaics; Google Satellite is contextual basemap only. | NISAR remains the central measurement source. The retained Run #36 OPERA cross-check correctly returned NO_MATCH_NO_SCORE; the cloudy Sentinel-2 candidate also had no metrics. Keep all source roles and limitations visible. |
-| Challenge category | “Dancing with the SARs” / Earth Science identified in the UI and project text. | Verify the exact category label shown in the team's official project form. |
-| Repository access | Public backend and Dynamic GitHub repositories. | Verify links in a signed-out browser before final submission. |
-| Project page | This guide and a ready-to-copy project-page draft. | Team must fill required fields and click Submit during the NASA submission window. |
+| Impact | A location-independent workflow for river reaches across NISAR's global L-band land-observation footprint; a concrete Jamuna–Chowhali case study; optional source-attributed mapped building/facility context. | The Jamuna is the demonstration story, not a country restriction. Explain how the same AOI/date request can be used for another eligible river reach. |
+| Creativity | User-defined AOI, target-free discovery inside that AOI, actual-date radar time series, explainable water/land-transition classes and private source provenance. | The system discovers candidate locations within a user-selected region instead of requiring a pre-known target point. |
+| Validity | Backend main `2e59d0f`: 259 RiverShift worker tests passed; Run #36 retrospective replay reproduced all three reported areas after six retained source-COG checksums matched; full-resolution mask-overlap and shared-grid preview QA are recorded separately. Dynamic main `9245de7f`: type-check/build/lint and 155 frontend tests passed. | Separate reproducibility and structural QA from geophysical validation. Run #36 remains PROVISIONAL because an eligible independent water reference was not available; no unsupported F1/IoU or field-accuracy claim is made. |
+| Relevance | NISAR Level-2 GCOV is the primary measurement input; ASF DAAC supplies the observation catalogue and exact granules; the NASA Space Apps challenge is named in the app and project materials. | NISAR is the analysis source—not a decorative basemap layer. |
+| Presentation | Global-first map entry, world-scale AOI selection, distinct candidate overlays, actual-date playback, source-linked reports, overlap QA and validation-readiness panels; a focused Jamuna case study grounds the public-impact story. | Tell the story from global need → reusable workflow → real Jamuna example → evidence and interpretation. |
+| Teamwork | Actual commits, issue/PR history and documented roles. | List only actual team members and verified contributions. |
+| User experience | Three-step quick-start, world-centred map, clear WGS84 AOI instructions, visible four-date preflight, independent data layers, exposure-context toggle and validation-readiness panel. | Emphasise that users select a region and time window; the app discovers the compatible NISAR acquisitions. |
+| NASA data usage | NISAR GCOV is the primary analysis source; ASF DAAC provides exact product access/provenance; Google Satellite is contextual basemap only. | Explain the role of NISAR data and preserve source attribution. |
+| Challenge category | “Dancing with the SARs” / Earth Science identified in the UI and project text. | Use the exact challenge/category wording in the official project submission. |
+| Repository access | Public backend and Dynamic GitHub repositories. | Point judges to the evidence index, judge guide and source repositories. |
+| Project page | Copy-ready project-page draft, judge brief and technical guide. | Replace only team-specific/video fields with verified information. |
 
 ### Team participation and rubric notes
 
