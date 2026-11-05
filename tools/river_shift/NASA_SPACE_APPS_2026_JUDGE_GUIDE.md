@@ -37,7 +37,7 @@ This means the same workflow can be applied to a selected river reach in any cou
 
 Global applicability describes the reusable input and processing architecture. Scientific interpretation and any independent validation evidence remain tied to the actual acquisitions and reference data available for each AOI.
 
-**Primary mission/data references:** [NASA NISAR Mission Overview](https://science.nasa.gov/mission/nisar/mission-overview/) · [ASF NISAR Data Availability](https://nisar-docs.asf.alaska.edu/availability-overview/) · [NASA NISAR Observation Strategy](https://science.nasa.gov/mission/nisar/observation-strategy/).
+**Primary mission/data references:** [NASA NISAR Mission Overview](https://science.nasa.gov/mission/nisar/mission-overview/) · [ASF NISAR Data Availability](https://nisar-docs.asf.alaska.edu/availability-overview/) · [ASF/NISAR Reference Observation Plan — interactive global acquisition map](https://experience.arcgis.com/experience/6052a864cd01459393884a7f751558e3) · [ASF PROVISIONAL L-band Data Search](https://search.asf.alaska.edu/) · [NASA NISAR Observation Strategy](https://science.nasa.gov/mission/nisar/observation-strategy/).**Primary mission/data references:** [NASA NISAR Mission Overview](https://science.nasa.gov/mission/nisar/mission-overview/) · [ASF NISAR Data Availability](https://nisar-docs.asf.alaska.edu/availability-overview/) · [NASA NISAR Observation Strategy](https://science.nasa.gov/mission/nisar/observation-strategy/).
 
 ## Why this matters
 
