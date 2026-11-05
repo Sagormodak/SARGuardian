@@ -14,7 +14,7 @@ Destination: `Sagormodak/SARGuardian`. Working branch: `migration/consolidate-re
 
 The import manifest covers **1,102 files**, including the three main snapshots, two distinct Known Place snapshots and eight instruction documents. Every original path, Git blob ID, file mode and SHA-256 is recorded. Source objects retain original commit hashes and full reachable history.
 
-**602 source branch/tag/PR-head references** from the three requested code repositories are preserved under namespaced archive tags. Fifteen explicit workflow revision pins are retained separately (one may overlap a source reference). Four additional instruction-repository branch references remain local-only; publishing that repository's unrelated history is outside the transfer scope. Selected instruction documents are preserved as provenance.
+**600 original source branch/tag/PR-head references** from the three requested code repositories and **16 explicit workflow/worker revision pins** are preserved as **616 namespaced archive tags**. The source manifest checks 602 references (the 600 original references plus two Known Place pins); the workflow-pin manifest covers all 16 pins. Four additional instruction-repository branch references remain local-only; publishing that repository's unrelated history is outside the transfer scope. Selected instruction documents are preserved as provenance.
 
 `scripts/verify_migration.py` checks file hashes against the manifest, exact recorded runtime adaptations, archive tag identities, immutable science pins, and workflow semantic equivalence. No LFS pointer or submodule is substituted for source code. Source-relative layouts remain intact. Original licenses, citations, fixtures, docs, SQL and workflows are retained.
 
@@ -40,7 +40,7 @@ Historical replay/validation workflows still refer to historical run IDs or sour
 
 Local checks completed:
 
-- Source file integrity, preserved refs, 15 pins, and 46 workflow semantic contracts: PASS.
+- Source file integrity, preserved refs, 16 pins, and 46 workflow semantic contracts: PASS. Independently repeated against a fresh clone of the published destination.
 - Actionlint 1.7.12 across centralized workflows: PASS.
 - Frontend: production build, lint, and 155 tests: PASS.
 - Active API: 214 tests pass locally; one POSIX file-permission test needs Linux. Google Maps dashboard adapter test: PASS.
@@ -49,9 +49,18 @@ Local checks completed:
 - Backend/worker suite: 593 tests pass across initial/retry runs, 1 skipped; 2 tests require POSIX permissions/path separators. Windows long-path issues were resolved for validation using extended-length temporary paths, without source edits.
 - Known Place two-polygon: 333 tests pass across initial/retry runs.
 - Author-exact selected author/paper/footprint regression: 142 tests PASS. Its broader historical generic-AOI suite has a pre-existing string-format assertion mismatch (six versus nine WKT decimal places); the current two-polygon snapshot passes that integration test. The historical source and test are preserved unchanged. The author-exact CI job targets its author/paper/footprint behavior, and the separate current Known Place job covers the generic AOI engine.
-- Gitleaks 8.30.1 full locally reachable source history: zero unreviewed findings. The 27 matched fingerprints are documented synthetic test identifiers/dummy Maps keys; additional branch copies match previously reviewed five-line test contexts exactly. No real credential was copied into a new configuration.
+- Gitleaks 8.30.1 full locally reachable source history and independently cloned published history: zero unreviewed findings. The 27 historical matches and seven new-path copies are documented synthetic test identifiers/dummy Maps keys; additional copies match previously reviewed five-line test contexts exactly. No real credential was copied into a new configuration.
+- Root Render Blueprint: PASS against Render's official `https://render.com/schema/render.yaml.json` JSON schema (SHA-256 `8a3fb8da6b4f55fe686fbefa790e011d3dd7895f013f355953c572a21ab6494a`). This is structural validation, not an authenticated Render deploy.
 
-Linux CI results and publication status are recorded below when available. Local test evidence does not imply hosted integration or operational pilot success.
+## Publication and outstanding CI
+
+All code and archive tags are published. [Draft PR #1](https://github.com/Sagormodak/SARGuardian/pull/1) contains the migration; `main` currently contains only the initialization README.
+
+[Linux CI run 42103606490](https://github.com/Sagormodak/SARGuardian/actions/runs/42103606490) could not allocate any runner because of a GitHub account-level Actions restriction. All seven jobs ended before their first step; **no Linux test executed**, so this run is not a test-suite result. Existing local Ubuntu/WSL was also unavailable because its registered virtual disk path is missing. The Windows/POSIX limitations listed above remain unverified on Linux.
+
+Resolve the GitHub Actions account restriction, rerun Monorepo validation, inspect the results, and complete the migration review before merging to `main`. The same runner restriction also prevents the website's scientific processing workflows from starting. Render secrets alone do not resolve it. No force-push or existing source change was made.
+
+Local test evidence does not imply hosted integration or operational pilot success.
 
 ## Deployment boundary
 

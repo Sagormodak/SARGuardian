@@ -2,6 +2,8 @@
 
 এই repo থেকে **দুটি service** হবে: frontend Static Site এবং backend Python Web Service। Scientific processing আগের মতো GitHub Actions-এ চলে; Render API job তৈরি, dispatch, callback, dashboard এবং archive পরিবেশন করে।
 
+বর্তমান handoff: code [migration PR #1](https://github.com/Sagormodak/SARGuardian/pull/1)-এ আছে। GitHub Actions account restriction-এর কারণে Linux CI start হয়নি। সেটি ঠিক করে CI rerun/review ও merge সম্পন্ন করুন। এই restriction থাকলে science processing job-ও start হবে না।
+
 ## ১. Code branch এবং service setup
 
 Migration branch-এর CI ও migration report review করে code `main`-এ নেওয়ার পরে Render → New → Blueprint থেকে `Sagormodak/SARGuardian` বেছে নিন। Root-এর `render.yaml` ব্যবহার করুন। Blueprint এখানে শুধু প্রস্তুত করা হয়েছে; কোনো service তৈরি বা deploy করা হয়নি।

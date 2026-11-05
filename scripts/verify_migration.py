@@ -80,7 +80,7 @@ def main():
     env = {x['key']: x.get('value') for x in api['envVars']}
     for key in ('GITHUB_ACTIONS_REPOSITORY', 'RIVERSHIFT_GITHUB_ACTIONS_REPOSITORY', 'KNOWN_PLACE_REPOSITORY', 'KNOWN_PLACE_PAPER_REPOSITORY'):
         require(env[key] == manifest['destination'], f'Incorrect destination: {key}')
-    published_refs = sum(entry.get('publication') != 'local-only' for entry in manifest['refs'])
+    published_refs = sum(entry.get('publication') != 'local-only' and entry['original'].startswith('refs/') for entry in manifest['refs'])
     print(f'PASS: {len(manifest["files"])} imported files, {len(changed)} reviewed adaptation(s), {published_refs} source history refs, {len(pins)} scientific pins, {len(register)} workflow contracts')
 
 if __name__ == '__main__':

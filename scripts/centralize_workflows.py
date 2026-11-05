@@ -48,7 +48,7 @@ def resolve(key, ref):
 mapping = {}
 used = set()
 records = []
-pins = set()
+pins = {(key, SOURCES[name]['sha']) for key, name in [('backend', 'known-place'), ('backend', 'known-place-author-exact')]}
 out = ROOT / '.github/workflows'
 out.mkdir(parents=True, exist_ok=True)
 
