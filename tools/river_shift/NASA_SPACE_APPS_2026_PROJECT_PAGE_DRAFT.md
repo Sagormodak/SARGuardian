@@ -4,7 +4,7 @@
 
 ## Project title
 
-**RiverShift — Reading River Change with NISAR**
+**RiverShift — Global River Change Intelligence with NISAR**
 
 ## Challenge
 
@@ -14,21 +14,31 @@
 
 ## One-sentence pitch
 
-RiverShift turns real NASA–ISRO NISAR radar observations into an interactive, date-by-date map of where river water coverage and persistent land–water transitions changed inside a user-drawn area.
+RiverShift turns NASA–ISRO NISAR L-band observations into a reusable, global river-change screening workflow: select a river reach within the mission's global land-observation footprint, choose a date window, and inspect the compatible GCOV acquisitions and observed water/land-transition candidates available for that AOI.
 
 ## Short description
 
-RiverShift is an interactive river-change screening application built around NASA–ISRO NISAR Level-2 GCOV data. A user draws an area of interest and selects a date window; RiverShift discovers the actual compatible NISAR acquisitions available for that area, runs reproducible water and persistent land–water change screens, and displays the resulting candidate footprints on a Google Maps Satellite basemap.
+RiverShift is an AOI-driven, location-independent application built around NASA–ISRO NISAR Level-2 GCOV data. It is designed for river reaches across the mission's global L-band land-observation footprint—not for one country or one pre-selected river. A user draws a WGS84 area of interest and chooses a date window; the system queries NASA's catalogue for that geometry and period, identifies compatible GCOV acquisitions, and runs the same reproducible water and persistent land–water change screens for the selected region.
 
-The map separates three classes: newly water-covered/open-water candidates (blue), persistent erosion candidates (red), and persistent deposition candidates (green). Users can step or play through the actual acquisition dates and inspect the corresponding area and data-coverage metrics. Each displayed output is linked to source product identifiers and SHA-256 checksums.
+The map separates three classes: newly water-covered/open-water candidates (blue), persistent erosion candidates (red), and persistent deposition candidates (green). Users can inspect the actual acquisition dates, source-linked outputs and coverage evidence. Each result is tied to source product identifiers and SHA-256 checksums. The Jamuna–Chowhali run is our concrete demonstration case; the processing request is not hard-coded to that location.
 
-The goal is to make radar observations understandable to both researchers and the public while preserving scientific limits: candidates are not field-confirmed findings, map previews are display-only, and the playback never invents daily observations. A separate gold map layer can show source-attributed mapped building/facility points; up to 2,000 representative points are sampled for display while local exposure screening retains the full point collection.
+The application makes radar observations understandable while keeping measurement, preview and interpretation distinct. Playback uses real acquisition dates, not synthetic daily observations. Optional source-attributed building/facility points appear in a separate context layer and are not mixed into the NISAR change classes.
+
+## Global applicability and data eligibility
+
+NASA describes NISAR L-band data coverage as global, and ASF reports ongoing L-band data collection over nearly all global landmasses. PROVISIONAL L-band products have been released for acquisitions from 17 June 2026 onward as processing is completed. RiverShift uses the actual ASF/NASA CMR catalogue for each user-selected WGS84 polygon and date window; it does not assume that a scene exists or that every date has usable coverage.
+
+The current live request supports one single-ring WGS84 Polygon of up to **1,000 km²**, with a date window of up to **366 days**. Processing requires at least **four distinct GCOV acquisition dates** and at least **90% catalogue-footprint coverage** of the AOI for each selected date. The worker then checks compatible orbit/frame, product maturity, frequency/covariance term, HDF5 layer availability and valid raster support before analysis. Up to 12 actual acquisition dates are selected; no daily interpolation is introduced.
+
+These are region-selection and data-eligibility rules, not country restrictions. The same workflow is available for an eligible river reach in any country within the NISAR L-band observation footprint. Global geographic applicability is not a claim that every AOI has data in every date window or that every region has the same independent-validation evidence.
+
+**Mission/data references:** [NASA NISAR Mission Overview](https://science.nasa.gov/mission/nisar/mission-overview/) · [ASF NISAR Data Availability](https://nisar-docs.asf.alaska.edu/availability-overview/) · [NASA NISAR Observation Strategy](https://science.nasa.gov/mission/nisar/observation-strategy/).
 
 ## The problem
 
-River channels, banks and floodwater coverage can change over short periods, affecting farms, settlements, roads and river infrastructure. Optical observations are often limited by cloud and illumination. SAR can observe Earth's surface through clouds and at night, but interpreting radar products and comparing acquisitions can be difficult for non-specialists.
+River channels, banks and floodwater coverage change across continents, affecting farms, settlements, roads and river infrastructure. Optical observations can be limited by cloud and illumination. SAR provides day/night, all-weather observation capability, but radar products and multi-date comparisons can be difficult for non-specialists to interpret.
 
-RiverShift addresses the discovery and communication gap: the user identifies the study area, while the application screens where within that AOI the radar-derived change candidates occur.
+RiverShift addresses the discovery and communication gap: the user chooses a region, while the application discovers the compatible observations and screens where radar-derived change candidates occur inside that AOI.
 
 ### Why this matters in the Jamuna–Chowhali region
 
@@ -109,19 +119,19 @@ The separate [OPERA DSWx-S1 replay #41900559056](https://github.com/moshiour0/SA
 - **Time-series honesty:** each frame is an actual acquisition; unavailable dates are not filled with invented observations.
 - **Accessible communication:** a quick-start sequence, distinct acquisition-date preflight, independent candidate-layer controls, validation-readiness panel and source-attributed local exposure context help non-specialists explore the evidence.
 
-## Limitations and next steps
+## Scientific interpretation and review status
 
-The current automatic output is provisional. Persistent water/land transitions are candidates rather than independently confirmed erosion/deposition. OSM building/facility counts are optional mapped exposure context only; OpenStreetMap is not a complete asset register and the preview polygons are approximate display geometry. The automatic workflow does not calculate signed channel migration from a centreline, sediment volume, water depth or flood causality. Those claims require independently dated banklines, appropriately oriented transects and/or field measurements.
+RiverShift reports radar-derived change candidates, not automatic ground-truth labels. Full-resolution source masks and retained provenance underpin the measurements; map previews are for visual communication. The time series uses actual acquisition dates, and no daily observations are interpolated.
 
-The Run #36 OPERA DSWx-S1 search found no eligible WTR scene in the same AOI within ±30 days of the 2026-08-17 NISAR date; the nearest RTC-S1 burst was 52 days earlier and cannot satisfy the strict ±3-day score gate. No OPERA reference mask or agreement metrics exist for this run. The Sentinel-2 candidate was heavily clouded (97.957% reported cloud cover; 0.1554% common support) and is not corroboration.
+Independent-reference agreement metrics are reported only when a suitable date-matched reference and the required common valid support are available. For the retained Jamuna Run #36, the strict reference workflow correctly returned **NO_MATCH_NO_SCORE / PROVISIONAL** because no eligible OPERA DSWx-S1 water-reference observation was available for the comparison window. We do not replace missing reference data with an invented accuracy score.
 
-An appropriate next validation is a date-matched, independently reviewed water reference for the same AOI with a documented class protocol, source checksums and at least 80% common valid support. FFWC/BWDB gauge data can provide river-stage context when exact station/date readings are attached, but it cannot replace a spatial water reference. Signed bankline movement should only be reported where dated banklines and independently oriented transects are available.
+Optional building/facility points provide mapped exposure context, not confirmed damage or affected-population counts. Signed bankline migration is a separate measurement requiring independently dated banklines and oriented transects.
 
 ## Demo
 
 **Live application:** https://sar-guardian-dynamic-lilac.vercel.app
 
-**Suggested on-screen demo sequence:** draw the AOI; check the distinct-acquisition preflight; run the actual NISAR workflow; review observed dates and independent candidate toggles; run the one-shot OSM building/facility context query; show its snapshot date and the explicit “mapped exposure context, not damage” caveat; finish with the NO_SCORE validation status.
+**Suggested on-screen demo sequence:** start with the world-centred map and state the global NISAR scope; draw the Jamuna demonstration AOI; check the acquisition preflight; run the NISAR workflow; review actual observation dates and separate candidate layers; show source provenance and the validation-readiness status; finish by explaining that Jamuna is one example of a reusable global AOI workflow.
 
 **Two-minute demo video:** [PASTE VIDEO URL]
 
@@ -129,7 +139,9 @@ An appropriate next validation is a date-matched, independently reviewed water r
 
 **Interactive application repository:** https://github.com/moshiour0/SARGuardian_Dynamic
 
-**Judge guide:** https://github.com/moshiour0/SARGuardian-backend/blob/main/tools/river_shift/NASA_SPACE_APPS_2026_JUDGE_GUIDE.md
+**Judge brief (recommended first read):** https://github.com/moshiour0/SARGuardian-backend/blob/main/tools/river_shift/NASA_SPACE_APPS_2026_JUDGE_BRIEF.md
+
+**Judge guide (full technical evidence):** https://github.com/moshiour0/SARGuardian-backend/blob/main/tools/river_shift/NASA_SPACE_APPS_2026_JUDGE_GUIDE.md
 
 **Optional Sentinel-2 cross-sensor tool:** https://github.com/moshiour0/SARGuardian-backend/blob/main/tools/river_shift/validate_with_sentinel2.py
 
