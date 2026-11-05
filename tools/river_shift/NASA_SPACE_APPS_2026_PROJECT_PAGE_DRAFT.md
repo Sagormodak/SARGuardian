@@ -68,23 +68,14 @@ These are regional context reports, not proof that the named assets are inside t
 
 ## NASA and external data
 
-**Primary analysis data:** NASA–ISRO NISAR Level-2 GCOV radar observations. The radar-derived GCOV values and valid-data masks drive the screening results.
+**Primary measurement source — NASA–ISRO NISAR Level-2 GCOV:** actual L-band radar observations and valid-data masks drive RiverShift's water and persistent land–water change screening.
 
-**Product access and provenance:** NASA Earthdata / Alaska Satellite Facility Distributed Active Archive Center (ASF DAAC). Exact granule names, observation dates and checksums are retained with the outputs.
+**Discovery and provenance — NASA Earthdata / ASF DAAC:** RiverShift searches the NASA catalogue for the user-selected AOI and date window, then retains exact granule identifiers, acquisition metadata and source checksums with the processed outputs.
 
-**Independent radar cross-check attempt:** NASA/JPL OPERA DSWx-S1 V1, derived from Sentinel-1 C-band SAR. RiverShift searches the same AOI for a water classification that can be compared to the retained NISAR water mask. Only OPERA WTR class 0 (not water) and class 1 (open water) can be labelled; inundated vegetation, masked and unknown pixels are NoData. The score gate requires an acquisition within ±3 days and at least 80% common valid support.
+**Independent cross-sensor reference — NASA/JPL OPERA DSWx-S1:** an eligible, date-matched Sentinel-1 water-classification product can be compared with the NISAR water screen when temporal and common-valid-support requirements pass. Independent agreement metrics are reported only when those conditions are met. The retained Jamuna example did not have an eligible reference for a score, so its result remains **PROVISIONAL** rather than receiving an unsupported accuracy value.
 
-**Run #36 outcome:** the AOI inventory returned 307 OPERA DSWx-S1 granules across the collection history, but none was an eligible WTR scene within the configured ±30-day discovery window around the 2026-08-17 NISAR observation. The diagnostic OPERA RTC-S1 inventory's nearest acquisition was 2026-06-26, 52 days earlier; RTC-S1 is backscatter, not water labels. No reference GeoTIFF or accuracy metrics were produced. This is a documented NO_MATCH_NO_SCORE outcome, not an independent validation claim.
+**Optional contextual sources:** source-attributed OpenStreetMap building/facility points can provide mapped exposure context; they are not damage or affected-population labels. FFWC/BWDB gauge observations may provide dated river-stage context when explicitly linked to a station and time. Copernicus Sentinel-2 L2A can be used as an optional clear-support comparison source where appropriate. Google Maps Satellite is a visual basemap only; it does not drive classification or validation.
 
-**Hydrological context:** FFWC/BWDB station SW49 (Serajganj, Jamuna) is a potential source for river-stage context. It was not used as an input to Run #36's classification or area metrics; station water level is point context, not a pixel-wise validation mask.
-
-**Legacy optical tool:** a standalone Copernicus Sentinel-2 L2A CLI remains available for scenes with adequate cloud-free common support, but it is not the monsoon reference strategy. The 2026-08-18 candidate for this AOI had 97.957% reported cloud cover and only 0.1554% common valid support; no metrics were published.
-
-**Open map-data impact context:** The optional AOI-bounded Overpass request reads OpenStreetMap building features and selected public-facility amenities. It supplies mapped feature locations only, not population counts or damage labels. Results are counted against candidate preview polygons, not authoritative full-resolution masks. Attribute **© OpenStreetMap contributors** under ODbL; the OSM snapshot timestamp is shown when returned.
-
-**Third-party visual context:** Google Maps Satellite imagery provides geographic orientation in the result map. It is not used in the NISAR classification and is not an independent validation dataset.
-
-Do not add Copernicus DEM, GPM IMERG, gauge values, field survey, or population/exposure data to claims unless the submitted build actually processed the source and retained its identity, timestamp and method. The OSM panel is a mapped building/facility context screen, not a complete asset inventory, census, damage assessment, or independent validation dataset. Its separate gold map markers are sampled for display only (up to 2,000); the local intersection counts use the full loaded point layer. Gauge readings must not be described as spatial water-mask validation.
 
 ## How the science works
 
@@ -111,7 +102,7 @@ The retained RiverShift processing run [#36](https://github.com/moshiour0/SARGua
 
 These are AOI- and threshold-specific **provisional screening candidates**, not independently field-validated measurements. They do not establish sediment volume, signed bankline direction, flood causality or exposed-population counts. Do not substitute older figures from an earlier run.
 
-The separate [OPERA DSWx-S1 replay #41900559056](https://github.com/moshiour0/SARGuardian-backend/actions/runs/41900559056) reused retained artifacts and did not rerun NISAR processing. It found no eligible OPERA WTR scene in the ±30-day discovery window, so the correct result was **NO_MATCH_NO_SCORE**. The validation workflow remained red by design rather than showing a green status without metrics. The report/status/private receipt were uploaded to private Drive with remote checksum verification.
+The retained Jamuna example has no independent-reference accuracy score and remains **PROVISIONAL**. Its candidate areas are presented as reproducible radar-screening outputs, not field-confirmed impact measurements.
 
 ## What makes it useful and different
 
