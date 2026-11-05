@@ -12,13 +12,15 @@ This folder provides a first local scientific workflow:
 6. Screen persistent erosion/deposition candidates.
 7. Validate a binary water mask against an independently prepared reference raster.
 8. Measure signed bankline displacement along independently digitised transects.
-9. Audit whether at least three compatible GCOV dates cover the AOI sufficiently.
+9. Audit whether at least four compatible GCOV dates cover the AOI sufficiently.
 10. Export an observed-date water time series for discrete, evidence-preserving dashboard playback.
 11. Optionally compare a NISAR binary water mask with Copernicus Sentinel-2 L2A SCL and MNDWI water screens.
 
-The separate GitHub Actions worker in `process_gcov_job.py` runs the selected AOI/date request through catalogue review, exact-product downloads, HDF5 validation, raster extraction, flood and persistent-change screening, observed-date playback and private result storage. It uses the AOI and date window supplied by the signed job request; no Bangladesh study polygon is substituted. A result remains provisional until independent review evidence is recorded.
+The separate GitHub Actions worker in `process_gcov_job.py` runs the selected AOI/date request through catalogue review, exact-product downloads, HDF5 validation, raster extraction, flood and persistent-change screening, observed-date playback and private result storage. It uses the AOI and date window supplied by the signed job request; no country-specific study polygon is substituted. RiverShift is geographically reusable across eligible river reaches within the NISAR L-band global land-observation footprint.
 
-Processing is limited by NISAR coverage, the AOI's available comparable acquisitions, the backend's 1,000 km² AOI ceiling and the worker resource limits. The API and worker require at least four distinct matching acquisition dates; the compatibility audit also requires at least 90% catalogue footprint coverage per selected date. The worker then selects up to twelve actual dates and at most twenty-four granules. These are acquisition dates, not daily measurements. A location with insufficient NISAR observations returns a no-result explanation instead of a simulated layer.
+The current live request accepts one valid, single-ring WGS84 Polygon AOI of up to **1,000 km²** and a date window of up to **366 days**. It requires at least **four distinct compatible acquisition dates** and at least **90% catalogue-footprint coverage** of the AOI per selected date. The worker then verifies orbit/frame, maturity, frequency/covariance term, HDF5 layer availability and valid raster support, selecting up to **twelve actual dates** and at most **four same-date granules per date**. These are real acquisition dates, not daily measurements. A location/date window with insufficient compatible NISAR observations returns an explicit no-result explanation rather than a simulated layer. The Jamuna–Chowhali AOI is a demonstration case, not a fixed engine target.
+
+See [NASA_SPACE_APPS_2026_JUDGE_BRIEF.md](NASA_SPACE_APPS_2026_JUDGE_BRIEF.md) for the concise global scope, operating envelope and judge reading order.
 
 See `docs/RIVERSHIFT_PROCESSING_SETUP.md` for the GitHub and backend settings required before live job dispatch can run. The optional independent-source comparison is documented in `README_11_validate_with_sentinel2.md`; it is not part of the default worker run.
 
@@ -48,7 +50,7 @@ The inspection script refuses GDAL versions older than 3.13.0 because the NISAR 
       processed/
       reference/
     data-audit/
-      candidate_sirajganj_jamuna_aoi.geojson
+      candidate_<region>_<river>_aoi.geojson
       gcov-catalogue-manifest.json
       gcov-time-series-audit.json
     results/
@@ -78,7 +80,7 @@ For signed bankline movement, supply two dated banklines and user-oriented trans
 See `README_08_measure_bankline_migration.md` and `river_shift/README_06_transects.md` before running it.
 
 ### GCOV time-series feasibility audit
-Run `audit_gcov_acquisitions.py` against the NASA CMR UMM-G 1.6.7 catalogue manifest before downloading or analysing products. It requires at least three dates matching maturity, direction, relative orbit, frame, bandwidth, polarization, processing type, observation source, CRID, orbit accuracy, frame coverage and center; the requested frequency/diagonal term must be encoded as available. Each date must meet the AOI footprint threshold. This is only a product-level review gate; HDF5 layers, valid masks and exact grids remain to be checked. The default minimum is 90%.
+Run `audit_gcov_acquisitions.py` against the NASA CMR UMM-G 1.6.7 catalogue manifest before downloading or analysing products. It requires at least four distinct dates matching maturity, direction, relative orbit, frame, bandwidth, polarization, processing type, observation source, CRID, orbit accuracy, frame coverage and center; the requested frequency/diagonal term must be encoded as available. Each date must meet the AOI footprint threshold. This is only a product-level review gate; HDF5 layers, valid masks and exact grids remain to be checked. The default minimum is 90%.
 
 The GitHub Actions workflow `.github/workflows/river-shift-gcov-audit.yml` runs public catalogue discovery and footprint feasibility without downloading imagery. It is launched manually with the user-selected AOI/date window. The processing workflow `.github/workflows/river-shift-gcov-process.yml` runs only after an authenticated user submits a RiverShift job.
 
