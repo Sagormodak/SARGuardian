@@ -103,9 +103,10 @@ source-AOI streaming workflow remains independently callable.
 
 ## RiverShift — NASA Space Apps 2026
 
-The repository includes the RiverShift NISAR GCOV river-change screening worker under [tools/river_shift](tools/river_shift/README.md). RiverShift discovers compatible NISAR acquisitions for a user-drawn AOI, screens actual observed water/land changes and retains private scientific outputs with source provenance. It is designed for the NASA Space Apps 2026 **Dancing with the SARs** challenge.
+The repository includes RiverShift, an AOI-driven NISAR GCOV river-change screening engine under [tools/river_shift](tools/river_shift/README.md). It is geographically reusable across eligible river reaches within the mission's global L-band land-observation footprint: users supply a WGS84 AOI and date window, and the worker discovers compatible observations for that request. The Jamuna–Chowhali result is a demonstration case, not a location restriction. The engine is designed for NASA Space Apps 2026 **Dancing with the SARs**.
 
-- [RiverShift judge guide](tools/river_shift/NASA_SPACE_APPS_2026_JUDGE_GUIDE.md)
+- [RiverShift judge brief — start here](tools/river_shift/NASA_SPACE_APPS_2026_JUDGE_BRIEF.md)
+- [RiverShift judge guide — full technical evidence](tools/river_shift/NASA_SPACE_APPS_2026_JUDGE_GUIDE.md)
 - [NASA project-page draft and submission checklist](tools/river_shift/NASA_SPACE_APPS_2026_PROJECT_PAGE_DRAFT.md)
 - [Optional Sentinel-2 L2A cross-sensor agreement tool](tools/river_shift/README_11_validate_with_sentinel2.md)
 - [Interactive frontend repository](https://github.com/moshiour0/SARGuardian_Dynamic)
