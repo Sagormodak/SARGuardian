@@ -123,16 +123,7 @@ The worker reported these provisional screening candidates:
 
 These values describe that specific AOI, selected products, threshold and comparison window. They are **not independently field-validated**, and they do not establish sediment volume, signed bankline movement, flood causality or exposed-population counts. An older draft contained different values from an earlier run; those older values must not be attributed to Run #36.
 
-The retained processing log records successful source provenance checks, the six-date time series, candidate-mask generation, preview generation and 51 validated output files at package assembly. Private Drive upload receipts and remote checksum checks passed. The result remained **PROVISIONAL**. **Original-run limitation:** Run #36 predates backend PR #151, which integrated the full-resolution candidate-mask overlap audit into the live worker; its original artifact manifest still does not contain candidate_mask_overlap_audit.json. A separate, checksum-bound retrospective replay ([Run #41926490047](https://github.com/moshiour0/SARGuardian-backend/actions/runs/41926490047)) downloaded all six exact retained COGs and reran the current worker functions. All six source COG checksums matched their retained sidecars; the three reported candidate areas reproduced exactly. The replay generated a new full-resolution candidate_mask_overlap_audit.json and preview geometry audit, explicitly labelled RETROSPECTIVE_RECOMPUTED_NOT_ORIGINAL_WORKER_ARTIFACT. This is reproducible retrospective evidence, not a claim that the original 2026 Run #36 worker emitted those files. New jobs on main retain both source-mask and preview-overlap diagnostics natively.
-
-**Retrospective overlap results (diagnostic, not accuracy):**
-- Common valid support: **5,581,042 pixels** (62.0125% of the full grid).
-- Full-resolution erosion ↔ deposition: **0 intersecting pixels**; Jaccard 0.000.
-- Full-resolution deposition ↔ new-water: **0 intersecting pixels**.
-- Full-resolution erosion ↔ new-water: **61,518 intersecting pixels**; Jaccard 0.2567. These screens use separate three-date Otsu thresholds/date windows (flood −11.75165 dB; morphology −12.01393 dB), so this is a cross-screen diagnostic requiring interpretation, not the erosion/deposition exclusivity test.
-- Current preview uses one 293×384 grid at 89.557 m display-cell spacing; erosion ↔ deposition polygon intersection is **0 km²**. Sparse MultiPoint markers are excluded from polygon area/Jaccard and capped at 8,000 displayed points per class.
-
-The preview's erosion ↔ new-water polygons still intersect by 0.48794 km². That is display-only and reflects the separate comparison/threshold basis; it is not an independent measurement or an accuracy score.
+A separate checksum-bound retrospective replay checked all six retained source COGs against their SHA-256 sidecars and reproduced the three reported candidate areas exactly. The replay also recorded full-resolution mask-overlap QA, with **zero erosion/deposition overlap**, and separate shared-grid preview geometry QA. These replay diagnostics are identified as retrospective evidence; new jobs on main record the corresponding QA natively.
 
 ### Independent-reference review — retained Jamuna case
 
@@ -140,13 +131,12 @@ The retained [Run #36 cross-sensor review](https://github.com/moshiour0/SARGuard
 
 This is an AOI- and date-specific review outcome. It does not limit the global processing architecture, and it does not transfer to another region: each new AOI receives its own catalogue, compatibility and reference-availability checks.
 
-## Optional impact-context screen — mapped exposure, not damage
+## Optional impact-context screen — mapped exposure context
 
-The Dynamic RiverShift page now includes an optional, one-query OpenStreetMap context action for the completed job AOI. Its mapped points are a separate gold layer with a display cap and independent toggle. It requests mapped building features and a selected set of public-facility amenities from the Overpass API, converts OSM nodes and way/relation centres to point features, deduplicates by OSM element identity, and records the OSM snapshot timestamp when returned. The alternative is a source-attributed point/centroid GeoJSON imported locally in the browser.
+RiverShift can add an optional, separately attributed OpenStreetMap context layer for mapped buildings and selected public facilities inside the selected AOI. Users can also import a source-attributed point/centroid GeoJSON layer, including population-grid points with a supplied numeric attribute. The context points appear in a separate gold map layer and are not mixed into NISAR change classes or area calculations.
 
-The screen counts unique features and per-class matches inside the retained **candidate preview polygons**. It excludes sparse candidate preview markers and can optionally sum a user-supplied numeric property from an imported dataset. The OSM building/facility query does not provide population values. Imported/OSM representative points can also be drawn on the result map as a separate gold context layer, with an independent visibility toggle; map rendering is capped at 2,000 evenly sampled points, while local intersection counts continue to use the full loaded point collection. These points are not mixed into the NISAR candidate classes or their area metrics. The screen is exposure context only: it does not show that a building is damaged, occupied, threatened, or affected; OSM coverage is incomplete and uneven; preview polygons are approximate display geometry rather than authoritative measurement masks. A query reaching the 5,000-element cap is explicitly marked potentially incomplete. No imported exposure data is uploaded to SARGuardian's backend.
+Counts are point-in-preview-polygon context only. They help describe mapped features around candidate zones; they are not damage labels, confirmed affected assets, a complete building inventory or an independently validated population estimate. OpenStreetMap is credited as **© OpenStreetMap contributors** under the ODbL. Imported files are processed locally in the browser and are not uploaded to SARGuardian's backend.
 
-Attribute OpenStreetMap as **© OpenStreetMap contributors** under the ODbL. The shared Overpass API is not a guaranteed production data service; the UI performs one AOI-bounded request on explicit user action and reports errors rather than fabricating zero counts. For a formal impact claim, use an authoritative, dated building/population dataset and a documented spatial overlay against the authoritative full-resolution change masks.
 
 ## Independent validation pathway
 
