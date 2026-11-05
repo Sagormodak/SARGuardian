@@ -30,6 +30,8 @@ NASA describes NISAR L-band data coverage as global, and ASF reports ongoing L-b
 
 The current live request supports one single-ring WGS84 Polygon of up to **1,000 km²**, with a date window of up to **366 days**. Processing requires at least **four distinct GCOV acquisition dates** and at least **90% catalogue-footprint coverage** of the AOI for each selected date. The worker then checks compatible orbit/frame, product maturity, frequency/covariance term, HDF5 layer availability and valid raster support before analysis. Up to 12 actual acquisition dates are selected; no daily interpolation is introduced.
 
+For an independent visual check of the mission footprint and acquisition plan, consult the [ASF/NISAR Reference Observation Plan interactive map](https://experience.arcgis.com/experience/6052a864cd01459393884a7f751558e3) and the [ASF PROVISIONAL L-band data search](https://search.asf.alaska.edu/). The observation plan is not a guarantee that every location/date has released, compatible GCOV products; the live catalogue and worker gates decide actual eligibility.
+
 These are region-selection and data-eligibility rules, not country restrictions. The same workflow is available for an eligible river reach in any country within the NISAR L-band observation footprint. Global geographic applicability is not a claim that every AOI has data in every date window or that every region has the same independent-validation evidence.
 
 **Mission/data references:** [NASA NISAR Mission Overview](https://science.nasa.gov/mission/nisar/mission-overview/) · [ASF NISAR Data Availability](https://nisar-docs.asf.alaska.edu/availability-overview/) · [NASA NISAR Observation Strategy](https://science.nasa.gov/mission/nisar/observation-strategy/).
