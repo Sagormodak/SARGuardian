@@ -78,6 +78,39 @@
 .rs-aoi-draw, .rs-timeseries { display: grid; gap: 10px; padding: 15px; border: 1px solid rgba(103, 201, 198, .2); border-radius: 12px; background: rgba(32, 116, 120, .06); }
 .rs-aoi-draw h3, .rs-timeseries h3 { margin: 0; color: #edf9fc; font: 700 17px 'Manrope', sans-serif; letter-spacing: -.035em; }
 .rs-aoi-map { min-height: 310px; }
+.rs-map-search-control {
+  display: grid;
+  gap: 6px;
+  width: min(340px, calc(100vw - 88px));
+  margin: 10px 0 0 10px;
+  padding: 9px 10px 10px;
+  border: 1px solid rgba(149, 194, 208, .28);
+  border-radius: 11px;
+  background: rgba(5, 24, 38, .96);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .28);
+  backdrop-filter: blur(10px);
+}
+.rs-map-search-caption {
+  color: #8fded7;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .16em;
+}
+.rs-map-search-control gmp-place-autocomplete {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  color-scheme: light;
+}
+.rs-map-search-control gmp-place-autocomplete::part(input) {
+  width: 100%;
+}
+@media (max-width: 620px) {
+  .rs-map-search-control {
+    width: min(300px, calc(100vw - 76px));
+    margin: 8px 0 0 8px;
+  }
+}
 .rs-aoi-controls, .rs-playback-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .rs-aoi-controls > span { color: #91acbb; font-size: 10px; }
 .rs-secondary-button { padding: 9px 12px; border: 1px solid rgba(142, 190, 207, .24); border-radius: 8px; color: #cce6ee; background: #09283a; font-size: 10px; font-weight: 700; cursor: pointer; }
