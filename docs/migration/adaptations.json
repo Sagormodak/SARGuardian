@@ -1,0 +1,8 @@
+[
+  {
+    "path": "apps/dynamic/Backend/app/known_place.py",
+    "original_sha256": "20d5dc6d98297de3dea5d2846f5b75c46856c00a49e849c553db32a894861436",
+    "sha256": "1ac169c3a803c4cec4e8645afb1d20f470fc586fea1ccaba82732bdfe3d8c699",
+    "reason": "Allow Known Place repository and ref configuration for a new deployment; default source behavior and all science unchanged."
+  }
+]

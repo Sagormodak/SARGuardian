@@ -1,0 +1,4 @@
+h5py>=3.10
+numpy>=1.26
+requests>=2.31
+# ASF client version is pinned by the relevant scientific runtime requirements file; do not duplicate it here.

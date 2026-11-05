@@ -1,0 +1,431 @@
+name: Rebuild SARGuardian Dashboard from Retained AOI Artifacts
+run-name: Rebuild dashboard for AOI run 40998521651 (no raw replay)
+
+on:
+  push:
+    branches:
+      - main
+      - feat/interactive-geospatial-dashboard-main-integration
+    paths:
+      - "dashboard/assets/prepare_web_assets.py"
+      - ".github/workflows/dashboard-real-artifact-smoke.yml"
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful AOI workflow run whose verified derived artifacts should be reassembled (no ASF/HDF5 replay)"
+        required: true
+        type: string
+        default: "40998521651"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: sarguardian-dashboard-rebuild-40998521651
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    name: Rebuild dashboard from retained AOI artifacts only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+      RUN_ID_SAFE: SARGuardian-AOI-40998521651-1-dashboard-refresh-${{ github.run_id }}
+    steps:
+      - name: Check out current dashboard builder
+        uses: actions/checkout@v4
+
+      - name: Check out the tested sparse-support science revision
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian
+          ref: 006d4cd1485cf80e509eaf8717c12e9c6390ac09
+          path: science-source
+
+      - name: Resolve the existing AOI source run
+        id: source
+        shell: bash
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id || '40998521651' }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_RUN_ID" =~ ^[0-9]{5,15}$ ]]; then
+            echo "ERROR=SOURCE_RUN_ID_MUST_BE_NUMERIC"
+            exit 2
+          fi
+          echo "run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "SOURCE_RUN_ID=$SOURCE_RUN_ID"
+          echo "NO_RAW_REPLAY=true"
+
+      - name: Download the existing verified AOI dashboard artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sarguardian-aoi-dashboard-${{ steps.source.outputs.run_id }}-1
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/sarguardian-dashboard-fixture
+
+      - name: Set up the pinned Python runtime
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dashboard and Drive upload dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir -r science-source/requirements.txt
+          python -m pip install --disable-pip-version-check --no-cache-dir numpy rasterio matplotlib pillow
+          python -m pip install --disable-pip-version-check --no-cache-dir -r tools/requirements-retention.txt
+
+      - name: Compile the dashboard builder
+        env:
+          PYTHONPATH: .
+        run: python -m py_compile dashboard/assets/prepare_web_assets.py
+
+      - name: Rebuild viewer and prove scientific rasters were not modified
+        id: build
+        shell: bash
+        env:
+          PYTHONPATH: .
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/sarguardian-dashboard-fixture/dashboard"
+          test -s "$root/aoi-run-summary.json"
+          test -s "$root/aoi-processing-report.json"
+          test -s "$root/science-diagnostics/logs/pixel_stack_common_mode_removed.log"
+          test -s "$root/science-diagnostics/logs/pixel_stack_common_mode_retained.log"
+
+          # Re-run only the target-free GUNW per-pixel diagnostic from retained
+          # AOI-clipped GeoTIFFs. This does not access ASF or download HDF5.
+          audit="$RUNNER_TEMP/sarguardian-pixel-stack-reaudit"
+          mkdir -p "$audit/export" "$root/science-diagnostics/logs"
+          mapfile -t gunw_tiffs < <(find "$root/product-data" -mindepth 2 -maxdepth 2 -type f -name '*.tif' -path '*/GUNW-*/*' | sort)
+          test "${#gunw_tiffs[@]}" -eq 15
+          for tif in "${gunw_tiffs[@]}"; do cp "$tif" "$audit/export/"; done
+          python science-source/src/pixel_stack.py --dir "$audit/export" --season all \
+            > "$root/science-diagnostics/logs/pixel_stack_retained_artifact_reaudit_removed.log" 2>&1
+          python science-source/src/pixel_stack.py --dir "$audit/export" --season all --keep-common-mode \
+            > "$root/science-diagnostics/logs/pixel_stack_retained_artifact_reaudit_retained.log" 2>&1
+
+          python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / "sarguardian-dashboard-fixture" / "dashboard"
+          logs = root / "science-diagnostics" / "logs"
+          primary = (logs / "pixel_stack_retained_artifact_reaudit_removed.log").read_text(encoding="utf-8")
+          retained = (logs / "pixel_stack_retained_artifact_reaudit_retained.log").read_text(encoding="utf-8")
+          for label, content in (("common-mode removed", primary), ("common-mode retained", retained)):
+              assert "PIXEL_STACK_STATUS=WITHHELD_NO_COMPATIBLE_REPEATED_NETWORK" in content, (label, content[-5000:])
+              assert "PIXEL_STACK_PAIRS_EXAMINED=15" in content, label
+              assert "PIXEL_STACK_EXACT_NETWORKS=15" in content, label
+              assert "PIXEL_STACK_NETWORKS_WITH_2_PLUS_PAIRS=0" in content, label
+              assert "VERDICT: NOT TESTABLE" in content, label
+              assert "NO DETECTION" not in content, label
+              assert "Mean of empty slice" not in content, label
+          assert "[INFO] 15 all pair(s)" in primary
+
+          summary_path = root / "aoi-run-summary.json"
+          report_path = root / "aoi-processing-report.json"
+          summary = json.loads(summary_path.read_text(encoding="utf-8"))
+          original_status = next(
+              (m.get("status") for m in summary.get("science_pipeline", {}).get("modules", [])
+               if m.get("name") == "pixel_stack.py"), "NOT_REPORTED"
+          )
+          summary.setdefault("science_diagnostics", {})["pixel_stack"] = {
+              "status": "WITHHELD_NO_COMPATIBLE_REPEATED_NETWORK",
+              "log": "logs/pixel_stack_retained_artifact_reaudit_removed.log",
+              "science_commit": "006d4cd1485cf80e509eaf8717c12e9c6390ac09",
+              "source_run_id": os.environ["SOURCE_RUN_ID"],
+          }
+          summary["science_diagnostics"]["common_mode_sensitivity"] = {
+              "status": "WITHHELD_NO_COMPATIBLE_REPEATED_NETWORK",
+              "log": "logs/pixel_stack_retained_artifact_reaudit_retained.log",
+              "science_commit": "006d4cd1485cf80e509eaf8717c12e9c6390ac09",
+              "exact_networks": 15,
+              "networks_with_2_plus_pairs": 0,
+          }
+          summary["science_diagnostics"]["pixel_stack"]["exact_networks"] = 15
+          summary["science_diagnostics"]["pixel_stack"]["networks_with_2_plus_pairs"] = 0
+          summary["science_reaudit"] = {
+              "status": "COMPLETED_FROM_RETAINED_AOI_GEOTIFFS",
+              "module": "pixel_stack.py",
+              "science_commit": "006d4cd1485cf80e509eaf8717c12e9c6390ac09",
+              "source_run_id": os.environ["SOURCE_RUN_ID"],
+              "prior_reported_status": original_status,
+              "new_status": "WITHHELD_NO_COMPATIBLE_REPEATED_NETWORK",
+              "exact_gunw_networks": 15,
+              "networks_with_two_or_more_consecutive_pairs": 0,
+              "raw_hdf5_replayed": False,
+              "source_geotiffs_modified": False,
+          }
+          summary["science_limitations"] = [
+              item for item in summary.get("science_limitations", [])
+              if not str(item).startswith("Pixel-stack status:")
+          ] + [
+              "Pixel-stack status: WITHHELD_NO_COMPATIBLE_REPEATED_NETWORK. "
+              "All 15 retained GUNW pairs have different exact measurement-network keys; "
+              "there are zero repeated compatible pair chains. NOT TESTABLE is not NO DETECTION."
+          ]
+          for module in summary.get("science_pipeline", {}).get("modules", []):
+              if module.get("name") == "pixel_stack.py":
+                  module["status"] = "WITHHELD_NO_COMPATIBLE_REPEATED_NETWORK"
+                  module["reason"] = (
+                      "The 15 retained GUNW pairs belong to 15 distinct exact networks defined by "
+                      "look/path, frame, subswath, bandwidth, polarization and processing CRID. "
+                      "None contains two or more consecutive pairs within the same exact key. "
+                      "Joining them would mix measurement geometry/processing lineage. "
+                      "A homogeneous multi-date pixel stack is therefore NOT TESTABLE; this is not NO DETECTION."
+                  )
+                  module["pairs_examined"] = 15
+                  module["exact_networks"] = 15
+                  module["networks_with_2_plus_pairs"] = 0
+          report = json.loads(report_path.read_text(encoding="utf-8"))
+          report["summary"] = summary
+          report["science_reaudit"] = summary["science_reaudit"]
+          summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False, allow_nan=False) + chr(10), encoding="utf-8")
+          report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + chr(10), encoding="utf-8")
+
+          # Recompute the new target-free candidate-local diagnostics from the
+          # same verified, AOI-clipped product GeoTIFFs. No raw HDF5 or ASF access.
+          from dashboard.aoi_displacement_candidates import build_aoi_spatial_candidate_report
+          from dashboard.science_pipeline import build_science_pipeline_report
+
+          products = report.get("products")
+          assert isinstance(products, list) and len(products) == int(summary["products_expected"]), (
+              "Retained processing report must contain every product record"
+          )
+          candidate_report = build_aoi_spatial_candidate_report(
+              products, root, str(summary.get("aoi_wkt_sha256") or "")
+          )
+          summary["aoi_displacement_candidates"] = candidate_report
+          science_pipeline = build_science_pipeline_report(
+              products,
+              Path("science-source"),
+              summary.get("science_diagnostics"),
+              summary.get("site_context"),
+              summary.get("common_reference_timeseries") or {},
+              candidate_report,
+              summary.get("aoi_relative_pixel_timeseries") or {},
+              summary.get("aoi_wide_displacement_screen") or {},
+          )
+          # Keep the original product-processing revision distinct from the
+          # pinned source revision used for this retained-data science audit.
+          source_processing_commit = str(summary.get("science_commit") or "")
+          retained_audit_commit = str((summary.get("science_reaudit") or {}).get("science_commit") or "")
+          assert retained_audit_commit == "006d4cd1485cf80e509eaf8717c12e9c6390ac09", retained_audit_commit
+          science_pipeline["science_commit_expected"] = retained_audit_commit
+          science_pipeline["source_processing_science_commit"] = source_processing_commit
+          science_pipeline["science_reaudit_commit"] = retained_audit_commit
+          summary["science_pipeline"] = science_pipeline
+          report["summary"] = summary
+          report["science_pipeline"] = science_pipeline
+          report["aoi_displacement_candidates"] = candidate_report
+          summary_path.write_text(
+              json.dumps(summary, indent=2, ensure_ascii=False, allow_nan=False) + chr(10),
+              encoding="utf-8",
+          )
+          report_path.write_text(
+              json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + chr(10),
+              encoding="utf-8",
+          )
+          (root / "science-pipeline-report.json").write_text(
+              json.dumps(science_pipeline, indent=2, ensure_ascii=False, allow_nan=False) + chr(10),
+              encoding="utf-8",
+          )
+          print("TARGET_FREE_CANDIDATE_REAUDIT=PASS")
+          print("TARGET_FREE_CANDIDATE_FEATURES=" + str(candidate_report.get("candidate_features", 0)))
+          print("CANDIDATE_LOCAL_FLOOR_MEASUREMENTS=" + str(candidate_report.get("candidate_local_floor_measurements", 0)))
+          print("CANDIDATE_FEATURES_WITH_LOCAL_FLOOR=" + str(candidate_report.get("candidate_features_with_local_floor", 0)))
+          print("TARGET_FREE_STAGE_REPORT=" + str(science_pipeline.get("overall_status")))
+          print("RETAINED_GUNW_PIXEL_STACK_REAUDIT=PASS")
+          print("SCIENCE_REAUDIT_STATUS=WITHHELD_NO_COMPATIBLE_REPEATED_NETWORK")
+          print("RAW_HDF5_REPLAYED=false")
+          PY
+
+          before="$(find "$root/product-data" -name '*.tif' -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          python dashboard/assets/prepare_web_assets.py --dashboard-root "$root"
+          after="$(find "$root/product-data" -name '*.tif' -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)"
+          test "$before" = "$after"
+
+          python - <<'PY'
+          import json, os, zipfile
+          from pathlib import Path
+          from shutil import move
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "sarguardian-dashboard-fixture" / "dashboard"
+          summary_path = root / "aoi-run-summary.json"
+          report_path = root / "aoi-processing-report.json"
+          receipt_path = root / "web-dashboard-build-receipt.json"
+          receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+          manifest = json.loads((root / "web-dashboard" / "manifest.json").read_text(encoding="utf-8"))
+          summary = json.loads(summary_path.read_text(encoding="utf-8"))
+          report = json.loads(report_path.read_text(encoding="utf-8"))
+
+          expected_products = int(summary["products_expected"])
+          assert receipt["status"] == "PASS", receipt
+          assert receipt["observations"] == expected_products == 31, receipt
+          assert receipt["layers"] >= 20, receipt
+          assert receipt["derived_layer_errors"] == 0, receipt
+          assert manifest["validation"]["independent_geophysical_validation"] == "NOT_PERFORMED"
+          assert len(manifest.get("observations", [])) == 31
+          assert manifest.get("target_free_analysis") is True
+
+          pixel = manifest.get("pixel_stack_diagnostic", {})
+          assert pixel.get("available") is False, pixel
+          assert pixel.get("pairs_examined") == 15, pixel
+          assert pixel.get("exact_networks") == 15, pixel
+          assert pixel.get("networks_with_2_plus_pairs") == 0, pixel
+          assert pixel.get("status") == "WITHHELD_NO_COMPATIBLE_REPEATED_NETWORK", pixel
+          assert pixel.get("chains") == [], pixel
+          reaudit = summary.get("science_reaudit", {})
+          assert reaudit.get("status") == "COMPLETED_FROM_RETAINED_AOI_GEOTIFFS", reaudit
+          assert reaudit.get("raw_hdf5_replayed") is False, reaudit
+          assert reaudit.get("science_commit") == "006d4cd1485cf80e509eaf8717c12e9c6390ac09", reaudit
+
+          legacy = manifest.get("aoi_wide_displacement_screen", {})
+          extended = manifest.get("aoi_displacement_candidates", {})
+          assert int(legacy.get("candidate_count", 0)) == 120, legacy
+          assert int(extended.get("candidate_features", 0)) == 2208, extended
+          assert int(extended.get("candidate_local_floor_measurements", -1)) >= 0, extended
+          assert int(extended.get("candidate_features_with_local_floor", -1)) >= 0, extended
+          floor_policy = extended.get("candidate_local_floor_policy", {})
+          assert floor_policy.get("background_ring_pixels") == 5, floor_policy
+          assert floor_policy.get("minimum_background_pixels") == 30, floor_policy
+          assert "3 * robust_sigma / acquisition_span_days" in floor_policy.get("detection_floor", ""), floor_policy
+          assert extended.get("movement_confirmed") is False
+          assert extended.get("hazard_detected") is False
+          features = extended.get("features", [])
+          assert len(features) == 2208, len(features)
+          for feature in features:
+              properties = feature.get("properties", {})
+              floor_rows = properties.get("candidate_local_floor_by_pair")
+              assert isinstance(floor_rows, list), properties
+              for floor_row in floor_rows:
+                  assert floor_row.get("minimum_background_pixels") == 30, floor_row
+                  assert floor_row.get("background_ring_pixels") == 5, floor_row
+                  assert floor_row.get("floor_formula") == "3 * (1.4826 * MAD) / acquisition_span_days", floor_row
+              assert isinstance(properties.get("candidate_seasonality_inventory"), dict), properties
+              assert isinstance(properties.get("candidate_phase_ceiling_review"), dict), properties
+              assert properties.get("candidate_cross_geometry_status") == "WITHHELD_NO_PIXELWISE_LOOK_VECTOR_AND_RATE_COVARIANCE", properties
+
+          pipeline = manifest.get("science_pipeline", {})
+          modules = {row.get("name"): row for row in pipeline.get("modules", [])}
+          assert modules["aoi_displacement_candidates.py"]["candidate_features"] == 2208, modules
+          assert modules["local_floor.py"]["status"] in {
+              "CANDIDATE_REGION_LOCAL_FLOORS_MEASURED",
+              "WITHHELD_INSUFFICIENT_CANDIDATE_LOCAL_BACKGROUND",
+              "NOT_REQUIRED_FOR_TARGET_FREE_FIND_DISPLACEMENTS",
+          }, modules.get("local_floor.py")
+          assert modules["inverse_velocity.py"]["status"] == "WITHHELD_NO_CANDIDATE_SERIES_ON_INDEPENDENT_REFERENCE", modules
+          assert modules["geometry_merge.py"]["status"] == "WITHHELD_NO_PIXELWISE_LOOK_VECTORS_AND_TERRAIN_REFERENCE", modules
+          assert pipeline.get("structural_validation_is_geophysical_validation") is False
+
+          print("REAL_AOI_CANDIDATE_LOCAL_FLOOR_MEASUREMENTS=" + str(extended.get("candidate_local_floor_measurements", 0)))
+          print("REAL_AOI_CANDIDATE_FEATURES_WITH_LOCAL_FLOOR=" + str(extended.get("candidate_features_with_local_floor", 0)))
+          print("REAL_AOI_CANDIDATE_PHASE_REVIEW_FEATURES=" + str(sum(
+              1 for feature in features
+              if feature["properties"]["candidate_phase_ceiling_review"].get("status") == "EXCEEDS_SINGLE_FRINGE_REVIEW_THRESHOLD"
+          )))
+          print("REAL_AOI_TARGET_FREE_STAGE_STATUS=" + str(pipeline.get("overall_status")))
+
+          # Record the rebuilt viewer receipt without changing the source science.
+          summary["web_dashboard"] = receipt
+          report["summary"] = summary
+          report["web_dashboard"] = receipt
+          summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False, allow_nan=False) + chr(10), encoding="utf-8")
+          report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + chr(10), encoding="utf-8")
+
+          # Repackage all files in the refreshed artifact and preserve any
+          # legacy provenance members that exist only in the previous ZIP.
+          zip_path = root / "aoi-derived-results.zip"
+          with zipfile.ZipFile(zip_path, "r") as original:
+              legacy_members = [(info.filename, original.read(info)) for info in original.infolist() if not info.is_dir()]
+          rebuilt = root / "aoi-derived-results-refreshed.zip"
+          added = set()
+          with zipfile.ZipFile(rebuilt, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as bundle:
+              for path in sorted(root.rglob("*")):
+                  if path.is_file() and path not in {zip_path, rebuilt}:
+                      name = path.relative_to(root).as_posix()
+                      if name not in added:
+                          bundle.write(path, name)
+                          added.add(name)
+              for name, data in legacy_members:
+                  if name not in added:
+                      bundle.writestr(name, data)
+                      added.add(name)
+          move(str(rebuilt), str(zip_path))
+
+          with zipfile.ZipFile(zip_path) as archive:
+              names = archive.namelist()
+              required = [
+                  "web-dashboard/index.html",
+                  "web-dashboard/dashboard-data.js",
+                  "web-dashboard/manifest.json",
+                  "web-dashboard/timeline.json",
+                  "web-dashboard/metrics.json",
+                  "web-dashboard/stac/catalog.json",
+              ]
+              missing = [name for name in required if names.count(name) != 1]
+              assert not missing, {"missing": missing}
+
+          viewer = (root / "web-dashboard" / "index.html").read_text(encoding="utf-8")
+          assert "What did NISAR observe in this area?" in viewer
+          assert "pixelStackSummary" in viewer
+          assert "Candidate overlay" in viewer
+          assert "No compatible multi-date GUNW network" in viewer
+          assert "NOT TESTABLE, not NO DETECTION" in viewer
+          print("RETAINED_ARTIFACT_DASHBOARD_REBUILD=PASS")
+          print("SOURCE_RUN_ID=" + os.environ["SOURCE_RUN_ID"])
+          print("PRODUCTS=" + str(receipt["observations"]))
+          print("RASTER_LAYERS=" + str(receipt["layers"]))
+          print("DERIVED_LAYERS=" + str(receipt["derived_layers"]))
+          print("PIXEL_STACK_EXACT_NETWORKS=15")
+          print("PIXEL_STACK_STATUS=WITHHELD_NO_COMPATIBLE_REPEATED_NETWORK")
+          print("RAW_HDF5_REPLAYED=false")
+          print("LEGACY_GOFF_CANDIDATES=120")
+          print("EXTENDED_SCREEN_FEATURES=2208")
+          print("SOURCE_TIFFS_UNCHANGED=PASS")
+          print("RESULT_ZIP_CONTRACT=PASS")
+          PY
+
+      - name: Upload refreshed dashboard bundle and audit receipts to private Drive
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/sarguardian-dashboard-fixture/dashboard"
+          if [[ -z "$GOOGLE_DRIVE_OAUTH_CLIENT_JSON" || -z "$GOOGLE_DRIVE_REFRESH_TOKEN" || -z "$GOOGLE_DRIVE_PARENT_FOLDER_ID" ]]; then
+            echo "ERROR=PRIVATE_DRIVE_SECRETS_MISSING"
+            exit 1
+          fi
+          python tools/drive_resumable_upload.py \
+            --root "$root" --run-name "$RUN_ID_SAFE" \
+            --files "$root/aoi-derived-results.zip" "$root/aoi-run-summary.json" "$root/products.csv" "$root/web-dashboard-build-receipt.json" \
+            --out "$root/drive-dashboard-refresh-upload-receipt.json"
+          python tools/drive_resumable_upload.py \
+            --root "$root" --run-name "$RUN_ID_SAFE" \
+            --files "$root/drive-dashboard-refresh-upload-receipt.json" \
+            --out "$root/drive-dashboard-refresh-receipt-upload.json"
+          echo "PRIVATE_DRIVE_DASHBOARD_REFRESH=PASS"
+
+      - name: Publish rebuilt viewer, bundle and receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarguardian-dashboard-refresh-40998521651-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/sarguardian-dashboard-fixture/dashboard/web-dashboard/
+            ${{ runner.temp }}/sarguardian-dashboard-fixture/dashboard/web-dashboard-build-receipt.json
+            ${{ runner.temp }}/sarguardian-dashboard-fixture/dashboard/drive-dashboard-refresh-upload-receipt.json
+            ${{ runner.temp }}/sarguardian-dashboard-fixture/dashboard/drive-dashboard-refresh-receipt-upload.json
+            ${{ runner.temp }}/sarguardian-dashboard-fixture/dashboard/aoi-derived-results.zip
+            ${{ runner.temp }}/sarguardian-dashboard-fixture/dashboard/aoi-run-summary.json
+            ${{ runner.temp }}/sarguardian-dashboard-fixture/dashboard/products.csv
+          if-no-files-found: warn
+          retention-days: 30

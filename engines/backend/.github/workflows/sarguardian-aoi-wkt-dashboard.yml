@@ -1,0 +1,672 @@
+name: SARGuardian AOI WKT E2E + Dashboard
+run-name: ${{ inputs.job_id && format('Displacement {0}', inputs.job_id) || format('SARGuardian AOI {0}', github.run_id) }}
+
+# Separate workflow: the existing streaming source-AOI workflow is intentionally untouched.
+on:
+  workflow_call:
+    inputs:
+      aoi_wkt:
+        description: "Single-ring WGS84 POLYGON WKT."
+        required: true
+        type: string
+      start_date:
+        description: "Inclusive start date for the two acquisition dates (YYYY-MM-DD)."
+        required: true
+        type: string
+      end_date:
+        description: "Inclusive upper bound for secondary dates by default; strict mode also requires the reference date inside."
+        required: true
+        type: string
+      date_filter_mode:
+        description: "Default: secondary acquisition inside the requested interval; strict mode requires both pair acquisitions inside."
+        required: false
+        type: string
+        default: secondary-acquisition-in-window
+      run_profile:
+        description: "validation-pilot or full-aoi-baseline."
+        required: true
+        type: string
+      retention_profile:
+        description: "derived-only or full-lossless."
+        required: true
+        type: string
+      job_id:
+        description: "Optional account-owned displacement job UUID."
+        required: false
+        type: string
+        default: ''
+      callback_url:
+        description: "Optional trusted SARGuardian Dynamic API base URL for signed job callbacks."
+        required: false
+        type: string
+        default: ''
+      request_fingerprint:
+        description: "Optional immutable account request fingerprint."
+        required: false
+        type: string
+        default: ''
+      place_name:
+        description: "Optional map-selected place name for dashboard context."
+        required: false
+        type: string
+        default: ''
+      place_latitude:
+        description: "Optional selected place latitude (WGS84)."
+        required: false
+        type: string
+        default: ''
+      place_longitude:
+        description: "Optional selected place longitude (WGS84)."
+        required: false
+        type: string
+        default: ''
+      target_latitude:
+        description: "Optional measurement target latitude, permitted only inside the submitted AOI."
+        required: false
+        type: string
+        default: ''
+      target_longitude:
+        description: "Optional measurement target longitude, permitted only inside the submitted AOI."
+        required: false
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      aoi_wkt:
+        description: "AOI as a single-ring WKT POLYGON in EPSG:4326 (coordinates are longitude latitude). No holes or MULTIPOLYGON."
+        required: true
+        type: string
+        default: "POLYGON ((84.99140223107368 28.499061219892724, 84.945606791564 28.28220804656594, 85.18844724834032 28.270753557383987, 85.20285565607317 28.414428221022945, 85.11305609453537 28.49639181334535, 84.99140223107368 28.499061219892724))"
+      start_date:
+        description: "Inclusive lower bound for the secondary acquisition date (YYYY-MM-DD)."
+        required: true
+        type: string
+        default: "2026-06-17"
+      end_date:
+        description: "Inclusive end date for the two acquisition dates (YYYY-MM-DD)."
+        required: true
+        type: string
+        default: "2026-09-15"
+      date_filter_mode:
+        description: "Select by the pair’s secondary acquisition date (reference may predate start); strict mode requires both dates inside."
+        required: true
+        type: choice
+        options:
+          - both-acquisitions-in-window
+          - secondary-acquisition-in-window
+        default: secondary-acquisition-in-window
+      run_profile:
+        description: "Pilot runs the newest intersecting GUNW plus GOFF; full-aoi-baseline runs every discovered supported product."
+        required: true
+        type: choice
+        options:
+          - validation-pilot
+          - full-aoi-baseline
+        default: full-aoi-baseline
+      retention_profile:
+        description: "Derived-only stores verified maps/tables/provenance; full-lossless also retains the complete source HDF5 archive."
+        required: true
+        type: choice
+        options:
+          - derived-only
+          - full-lossless
+        default: derived-only
+      job_id:
+        description: "Leave blank for a manual AOI run; set only for an account-owned Dynamic job."
+        required: false
+        type: string
+        default: ''
+      callback_url:
+        description: "Optional trusted SARGuardian Dynamic API base URL. Required with job_id."
+        required: false
+        type: string
+        default: ''
+      request_fingerprint:
+        description: "Immutable account request fingerprint. Required with job_id."
+        required: false
+        type: string
+        default: ''
+      place_name:
+        description: "Optional map-selected place name for dashboard context."
+        required: false
+        type: string
+        default: ''
+      place_latitude:
+        description: "Optional selected place latitude (WGS84)."
+        required: false
+        type: string
+        default: ''
+      place_longitude:
+        description: "Optional selected place longitude (WGS84)."
+        required: false
+        type: string
+        default: ''
+      target_latitude:
+        description: "Optional measurement target latitude, permitted only inside the submitted AOI."
+        required: false
+        type: string
+        default: ''
+      target_longitude:
+        description: "Optional measurement target longitude, permitted only inside the submitted AOI."
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: sarguardian-aoi-wkt-data-processing
+  cancel-in-progress: false
+
+jobs:
+  report-running:
+    name: Bind account job to this workflow run
+    runs-on: ubuntu-24.04
+    outputs:
+      reported: ${{ steps.callback.outputs.reported }}
+    steps:
+      - name: Check out the signed-callback contract
+        if: inputs.job_id != ''
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian_Dynamic
+          ref: db6472e1c304e21242f1ab1dfd671ccb21ba5697
+          path: dynamic-api
+
+      - name: Report running state to the account API
+        id: callback
+        env:
+          CALLBACK_SECRET: ${{ secrets.DISPLACEMENT_CALLBACK_SECRET }}
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          JOB_ID: ${{ inputs.job_id }}
+          REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$JOB_ID" && -z "$CALLBACK_URL" && -z "$REQUEST_FINGERPRINT" ]]; then
+            echo "reported=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -z "$JOB_ID" || -z "$CALLBACK_URL" || -z "$REQUEST_FINGERPRINT" || -z "$CALLBACK_SECRET" ]]; then
+            echo "ERROR=ACCOUNT_CALLBACK_CONFIGURATION_INCOMPLETE"
+            exit 1
+          fi
+          if [[ ! "$REQUEST_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]]; then
+            echo "ERROR=ACCOUNT_REQUEST_FINGERPRINT_INVALID"
+            exit 1
+          fi
+          PYTHONPATH="$GITHUB_WORKSPACE/dynamic-api/Backend" python -m science_adapter.dynamic_callback \
+            --state running --stage initializing --sequence 1 \
+            --callback-url "$CALLBACK_URL" --callback-secret "$CALLBACK_SECRET" \
+            --job-id "$JOB_ID" --request-fingerprint "$REQUEST_FINGERPRINT" \
+            --github-run-id "$GITHUB_RUN_ID" \
+            --github-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          echo "reported=true" >> "$GITHUB_OUTPUT"
+
+  manifest:
+    name: Discover exact AOI/date product baseline
+    runs-on: ubuntu-24.04
+    needs: report-running
+    outputs:
+      matrix: ${{ steps.discover.outputs.matrix }}
+      product_count: ${{ steps.discover.outputs.product_count }}
+      aoi_wkt_sha256: ${{ steps.discover.outputs.aoi_wkt_sha256 }}
+      orchestration_sha: ${{ steps.orch.outputs.sha }}
+      orchestration_branch: ${{ steps.orch.outputs.branch }}
+    env:
+      SARGUARDIAN_AOI_WKT: ${{ inputs.aoi_wkt }}
+      AOI_ORCHESTRATION_BRANCH: ${{ github.ref_name }}
+    steps:
+      - name: Checkout backend orchestration tools at the dispatched workflow revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Record exact orchestration revision for every downstream product
+        id: orch
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          branch="${AOI_ORCHESTRATION_BRANCH:?AOI_ORCHESTRATION_BRANCH must be set}"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "AOI_ORCHESTRATION_SHA=$sha" >> "$GITHUB_ENV"
+
+      - name: Checkout pinned dynamic-WKT scientific engine
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian
+          ref: 006d4cd1485cf80e509eaf8717c12e9c6390ac09
+          path: science-source
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install pinned discovery and processing dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r science-source/requirements.txt
+          python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r tools/requirements-retention.txt
+          python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 rasterio matplotlib pyproj
+
+      - name: Validate WKT, search ASF exact polygon and build input manifest
+        id: discover
+        env:
+          START_DATE: ${{ inputs.start_date }}
+          END_DATE: ${{ inputs.end_date }}
+          DATE_FILTER_MODE: ${{ inputs.date_filter_mode || 'secondary-acquisition-in-window' }}
+          RUN_PROFILE: ${{ inputs.run_profile }}
+          RETENTION_PROFILE: ${{ inputs.retention_profile }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/sarguardian-aoi/manifest"
+          python tools/discover_aoi_products.py \
+            --science-root "$PWD/science-source" \
+            --start-date "$START_DATE" --end-date "$END_DATE" \
+            --date-filter-mode "$DATE_FILTER_MODE" \
+            --run-profile "$RUN_PROFILE" --retention-profile "$RETENTION_PROFILE" \
+            --out "$RUNNER_TEMP/sarguardian-aoi/manifest/manifest.json"
+
+      - name: Checkout exact workflow revision for race-free Drive folder preparation
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: workflow-support
+
+      - name: Prepare shared Drive folder hierarchy before parallel product workers
+        env:
+          GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+          DRIVE_VERSION_TAG: ${{ github.run_id }}-${{ github.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python workflow-support/tools/prepare_aoi_drive_folders.py \
+            --manifest "$RUNNER_TEMP/sarguardian-aoi/manifest/manifest.json"
+
+      - name: Publish the selected-product manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarguardian-aoi-run-manifest
+          path: ${{ runner.temp }}/sarguardian-aoi/manifest/manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
+  process-products:
+    name: Process AOI product — ${{ matrix.id }}
+    needs: manifest
+    if: needs.manifest.result == 'success'
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        include: ${{ fromJSON(needs.manifest.outputs.matrix) }}
+    uses: ./.github/workflows/sarguardian-aoi-product-worker.yml
+    with:
+      aoi_wkt: ${{ inputs.aoi_wkt }}
+      orchestration_sha: ${{ needs.manifest.outputs.orchestration_sha }}
+      orchestration_branch: ${{ needs.manifest.outputs.orchestration_branch }}
+      product_id: ${{ matrix.id }}
+      granule_name: ${{ matrix.granule_name }}
+      product_type: ${{ matrix.product_type }}
+      maturity: ${{ matrix.maturity }}
+      expected_source_bytes: ${{ matrix.expected_source_bytes }}
+      retention_profile: ${{ inputs.retention_profile }}
+      target_latitude: ${{ inputs.target_latitude }}
+      target_longitude: ${{ inputs.target_longitude }}
+      execution_label: initial
+    secrets: inherit
+
+  retry-plan:
+    name: Validate product and post-cleanup receipts before assembly
+    needs: [manifest, process-products]
+    if: always() && needs.manifest.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      retry_matrix: ${{ steps.plan.outputs.retry_matrix }}
+      retry_count: ${{ steps.plan.outputs.retry_count }}
+      terminal_failure_count: ${{ steps.plan.outputs.terminal_failure_count }}
+    steps:
+      - name: Checkout receipt-check tools at the manifest's exact code revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.manifest.outputs.orchestration_sha }}
+
+      - name: Download AOI run manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: sarguardian-aoi-run-manifest
+          path: ${{ runner.temp }}/sarguardian-aoi/retry/manifest
+
+      - name: Download product checkpoints
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-granule-*
+          path: ${{ runner.temp }}/sarguardian-aoi/retry/products
+
+      - name: Download cleanup receipts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-cleanup-*
+          path: ${{ runner.temp }}/sarguardian-aoi/retry/cleanups
+
+      - name: Identify only missing or invalid product checkpoints
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/sarguardian-aoi/retry"
+          python tools/plan_aoi_retries.py \
+            --manifest "$root/manifest/manifest.json" \
+            --product-root "$root/products" --cleanup-root "$root/cleanups" \
+            --out "$root/retry-plan.json"
+
+      - name: Preserve retry decision evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarguardian-aoi-retry-plan
+          path: ${{ runner.temp }}/sarguardian-aoi/retry/retry-plan.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  retry-products:
+    name: Retry AOI product — ${{ matrix.id }}
+    needs: [manifest, retry-plan]
+    if: needs.retry-plan.result == 'success' && needs.retry-plan.outputs.retry_count != '0'
+    strategy:
+      fail-fast: false
+      max-parallel: 15
+      matrix:
+        include: ${{ fromJSON(needs.retry-plan.outputs.retry_matrix) }}
+    uses: ./.github/workflows/sarguardian-aoi-product-worker.yml
+    with:
+      aoi_wkt: ${{ inputs.aoi_wkt }}
+      orchestration_sha: ${{ needs.manifest.outputs.orchestration_sha }}
+      orchestration_branch: ${{ needs.manifest.outputs.orchestration_branch }}
+      product_id: ${{ matrix.id }}
+      granule_name: ${{ matrix.granule_name }}
+      product_type: ${{ matrix.product_type }}
+      maturity: ${{ matrix.maturity }}
+      expected_source_bytes: ${{ matrix.expected_source_bytes }}
+      retention_profile: ${{ inputs.retention_profile }}
+      target_latitude: ${{ inputs.target_latitude }}
+      target_longitude: ${{ inputs.target_longitude }}
+      execution_label: retry-1
+    secrets: inherit
+
+  dashboard:
+    name: Assemble results dashboard and downloadable maps
+    needs: [manifest, process-products, retry-plan, retry-products]
+    if: always() && needs.manifest.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+      RUN_ID_SAFE: SARGuardian-AOI-${{ github.run_id }}-${{ github.run_attempt }}
+      AOI_ORCHESTRATION_SHA: ${{ needs.manifest.outputs.orchestration_sha }}
+      SITE_PLACE_NAME: ${{ inputs.place_name }}
+      SITE_PLACE_LATITUDE: ${{ inputs.place_latitude }}
+      SITE_PLACE_LONGITUDE: ${{ inputs.place_longitude }}
+      SITE_TARGET_LATITUDE: ${{ inputs.target_latitude }}
+      SITE_TARGET_LONGITUDE: ${{ inputs.target_longitude }}
+    steps:
+      - name: Checkout dashboard orchestration tools at the manifest's exact code revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.manifest.outputs.orchestration_sha }}
+
+      # Use the exact backend orchestration revision dispatched by this run
+      # for the aggregator and web dashboard too. This keeps discovery, workers,
+      # science assembly and viewer code on one immutable commit.
+      - name: Checkout AOI aggregator and interactive dashboard at the dispatched revision
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian-backend
+          ref: ${{ needs.manifest.outputs.orchestration_sha }}
+          path: dashboard-source
+
+      - name: Verify aggregator and viewer match the dispatched revision
+        shell: bash
+        env:
+          EXPECTED_DASHBOARD_SHA: ${{ needs.manifest.outputs.orchestration_sha }}
+        run: |
+          set -euo pipefail
+          actual="$(git -C dashboard-source rev-parse HEAD)"
+          test "$actual" = "${EXPECTED_DASHBOARD_SHA:?}"
+          echo "DASHBOARD_BUILDER_SHA=$actual"
+
+      - name: Checkout the same pinned science engine for WKT/provenance checks
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian
+          ref: 006d4cd1485cf80e509eaf8717c12e9c6390ac09
+          path: science-source
+
+      - name: Verify dashboard code matches the product manifest revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "$AOI_ORCHESTRATION_SHA"
+          echo "AOI_ORCHESTRATION_REVISION_VERIFIED=$actual"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install dashboard and raster dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r science-source/requirements.txt
+          python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r tools/requirements-retention.txt
+          python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 rasterio matplotlib
+
+      - name: Download current AOI run manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: sarguardian-aoi-run-manifest
+          path: ${{ runner.temp }}/sarguardian-aoi/manifest
+
+      - name: Download product processing receipts and clipped exports
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-granule-*
+          path: ${{ runner.temp }}/sarguardian-aoi/product-artifacts
+
+      - name: Build dashboard, product table, quicklooks and result bundle
+        id: aggregate
+        shell: bash
+        run: |
+          set -uo pipefail
+          root="$RUNNER_TEMP/sarguardian-aoi"
+          mkdir -p "$root/dashboard"
+          status=0
+          python dashboard-source/tools/aggregate_aoi_run.py \
+            --manifest "$root/manifest/manifest.json" \
+            --artifact-root "$root/product-artifacts" \
+            --science-root "$PWD/science-source" \
+            --out-root "$root/dashboard" 2>&1 | tee "$root/dashboard-build.log" || status=$?
+          echo "script_exit=$status" >> "$GITHUB_OUTPUT"
+          if [[ -s "$root/dashboard/aoi-run-summary.json" ]]; then
+            cat "$root/dashboard/aoi-run-summary.json"
+          else
+            echo "Dashboard summary was not generated."
+          fi
+          exit "$status"
+
+      - name: Add results and caveats to the run summary
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          out="$RUNNER_TEMP/sarguardian-aoi/dashboard"
+          if [[ -s "$out/aoi-run-summary.json" ]]; then
+            python - "$out/aoi-run-summary.json" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json,sys
+          x=json.load(open(sys.argv[1],encoding="utf-8"))
+          print("# SARGuardian AOI WKT run")
+          print("")
+          print("- **Dashboard status:** "+str(x.get("status")))
+          print("- **Products structurally validated:** {}/{}".format(x.get("products_validated"),x.get("products_expected")))
+          print("- **GUNW / GOFF:** {} / {}".format(x.get("gunw_count"),x.get("goff_count")))
+          print("- **Products with valid pixels:** "+str(x.get("products_with_science_pixels")))
+          web=x.get("web_dashboard") if isinstance(x.get("web_dashboard"),dict) else {}
+          print("- **Interactive web-dashboard assets:** "+str(web.get("status","NOT_AVAILABLE")))
+          if web.get("status") == "PASS":
+              print("- **Interactive viewer in result bundle:** `web-dashboard/index.html`")
+              print("- **Web observations / raster layers:** {}/{}".format(web.get("observations"),web.get("layers")))
+          print("- **AOI WKT SHA-256:** `"+str(x.get("aoi_wkt_sha256"))+"`")
+          print("- **Date window mode:** `" + str(x.get("date_filter_mode")) + "`")
+          print("- **Date window:** {} to {}".format(x.get("date_start"),x.get("date_end")))
+          print("- **Product rows included because secondary date is in-window while reference predates it:** "+str(x.get("boundary_pair_products_included_by_secondary_policy")))
+          print("- **Product rows with reference date outside the requested interval:** "+str(x.get("products_with_reference_outside_window")))
+          print("")
+          print("Download the **sarguardian-aoi-dashboard-${{ github.run_id }}-${{ github.run_attempt }}** artifact and open `index.html`.")
+          web=x.get("web_dashboard") if isinstance(x.get("web_dashboard"),dict) else {}
+          if web.get("status") == "PASS":
+              print("The ZIP also contains `web-dashboard/index.html` for the interactive map and pair-aware timeline.")
+          print("")
+          print("> PASS means acquisition, exact-AOI masking, provenance and structural checks passed. It does not mean independent geophysical validation.")
+          PY
+          else
+            echo "## SARGuardian AOI WKT run" >> "$GITHUB_STEP_SUMMARY"
+            echo "Dashboard generation failed; inspect job logs and available artifacts." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload dashboard bundle and summary to private Drive
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/sarguardian-aoi/dashboard"
+          if [[ ! -s "$root/aoi-derived-results.zip" || -z "$GOOGLE_DRIVE_OAUTH_CLIENT_JSON" || -z "$GOOGLE_DRIVE_REFRESH_TOKEN" || -z "$GOOGLE_DRIVE_PARENT_FOLDER_ID" ]]; then
+            echo "PRIVATE_DRIVE_DASHBOARD_UPLOAD=SKIPPED_MISSING_BUNDLE_OR_DRIVE_SECRETS"
+            exit 0
+          fi
+          python tools/drive_resumable_upload.py \
+            --root "$root" --run-name "$RUN_ID_SAFE" \
+            --files "$root/aoi-derived-results.zip" "$root/aoi-run-summary.json" "$root/products.csv" \
+            --out "$root/drive-dashboard-upload-receipt.json"
+          python tools/drive_resumable_upload.py \
+            --root "$root" --run-name "$RUN_ID_SAFE" \
+            --files "$root/drive-dashboard-upload-receipt.json" \
+            --out "$root/drive-dashboard-receipt-upload.json"
+          echo "PRIVATE_DRIVE_DASHBOARD_UPLOAD=PASS"
+
+      - name: Upload offline HTML dashboard and result files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarguardian-aoi-dashboard-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/sarguardian-aoi/dashboard
+            ${{ runner.temp }}/sarguardian-aoi/dashboard-build.log
+          if-no-files-found: warn
+          retention-days: 30
+
+  report-terminal:
+    name: Report validated terminal state
+    needs: [report-running, manifest, process-products, retry-plan, retry-products, dashboard]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Check out the signed-callback contract
+        if: inputs.job_id != ''
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian_Dynamic
+          ref: db6472e1c304e21242f1ab1dfd671ccb21ba5697
+          path: dynamic-api
+
+      - name: Download the assembled AOI dashboard and Drive receipt
+        if: inputs.job_id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-aoi-dashboard-*
+          path: ${{ runner.temp }}/sarguardian-account-result/dashboard
+          merge-multiple: true
+
+      - name: Download the selected-product manifest
+        if: inputs.job_id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: sarguardian-aoi-run-manifest
+          path: ${{ runner.temp }}/sarguardian-account-result/dashboard/manifest
+
+      - name: Report validated terminal state
+        if: inputs.job_id != ''
+        env:
+          CALLBACK_SECRET: ${{ secrets.DISPLACEMENT_CALLBACK_SECRET }}
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          JOB_ID: ${{ inputs.job_id }}
+          REQUEST_FINGERPRINT: ${{ inputs.request_fingerprint }}
+          PIPELINE_RESULT: ${{ needs.dashboard.result }}
+          RUNNING_REPORTED: ${{ needs.report-running.outputs.reported }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/sarguardian-account-result"
+          if [[ -z "$CALLBACK_SECRET" || -z "$CALLBACK_URL" || -z "$JOB_ID" || ! "$REQUEST_FINGERPRINT" =~ ^[a-f0-9]{64}$ ]]; then
+            echo "ERROR=ACCOUNT_CALLBACK_CONFIGURATION_INCOMPLETE"
+            exit 1
+          fi
+
+          sequence=1
+          if [[ "$RUNNING_REPORTED" == "true" ]]; then sequence=2; fi
+          state=failed
+          stage=failed
+          error_code=GITHUB_ACTIONS_WORKER_FAILED
+          error_message='The AOI science workflow did not complete successfully.'
+          summary_args=()
+
+          if [[ "$PIPELINE_RESULT" == "success" ]]; then
+            if PYTHONPATH="$GITHUB_WORKSPACE/dynamic-api/Backend" python -m science_adapter.dynamic_callback \
+              --dashboard-root "$root/dashboard" --github-run-id "$GITHUB_RUN_ID" \
+              --build-summary-out "$root/dashboard/result-summary.json"; then
+              state=succeeded
+              stage=completed
+              error_code=''
+              error_message=''
+              summary_args=(--result-summary "$root/dashboard/result-summary.json")
+            else
+              error_code=RESULT_CONTRACT_VALIDATION_FAILED
+              error_message='The AOI workflow finished without a complete verified private result package.'
+            fi
+          fi
+
+          args=(--state "$state" --stage "$stage" --sequence "$sequence" \
+            --callback-url "$CALLBACK_URL" --callback-secret "$CALLBACK_SECRET" \
+            --job-id "$JOB_ID" --request-fingerprint "$REQUEST_FINGERPRINT" \
+            --github-run-id "$GITHUB_RUN_ID" \
+            --github-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID")
+          if [[ -n "$error_code" ]]; then
+            args+=(--error-code "$error_code" --error-message "$error_message")
+          fi
+          PYTHONPATH="$GITHUB_WORKSPACE/dynamic-api/Backend" python -m science_adapter.dynamic_callback "${args[@]}" "${summary_args[@]}"
+

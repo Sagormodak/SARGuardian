@@ -1,0 +1,4 @@
+-r requirements.txt
+httpx>=0.27,<1
+pytest>=8,<9
+rasterio>=1.4.4,<2

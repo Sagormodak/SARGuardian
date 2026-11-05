@@ -1,0 +1,133 @@
+{
+  "schema_version": "know-place-crown-mask-audit-summary/1.0",
+  "audit_date": "2026-10-25",
+  "status": "PASS",
+  "scope": "Retained derived arrays / published bounds / native source-grid consistency; no raw HDF5 reads.",
+  "inputs": {
+    "source_run_id": "40170290176",
+    "source_artifact": "know-place-author-exact-40170290176-1.zip",
+    "source_artifact_bytes": 18313236,
+    "source_artifact_sha256": "a25bb86069585b2cb023f5fbe889e160ae1749b0b61172ce4f8d1d9953c76682",
+    "author_archive_bytes": 183389034,
+    "author_archive_sha256": "002c2ba173a03693431b79578ca28d6b11e1ec00423d7533e82198871576c5e3",
+    "raw_hdf5_outer_members": 0,
+    "raw_hdf5_nested_members": 0
+  },
+  "grid": {
+    "epsg": 32645,
+    "width": 4311,
+    "height": 4230,
+    "transform": [
+      80,
+      0,
+      126720,
+      0,
+      -80,
+      3347280
+    ],
+    "site_window": {
+      "rows": [
+        2675,
+        2748
+      ],
+      "columns": [
+        2827,
+        2907
+      ],
+      "shape": [
+        73,
+        80
+      ]
+    }
+  },
+  "crown_bounds_lonlat": [
+    85.5245,
+    28.2847,
+    85.54,
+    28.297
+  ],
+  "box_bounds_lonlat": [
+    85.5,
+    28.265,
+    85.565,
+    28.318
+  ],
+  "common_site_mask_sha256": "b07dc264dab6a36ea6133e8f64edee1421315864f3558eb3166fb334b6640c7c",
+  "common_diagnostic_mask_sha256": "535fb2d11d3f63e8fba1260d5257eed9e39a2f00b9096c7debe48c99f584c47a",
+  "pairs": [
+    {
+      "interval": "2026-06-20/2026-07-02",
+      "mask_cells": 323,
+      "diagnostic_cells": 323,
+      "site_geographic_xor": 0,
+      "site_endpoint_xor": 0,
+      "diagnostic_geographic_xor": 0,
+      "cross_array_global_xor": 0,
+      "displacement_valid_n": 283,
+      "published_n": 283,
+      "coherence_valid_n_px": 302,
+      "published_n_px": 302,
+      "status": "PASS"
+    },
+    {
+      "interval": "2026-07-02/2026-07-14",
+      "mask_cells": 323,
+      "diagnostic_cells": 323,
+      "site_geographic_xor": 0,
+      "site_endpoint_xor": 0,
+      "diagnostic_geographic_xor": 0,
+      "cross_array_global_xor": 0,
+      "displacement_valid_n": 294,
+      "published_n": 294,
+      "coherence_valid_n_px": 299,
+      "published_n_px": 299,
+      "status": "PASS"
+    },
+    {
+      "interval": "2026-07-14/2026-07-26",
+      "mask_cells": 323,
+      "diagnostic_cells": 323,
+      "site_geographic_xor": 0,
+      "site_endpoint_xor": 0,
+      "diagnostic_geographic_xor": 0,
+      "cross_array_global_xor": 0,
+      "displacement_valid_n": 296,
+      "published_n": 296,
+      "coherence_valid_n_px": 302,
+      "published_n_px": 302,
+      "status": "PASS"
+    },
+    {
+      "interval": "2026-07-26/2026-08-19",
+      "mask_cells": 323,
+      "diagnostic_cells": 323,
+      "site_geographic_xor": 0,
+      "site_endpoint_xor": 0,
+      "diagnostic_geographic_xor": 0,
+      "cross_array_global_xor": 0,
+      "displacement_valid_n": 292,
+      "published_n": 292,
+      "coherence_valid_n_px": 298,
+      "published_n_px": 298,
+      "status": "PASS"
+    },
+    {
+      "interval": "2026-08-19/2026-08-31",
+      "mask_cells": 323,
+      "diagnostic_cells": 323,
+      "site_geographic_xor": 0,
+      "site_endpoint_xor": 0,
+      "diagnostic_geographic_xor": 0,
+      "cross_array_global_xor": 0,
+      "displacement_valid_n": 195,
+      "published_n": 195,
+      "coherence_valid_n_px": 202,
+      "published_n_px": 202,
+      "status": "PASS"
+    }
+  ],
+  "counts_are_distinct_estimands": true,
+  "author_original_vector_mask_parity": "UNVERIFIED_AUTHOR_EDITABLE_VECTOR_OR_MASK_NOT_IN_ARCHIVE",
+  "paper_reproduction_status": "PARTIAL_AUTHOR_SITE_AND_FOOTPRINT_NUMERICS_MATCH_DISPLACEMENT_NULL_STILL_UNVERIFIED",
+  "hazard_detection_status": "NOT_EVALUATED"
+}

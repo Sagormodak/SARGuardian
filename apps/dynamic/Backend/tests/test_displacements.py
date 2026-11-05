@@ -1,0 +1,632 @@
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+from io import BytesIO
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from urllib.error import HTTPError
+from uuid import UUID, uuid4
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app import main as main_module
+from app.auth import get_current_user
+from app.config import get_settings
+from app.displacements import CreateDisplacementJobRequest, GitHubDispatchError, cancel_workflow_run, dispatch_workflow, find_dispatched_workflow_run, is_dispatch_timed_out, request_fingerprint as displacement_request_fingerprint
+from app.main import app
+
+
+class DisplacementStore:
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+        self.row: dict | None = None
+
+    def get_displacement_job_by_idempotency(self, _owner, key):
+        return next((row for row in self.rows if row["owner_uid"] == _owner and row["idempotency_key"] == key), None)
+
+    def create_displacement_job(self, values):
+        now = datetime.now(UTC).isoformat()
+        self.row = values | {"id": str(uuid4()), "created_at": now, "updated_at": now, "github_run_id": None, "github_run_url": None, "callback_sequence": 0, "error_code": None, "error_message": None}
+        # Existing callback tests remain an explicit v1 compatibility fixture.
+        self.row["worker_contract_version"] = None
+        self.rows.append(self.row)
+        return self.row
+
+    def list_displacement_jobs(self, owner, limit=20):
+        return [row for row in reversed(self.rows) if row["owner_uid"] == owner][:limit]
+
+    def find_active_displacement_job(self, owner, aoi_wkt, start_date, end_date):
+        return next((row for row in reversed(self.rows) if row["owner_uid"] == owner and row["aoi_wkt"] == aoi_wkt and row["start_date"] == start_date and row["end_date"] == end_date and row["state"] in {"queued", "dispatching", "running"}), None)
+
+    def list_active_displacement_jobs(self, owner):
+        return [row for row in self.rows if row["owner_uid"] == owner and row["state"] in {"queued", "dispatching", "running"}]
+
+    def update_displacement_job(self, job_id, values, **_expected):
+        row = next(row for row in self.rows if row["id"] == str(job_id))
+        row |= values
+        self.row = row
+        return row
+
+    def get_displacement_job(self, owner, job_id):
+        return next((row for row in self.rows if row["owner_uid"] == owner and row["id"] == str(job_id)), None)
+
+    def get_displacement_job_unscoped(self, job_id):
+        return next((row for row in self.rows if row["id"] == str(job_id)), None)
+
+
+def client(monkeypatch, store: DisplacementStore) -> TestClient:
+    monkeypatch.setattr(main_module, "get_job_store", lambda: store)
+    monkeypatch.setattr(main_module, "dispatch_workflow", lambda *_args: None)
+    app.dependency_overrides[get_current_user] = lambda: {"uid": "firebase-user"}
+    return TestClient(app)
+
+
+def setup_function() -> None:
+    app.dependency_overrides.clear()
+
+
+def teardown_function() -> None:
+    app.dependency_overrides.clear()
+
+
+def payload() -> dict:
+    return {"aoi_wkt": "POLYGON((85 27, 85.01 27, 85 27.01, 85 27))", "start_date": "2026-10-01", "end_date": "2026-10-22", "idempotency_key": "displacement-test-001"}
+
+
+def test_displacement_job_is_durable_dispatched_and_owner_scoped(monkeypatch) -> None:
+    store = DisplacementStore()
+    response = client(monkeypatch, store).post("/api/displacement-jobs", json=payload())
+    assert response.status_code == 200
+    assert response.json()["state"] == "dispatching"
+    assert store.row and store.row["owner_uid"] == "firebase-user"
+    assert client(monkeypatch, store).get(f"/api/displacement-jobs/{store.row['id']}").status_code == 200
+
+
+def test_measurement_target_must_be_a_coordinate_pair_inside_the_exact_aoi(monkeypatch) -> None:
+    store = DisplacementStore()
+    api = client(monkeypatch, store)
+    valid = payload() | {
+        "place_name": "Rasuwa foothill",
+        "place_latitude": 27.002,
+        "place_longitude": 85.002,
+        "target_latitude": 27.002,
+        "target_longitude": 85.002,
+    }
+    accepted = api.post("/api/displacement-jobs", json=valid)
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["place_name"] == "Rasuwa foothill"
+    assert accepted.json()["target_latitude"] == 27.002
+    assert accepted.json()["target_longitude"] == 85.002
+
+    incomplete = api.post("/api/displacement-jobs", json=payload() | {"target_latitude": 27.002})
+    assert incomplete.status_code == 422
+    outside = api.post("/api/displacement-jobs", json=payload() | {
+        "target_latitude": 27.009, "target_longitude": 85.009,
+    })
+    assert outside.status_code == 422
+    assert "inside" in outside.text.lower()
+
+
+def test_place_or_target_changes_the_immutable_request_fingerprint() -> None:
+    from app.displacements import request_fingerprint as fingerprint
+    first = payload() | {"place_name": "A", "place_latitude": 27.002, "place_longitude": 85.002,
+                         "target_latitude": 27.002, "target_longitude": 85.002}
+    second = first | {"target_latitude": 27.003}
+    third = first | {"place_name": "B"}
+    assert fingerprint(first) != fingerprint(second)
+    assert fingerprint(first) != fingerprint(third)
+
+
+def test_account_job_list_and_duplicate_active_request_reuse_the_existing_job(monkeypatch) -> None:
+    store = DisplacementStore()
+    dispatched: list[str] = []
+    monkeypatch.setattr(main_module, "get_job_store", lambda: store)
+    monkeypatch.setattr(main_module, "dispatch_workflow", lambda _settings, job_id, _request: dispatched.append(str(job_id)))
+    app.dependency_overrides[get_current_user] = lambda: {"uid": "firebase-user"}
+    api = TestClient(app)
+
+    first = api.post("/api/displacement-jobs", json=payload())
+    duplicate = api.post("/api/displacement-jobs", json=payload() | {"idempotency_key": "displacement-test-002"})
+    listed = api.get("/api/displacement-jobs")
+
+    assert first.status_code == duplicate.status_code == listed.status_code == 200
+    assert duplicate.json()["id"] == first.json()["id"]
+    assert len(dispatched) == 1
+    assert [job["id"] for job in listed.json()] == [first.json()["id"]]
+
+
+def test_confirmed_resubmit_cancels_the_old_run_before_dispatching_one_replacement(monkeypatch) -> None:
+    store = DisplacementStore()
+    api = client(monkeypatch, store)
+    first = api.post("/api/displacement-jobs", json=payload()).json()
+    store.update_displacement_job(UUID(first["id"]), {"github_run_id": "123", "github_run_url": "https://github.com/example/run/123"})
+    cancelled: list[str] = []
+    monkeypatch.setattr(main_module, "get_settings", lambda: SimpleNamespace(displacement_actions_enabled=True))
+    monkeypatch.setattr(main_module, "cancel_workflow_run", lambda _settings, run_id: cancelled.append(run_id))
+
+    replacement = api.post(f"/api/displacement-jobs/{first['id']}/resubmit", json={"idempotency_key": "displacement-resubmit-001", "confirm": True})
+
+    assert replacement.status_code == 200, replacement.text
+    assert replacement.json()["id"] != first["id"]
+    assert cancelled == ["123"]
+    assert store.get_displacement_job("firebase-user", UUID(first["id"]))["state"] == "cancelled"
+    assert replacement.json()["state"] == "dispatching"
+
+
+def test_resubmit_does_not_create_a_replacement_until_github_allocates_the_old_run(monkeypatch) -> None:
+    store = DisplacementStore()
+    api = client(monkeypatch, store)
+    first = api.post("/api/displacement-jobs", json=payload()).json()
+    monkeypatch.setattr(main_module, "get_settings", lambda: SimpleNamespace(displacement_actions_enabled=True))
+    monkeypatch.setattr(main_module, "find_dispatched_workflow_run", lambda *_args: None)
+
+    response = api.post(f"/api/displacement-jobs/{first['id']}/resubmit", json={"idempotency_key": "displacement-resubmit-002", "confirm": True})
+
+    assert response.status_code == 409
+    assert len(store.rows) == 1
+    assert store.row and store.row["state"] == "dispatching"
+
+
+def test_failed_job_retry_uses_stored_aoi_dates_and_current_fixed_options(monkeypatch) -> None:
+    store = DisplacementStore()
+    api = client(monkeypatch, store)
+    first = api.post("/api/displacement-jobs", json=payload()).json()
+    store.update_displacement_job(UUID(first["id"]), {
+        "state": "failed", "stage": "science_failed", "product_type": "GOFF",
+        "acquisition_window": "both-acquisitions-in-window", "retention_mode": "full-lossless",
+        "processing_profile": "validation-pilot",
+    })
+
+    replacement = api.post(f"/api/displacement-jobs/{first['id']}/resubmit", json={"idempotency_key": "displacement-retry-001", "confirm": True})
+
+    assert replacement.status_code == 200, replacement.text
+    assert replacement.json()["id"] != first["id"]
+    assert replacement.json()["state"] == "dispatching"
+    assert replacement.json()["aoi_wkt"] == payload()["aoi_wkt"]
+    assert {key: replacement.json()[key] for key in (
+        "product_type", "acquisition_window", "retention_mode", "processing_profile",
+    )} == {
+        "product_type": "BOTH", "acquisition_window": "secondary-acquisition-in-window",
+        "retention_mode": "derived-only", "processing_profile": "full-aoi",
+    }
+    assert len(store.rows) == 2
+
+
+def test_account_displacement_options_are_fixed_server_side(monkeypatch) -> None:
+    response = client(monkeypatch, DisplacementStore()).post("/api/displacement-jobs", json=payload() | {
+        "acquisition_window": "both-acquisitions-in-window",
+    })
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Account displacement processing uses the fixed production processing contract."
+
+
+def test_failed_job_retry_preserves_place_and_measurement_target(monkeypatch) -> None:
+    store = DisplacementStore()
+    api = client(monkeypatch, store)
+    request = payload() | {
+        "place_name": "Rasuwa foothill", "place_latitude": 27.002, "place_longitude": 85.002,
+        "target_latitude": 27.002, "target_longitude": 85.002,
+    }
+    first = api.post("/api/displacement-jobs", json=request)
+    assert first.status_code == 200, first.text
+    store.update_displacement_job(UUID(first.json()["id"]), {"state": "failed", "stage": "science_failed"})
+    replacement = api.post(f"/api/displacement-jobs/{first.json()['id']}/resubmit",
+                           json={"idempotency_key": "displacement-location-retry-1", "confirm": True})
+    assert replacement.status_code == 200, replacement.text
+    assert replacement.json()["place_name"] == "Rasuwa foothill"
+    assert replacement.json()["place_latitude"] == 27.002
+    assert replacement.json()["place_longitude"] == 85.002
+    assert replacement.json()["target_latitude"] == 27.002
+    assert replacement.json()["target_longitude"] == 85.002
+
+
+def test_account_owner_can_cancel_an_active_job_without_creating_a_replacement(monkeypatch) -> None:
+    store = DisplacementStore()
+    api = client(monkeypatch, store)
+    first = api.post("/api/displacement-jobs", json=payload()).json()
+    store.update_displacement_job(UUID(first["id"]), {"github_run_id": "456"})
+    cancelled: list[str] = []
+    monkeypatch.setattr(main_module, "get_settings", lambda: SimpleNamespace(displacement_actions_enabled=True))
+    monkeypatch.setattr(main_module, "cancel_workflow_run", lambda _settings, run_id: cancelled.append(run_id))
+
+    response = api.post(f"/api/displacement-jobs/{first['id']}/cancel")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "cancelled"
+    assert cancelled == ["456"]
+    assert len(store.rows) == 1
+
+
+def test_worker_callback_requires_hmac_and_ordered_transitions(monkeypatch) -> None:
+    store = DisplacementStore()
+    api = client(monkeypatch, store)
+    created = api.post("/api/displacement-jobs", json=payload()).json()
+    monkeypatch.setattr(main_module, "get_settings", lambda: type("Settings", (), {"displacement_callback_secret": "test-secret"})())
+    body = json.dumps({"state": "running", "sequence": 1, "stage": "initializing", "github_run_id": "123", "github_run_url": "https://github.com/example/run/123"}).encode()
+    signature = "sha256=" + hmac.new(b"test-secret", body, hashlib.sha256).hexdigest()
+    callback = api.post(f"/api/displacement-jobs/{created['id']}/callback", content=body, headers={"Content-Type": "application/json", "X-SARGuardian-Signature": signature})
+    assert callback.status_code == 200
+    assert callback.json()["job_status"] == "running"
+    bad_success = api.post(f"/api/displacement-jobs/{uuid4()}/callback", content=body, headers={"Content-Type": "application/json", "X-SARGuardian-Signature": signature})
+    assert bad_success.status_code == 404
+
+
+def test_callback_sequence_rejects_stale_replay(monkeypatch) -> None:
+    store = DisplacementStore()
+    api = client(monkeypatch, store)
+    created = api.post("/api/displacement-jobs", json=payload()).json()
+    monkeypatch.setattr(main_module, "get_settings", lambda: type("Settings", (), {"displacement_callback_secret": "test-secret"})())
+    running = json.dumps({"state": "running", "sequence": 1, "stage": "initializing", "github_run_id": "123"}).encode()
+    signature = "sha256=" + hmac.new(b"test-secret", running, hashlib.sha256).hexdigest()
+    assert api.post(f"/api/displacement-jobs/{created['id']}/callback", content=running, headers={"Content-Type": "application/json", "X-SARGuardian-Signature": signature}).status_code == 200
+    stale = json.dumps({"state": "failed", "sequence": 1, "stage": "failed", "github_run_id": "123"}).encode()
+    stale_signature = "sha256=" + hmac.new(b"test-secret", stale, hashlib.sha256).hexdigest()
+    assert api.post(f"/api/displacement-jobs/{created['id']}/callback", content=stale, headers={"Content-Type": "application/json", "X-SARGuardian-Signature": stale_signature}).status_code == 409
+
+
+def test_ordered_worker_callbacks_preserve_stage_and_validated_result_summary(monkeypatch) -> None:
+    store = DisplacementStore()
+    api = client(monkeypatch, store)
+    created = api.post("/api/displacement-jobs", json=payload()).json()
+    monkeypatch.setattr(main_module, "get_settings", lambda: type("Settings", (), {"displacement_callback_secret": "test-secret"})())
+
+    def callback(payload_value: dict) -> dict:
+        body = json.dumps(payload_value).encode()
+        signature = "sha256=" + hmac.new(b"test-secret", body, hashlib.sha256).hexdigest()
+        response = api.post(f"/api/displacement-jobs/{created['id']}/callback", content=body, headers={"Content-Type": "application/json", "X-SARGuardian-Signature": signature})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    callback({"state": "running", "stage": "initializing", "sequence": 1, "github_run_id": "123"})
+    callback({"state": "running", "stage": "science_processing", "sequence": 2, "github_run_id": "123"})
+    final = callback({"state": "succeeded", "stage": "completed", "sequence": 3, "github_run_id": "123", "result_summary": {"analysis_type": "aoi_clipped_per_product_displacement_screening", "selected_product_count": 1}, "artifact_url": "https://github.com/example/run/123"})
+    assert final["job_status"] == "succeeded"
+    assert store.row and store.row["stage"] == "completed"
+    assert store.row["result_summary"]["selected_product_count"] == 1
+
+
+def test_running_discovery_counts_remain_visible_when_the_worker_fails(monkeypatch) -> None:
+    store = DisplacementStore()
+    api = client(monkeypatch, store)
+    created = api.post("/api/displacement-jobs", json=payload()).json()
+    monkeypatch.setattr(main_module, "get_settings", lambda: type("Settings", (), {"displacement_callback_secret": "test-secret"})())
+
+    def callback(payload_value: dict):
+        body = json.dumps(payload_value).encode()
+        signature = "sha256=" + hmac.new(b"test-secret", body, hashlib.sha256).hexdigest()
+        return api.post(f"/api/displacement-jobs/{created['id']}/callback", content=body,
+                        headers={"Content-Type": "application/json", "X-SARGuardian-Signature": signature})
+
+    assert callback({"state": "running", "stage": "initializing", "sequence": 1, "github_run_id": "123"}).status_code == 200
+    assert callback({"state": "running", "stage": "science_processing", "sequence": 2, "github_run_id": "123"}).status_code == 200
+    progress = {"schema_version": 2, "catalog_granule_counts": {"GUNW": 8, "GOFF": 5},
+                "selected_granule_counts": {"GUNW": 1, "GOFF": 1}}
+    assert callback({"state": "running", "stage": "products_discovered", "sequence": 3,
+                     "github_run_id": "123", "result_summary": progress}).status_code == 200
+    assert callback({"state": "failed", "stage": "failed", "sequence": 4,
+                     "github_run_id": "123", "error_message": "Worker failed."}).status_code == 200
+    assert store.row and store.row["result_summary"] == progress
+
+
+def test_version_two_callback_requires_bound_fingerprint_and_private_storage_evidence(monkeypatch) -> None:
+    store = DisplacementStore()
+    api = client(monkeypatch, store)
+    created = api.post("/api/displacement-jobs", json=payload()).json()
+    assert store.row
+    store.row["worker_contract_version"] = 2
+    store.row["request_fingerprint"] = main_module.displacement_request_fingerprint(store.row)
+    monkeypatch.setattr(main_module, "get_settings", lambda: type("Settings", (), {"displacement_callback_secret": "test-secret"})())
+
+    def callback(value: dict):
+        body = json.dumps(value).encode()
+        signature = "sha256=" + hmac.new(b"test-secret", body, hashlib.sha256).hexdigest()
+        return api.post(f"/api/displacement-jobs/{created['id']}/callback", content=body, headers={"Content-Type": "application/json", "X-SARGuardian-Signature": signature})
+
+    common = {"github_run_id": "123", "job_id": created["id"], "contract_version": 2, "request_fingerprint": store.row["request_fingerprint"]}
+    assert callback(common | {"state": "running", "sequence": 1, "stage": "initializing"}).status_code == 200
+    missing_evidence = callback(common | {"state": "succeeded", "sequence": 2, "stage": "completed", "result_summary": {"schema_version": 2, "validation": {"status": "PASS"}, "artifacts": []}})
+    assert missing_evidence.status_code == 409
+    artifact = {"path": "outputs/result.tif", "kind": "aoi_clipped_geotiff", "bytes": 1,
+                "sha256": "a" * 64, "drive_file_id": "abcdefghijk"}
+    accepted = callback(common | {"state": "succeeded", "sequence": 2, "stage": "completed", "result_summary": {"schema_version": 2, "validation": {"status": "PASS"}, "storage_verification": {"status": "PASS"}, "artifacts": [artifact]}})
+    assert accepted.status_code == 200
+
+
+def test_private_artifact_download_requires_owner_and_rechecks_hash(monkeypatch) -> None:
+    store = DisplacementStore()
+    api = client(monkeypatch, store)
+    created = api.post("/api/displacement-jobs", json=payload()).json()
+    data = b"verified scientific bytes"
+    assert store.row
+    store.row.update({"state": "succeeded", "result_summary": {
+        "schema_version": 2, "validation": {"status": "PASS"}, "storage_verification": {"status": "PASS"},
+        "artifacts": [{"path": "outputs/example.tif", "kind": "aoi_clipped_geotiff", "bytes": len(data),
+                       "sha256": hashlib.sha256(data).hexdigest(), "drive_file_id": "abcdefghijk"}],
+    }})
+    def download_verified_to_path(_id, destination, *, max_bytes=None):
+        destination.write_bytes(data)
+        return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+    monkeypatch.setattr(main_module, "download_private_result_to_path", download_verified_to_path)
+    response = api.get(f"/api/displacement-jobs/{created['id']}/artifacts/0")
+    assert response.status_code == 200
+    assert response.content == data
+
+    def download_corrupt_to_path(_id, destination, *, max_bytes=None):
+        corrupted = b"bad!"
+        destination.write_bytes(corrupted)
+        return {"bytes": len(corrupted), "sha256": hashlib.sha256(corrupted).hexdigest()}
+
+    monkeypatch.setattr(main_module, "download_private_result_to_path", download_corrupt_to_path)
+    assert api.get(f"/api/displacement-jobs/{created['id']}/artifacts/0").status_code == 409
+
+
+def test_dashboard_drive_failure_logs_safe_reason_without_exposing_private_ids(monkeypatch, caplog) -> None:
+    store = DisplacementStore()
+    api = client(monkeypatch, store)
+    created = api.post("/api/displacement-jobs", json=payload()).json()
+    assert store.row is not None
+    store.row.update({
+        "state": "succeeded",
+        "result_summary": {
+            "web_dashboard": {"status": "PASS", "observations": 18, "layers": 45},
+            "artifacts": [{
+                "path": "aoi-derived-results.zip",
+                "bytes": 128,
+                "sha256": "a" * 64,
+                "drive_file_id": "PRIVATE_DRIVE_ID_123",
+            }],
+        },
+    })
+
+    def fail_private_download(_file_id, _destination, *, max_bytes=None):
+        raise main_module.DriveUploadError("Google Drive result storage is not fully configured.")
+
+    monkeypatch.setattr(main_module, "download_private_result_to_path", fail_private_download)
+    with caplog.at_level("WARNING", logger="app.main"):
+        response = api.get(
+            f"/api/displacement-jobs/{created['id']}/dashboard",
+            headers={"X-SARGuardian-Google-Maps-Key": "AIzaSyDUMMY123456789012345678901234567"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Private dashboard storage is unavailable. Retry in a moment."
+    assert "Google Drive result storage is not fully configured." in caplog.text
+    assert "PRIVATE_DRIVE_ID_123" not in caplog.text
+
+
+def test_dispatch_uses_legacy_dashboard_contract_when_configured(monkeypatch) -> None:
+    captured: dict = {}
+
+    class Response:
+        status = 204
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["body"] = json.loads(request.data.decode())
+        captured["authorization"] = request.headers["Authorization"]
+        assert timeout == 15
+        return Response()
+
+    monkeypatch.setattr("app.displacements.urlopen", fake_urlopen)
+    settings = get_settings({
+        "DISPLACEMENT_ACTIONS_ENABLED": "true", "GITHUB_ACTIONS_TOKEN": "server-token",
+        "GITHUB_ACTIONS_REPOSITORY": "moshiour0/SARGuardian-backend",
+        "GITHUB_ACTIONS_WORKFLOW": "sarguardian-aoi-wkt-dashboard.yml",
+        "GITHUB_ACTIONS_REF": "main", "DISPLACEMENT_CALLBACK_SECRET": "callback-secret",
+        "PUBLIC_API_URL": "https://api.example.test",
+    })
+    request = CreateDisplacementJobRequest(**(payload() | {
+        "place_name": "Rasuwa foothill", "place_latitude": 27.002, "place_longitude": 85.002,
+        "target_latitude": 27.002, "target_longitude": 85.002,
+    }))
+    job_id = UUID("11111111-1111-1111-1111-111111111111")
+    dispatch_workflow(settings, job_id, request)
+    assert captured["url"].endswith(
+        "/repos/moshiour0/SARGuardian-backend/actions/workflows/sarguardian-aoi-wkt-dashboard.yml/dispatches"
+    )
+    assert captured["authorization"] == "Bearer server-token"
+    inputs = captured["body"]["inputs"]
+    assert inputs == {
+        "job_id": str(job_id),
+        "aoi_wkt": payload()["aoi_wkt"],
+        "start_date": "2026-10-01",
+        "end_date": "2026-10-22",
+        "callback_url": "https://api.example.test",
+        "request_fingerprint": displacement_request_fingerprint(request.model_dump()),
+        "date_filter_mode": "secondary-acquisition-in-window",
+        "run_profile": "full-aoi-baseline",
+        "retention_profile": "derived-only",
+        "place_name": "Rasuwa foothill",
+        "place_latitude": "27.002",
+        "place_longitude": "85.002",
+        "target_latitude": "27.002",
+        "target_longitude": "85.002",
+    }
+    assert not {"product_type", "acquisition_window", "retention_mode", "processing_profile"} & set(inputs)
+
+
+def test_dispatch_uses_dynamic_wrapper_contract_when_configured(monkeypatch) -> None:
+    captured: dict = {}
+
+    class Response:
+        status = 204
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = json.loads(request.data.decode())
+        assert timeout == 15
+        return Response()
+
+    monkeypatch.setattr("app.displacements.urlopen", fake_urlopen)
+    settings = get_settings({
+        "DISPLACEMENT_ACTIONS_ENABLED": "true", "GITHUB_ACTIONS_TOKEN": "server-token",
+        "GITHUB_ACTIONS_REPOSITORY": "moshiour0/SARGuardian_Dynamic",
+        "GITHUB_ACTIONS_WORKFLOW": "sarguardian-displacement.yml",
+        "GITHUB_ACTIONS_REF": "main", "DISPLACEMENT_CALLBACK_SECRET": "callback-secret",
+        "PUBLIC_API_URL": "https://api.example.test",
+    })
+    request = CreateDisplacementJobRequest(**payload())
+    dispatch_workflow(settings, UUID("11111111-1111-1111-1111-111111111111"), request)
+    assert captured["body"]["inputs"] == {
+        "job_id": "11111111-1111-1111-1111-111111111111",
+        "aoi_wkt": payload()["aoi_wkt"],
+        "start_date": "2026-10-01",
+        "end_date": "2026-10-22",
+        "callback_url": "https://api.example.test",
+        "product_type": "BOTH",
+        "acquisition_window": "secondary-acquisition-in-window",
+        "retention_mode": "derived-only",
+        "processing_profile": "full-aoi",
+        "place_name": "",
+        "place_latitude": "",
+        "place_longitude": "",
+        "target_latitude": "",
+        "target_longitude": "",
+    }
+
+
+def test_dispatch_fails_closed_for_unknown_workflow_contract(monkeypatch) -> None:
+    def unexpected_urlopen(*_args, **_kwargs):
+        raise AssertionError("Unsupported workflow must be rejected before network dispatch.")
+
+    monkeypatch.setattr("app.displacements.urlopen", unexpected_urlopen)
+    settings = get_settings({
+        "DISPLACEMENT_ACTIONS_ENABLED": "true", "GITHUB_ACTIONS_TOKEN": "server-token",
+        "GITHUB_ACTIONS_REPOSITORY": "owner/repository", "GITHUB_ACTIONS_WORKFLOW": "unknown.yml",
+        "GITHUB_ACTIONS_REF": "main", "DISPLACEMENT_CALLBACK_SECRET": "callback-secret",
+        "PUBLIC_API_URL": "https://api.example.test",
+    })
+    with pytest.raises(GitHubDispatchError, match="does not match a supported account-processing contract"):
+        dispatch_workflow(settings, UUID("11111111-1111-1111-1111-111111111111"), CreateDisplacementJobRequest(**payload()))
+
+def test_dispatch_reports_the_safe_github_rejection_reason(monkeypatch) -> None:
+    def fake_urlopen(*_args, **_kwargs):
+        raise HTTPError("https://api.github.test", 422, "Unprocessable Content", hdrs=None, fp=BytesIO(b'{"message":"Workflow does not have workflow_dispatch trigger"}'))
+
+    monkeypatch.setattr("app.displacements.urlopen", fake_urlopen)
+    settings = get_settings({
+        "DISPLACEMENT_ACTIONS_ENABLED": "true", "GITHUB_ACTIONS_TOKEN": "server-token",
+        "GITHUB_ACTIONS_REPOSITORY": "owner/repository", "GITHUB_ACTIONS_WORKFLOW": "sarguardian-aoi-wkt-dashboard.yml",
+        "GITHUB_ACTIONS_REF": "main", "DISPLACEMENT_CALLBACK_SECRET": "callback-secret",
+        "PUBLIC_API_URL": "https://api.example.test",
+    })
+    with pytest.raises(GitHubDispatchError, match="Workflow does not have workflow_dispatch trigger"):
+        dispatch_workflow(settings, UUID("11111111-1111-1111-1111-111111111111"), CreateDisplacementJobRequest(**payload()))
+
+
+def test_cancel_workflow_run_uses_the_configured_repository(monkeypatch) -> None:
+    captured: dict = {}
+
+    class Response:
+        status = 202
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["authorization"] = request.headers["Authorization"]
+        assert timeout == 15
+        return Response()
+
+    monkeypatch.setattr("app.displacements.urlopen", fake_urlopen)
+    settings = get_settings({
+        "DISPLACEMENT_ACTIONS_ENABLED": "true", "GITHUB_ACTIONS_TOKEN": "server-token",
+        "GITHUB_ACTIONS_REPOSITORY": "owner/repository",
+    })
+    cancel_workflow_run(settings, "987")
+
+    assert captured["url"].endswith("/repos/owner/repository/actions/runs/987/cancel")
+    assert captured["authorization"] == "Bearer server-token"
+
+
+def test_dispatch_timeout_only_applies_before_the_worker_starts() -> None:
+    old = "2026-01-01T00:00:00Z"
+    assert is_dispatch_timed_out({"state": "dispatching", "updated_at": old}, 300) is True
+    assert is_dispatch_timed_out({"state": "running", "updated_at": old}, 300) is False
+
+
+def test_dispatched_workflow_failure_is_reported_before_a_worker_callback(monkeypatch) -> None:
+    store = DisplacementStore()
+    api = client(monkeypatch, store)
+    created = api.post("/api/displacement-jobs", json=payload()).json()
+    monkeypatch.setattr(main_module, "get_settings", lambda: SimpleNamespace(
+        displacement_actions_enabled=True, displacement_dispatch_timeout_seconds=3_600,
+    ))
+    monkeypatch.setattr(main_module, "find_dispatched_workflow_run", lambda *_args: (
+        "39915851321", "https://github.com/example/run/39915851321", "completed", "failure",
+    ))
+
+    response = api.get(f"/api/displacement-jobs/{created['id']}")
+    body = response.json()
+
+    assert response.status_code == 200
+    assert body["state"] == "failed"
+    assert body["stage"] == "terminal_validation_failed"
+    assert body["error_code"] == "GITHUB_ACTIONS_WORKER_FAILED"
+    assert body["github_run_id"] == "39915851321"
+
+
+def test_find_dispatched_workflow_run_matches_the_job_display_title(monkeypatch) -> None:
+    captured: dict = {}
+
+    class Response:
+        def read(self):
+            return json.dumps({"workflow_runs": [{
+                "id": 99, "display_title": "Displacement 11111111-1111-1111-1111-111111111111",
+                "html_url": "https://github.com/example/run/99", "status": "completed", "conclusion": "failure",
+            }]}).encode()
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        assert timeout == 10
+        return Response()
+
+    monkeypatch.setattr("app.displacements.urlopen", fake_urlopen)
+    settings = get_settings({
+        "DISPLACEMENT_ACTIONS_ENABLED": "true", "GITHUB_ACTIONS_TOKEN": "server-token",
+        "GITHUB_ACTIONS_REPOSITORY": "owner/repository", "GITHUB_ACTIONS_WORKFLOW": "workflow with spaces.yml",
+    })
+    result = find_dispatched_workflow_run(settings, UUID("11111111-1111-1111-1111-111111111111"))
+
+    assert result == ("99", "https://github.com/example/run/99", "completed", "failure")
+    assert captured["url"].endswith("/workflows/workflow%20with%20spaces.yml/runs?event=workflow_dispatch&per_page=100")
+
+
+def test_invalid_displacement_wkt_is_rejected(monkeypatch) -> None:
+    response = client(monkeypatch, DisplacementStore()).post("/api/displacement-jobs", json=payload() | {"aoi_wkt": "MULTIPOLYGON EMPTY"})
+    assert response.status_code == 422
+
+
+def test_displacement_migration_has_immutable_owner_scoped_job_schema() -> None:
+    sql = (main_module.__file__ and __import__("pathlib").Path(main_module.__file__).parents[1] / "supabase" / "migrations" / "20261022203034_displacement_jobs.sql").read_text(encoding="utf-8")
+    assert "create table public.displacement_jobs" in sql
+    assert "unique (owner_uid, idempotency_key)" in sql
+    assert "displacement_jobs_transition_guard" in sql
+    assert "callback_sequence" in sql
+    assert "enable row level security" in sql
+
+
+def test_active_displacement_request_guard_migration_is_present() -> None:
+    sql = (__import__("pathlib").Path(main_module.__file__).parents[1] / "supabase" / "migrations" / "20261023141449_displacement_active_request_guard.sql").read_text(encoding="utf-8")
+    assert "create unique index" in sql
+    assert "where state in ('queued', 'dispatching', 'running')" in sql
+
+
+def test_displacement_workflow_preserves_account_callbacks_around_streaming_batch() -> None:
+    workflow = (__import__("pathlib").Path(main_module.__file__).parents[2] / ".github" / "workflows" / "sarguardian-displacement.yml").read_text(encoding="utf-8")
+    assert "run-name: Displacement ${{ inputs.job_id }}" in workflow
+    assert "science_adapter.dynamic_callback" in workflow
+    assert "--stage products_discovered" not in workflow
+    assert "uses: ./.github/workflows/sarguardian-aoi-wkt-dashboard.yml" in workflow
+    assert "PROGRESS_REPORTED: ${{ needs.process-dynamic-aoi.outputs.progress_reported }}" in workflow
+    assert "--result-summary" in workflow

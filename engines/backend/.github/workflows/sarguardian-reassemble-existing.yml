@@ -1,0 +1,226 @@
+name: SARGuardian Reassemble Existing Product Artifacts
+
+# Re-run aggregation from already-uploaded, verified product artifacts.
+# This deliberately does not invoke Earthdata or download new HDF5 products.
+on:
+  workflow_dispatch:
+    inputs:
+      checkpoint_run_id:
+        description: Run containing the 32 verified product checkpoints (defaults to the original baseline attempt)
+        required: true
+        type: string
+        default: '39510497044'
+      product_run_id:
+        description: Run containing the successfully processed replacement product (defaults to the GOFF-033 completion run)
+        required: true
+        type: string
+        default: '39524783921'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: sarguardian-existing-artifact-reassembly
+  cancel-in-progress: false
+
+jobs:
+  reassemble:
+    name: Reassemble retained artifacts and rerun parity gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CHECKPOINT_RUN_ID: ${{ inputs.checkpoint_run_id }}
+      PRODUCT_RUN_ID: ${{ inputs.product_run_id }}
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+      RUN_ID_SAFE: SARGuardian-Reassemble-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout validated backend aggregation tools
+        uses: actions/checkout@v4
+        with:
+          ref: d9e67df7d800032c37d23f74df44c98e3ab655f7
+
+      - name: Checkout pinned science baseline
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian
+          ref: ab547ecc82bcc4d6ccef545a59852536c2beacc6
+          path: science-source
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install pinned science and retention dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir -r science-source/requirements.txt
+          python -m pip install --disable-pip-version-check --no-cache-dir -r tools/requirements-retention.txt
+
+      - name: Download original checkpoint run manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: sarguardian-stream-run-manifest
+          run-id: ${{ inputs.checkpoint_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/sarguardian-reassemble/base-manifest
+
+      - name: Download completed product run manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: sarguardian-stream-run-manifest
+          run-id: ${{ inputs.product_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/sarguardian-reassemble/product-manifest
+
+      - name: Download original product checkpoints
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-granule-*
+          run-id: ${{ inputs.checkpoint_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/sarguardian-reassemble/base-granules
+
+      - name: Download original cleanup evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-cleanup-*
+          run-id: ${{ inputs.checkpoint_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/sarguardian-reassemble/base-cleanups
+
+      - name: Download completed product checkpoints
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-granule-*
+          run-id: ${{ inputs.product_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/sarguardian-reassemble/product-granules
+
+      - name: Download completed product cleanup evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-cleanup-*
+          run-id: ${{ inputs.product_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/sarguardian-reassemble/product-cleanups
+
+      - name: Verify source manifests and prepare replay manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/sarguardian-reassemble"
+          mkdir -p "$root/run-manifest" "$root/output"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from tools.resume_streamed_run import validate_resume_compatibility
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "sarguardian-reassemble"
+          base_path = root / "base-manifest" / "manifest.json"
+          product_path = root / "product-manifest" / "manifest.json"
+          base = json.loads(base_path.read_text(encoding="utf-8"))
+          product = json.loads(product_path.read_text(encoding="utf-8"))
+          validate_resume_compatibility(product, base)
+
+          products = product.get("products")
+          if not isinstance(products, list) or len(products) != 33:
+              raise SystemExit("REASSEMBLY_MANIFEST_MUST_CONTAIN_EXACTLY_33_PRODUCTS")
+          ids = [str(row.get("id", "")) for row in products]
+          if len(set(ids)) != 33 or not all(ids):
+              raise SystemExit("REASSEMBLY_MANIFEST_PRODUCT_IDS_INVALID")
+          counts = {
+              kind: sum(row.get("product_type") == kind for row in products)
+              for kind in ("GUNW", "GOFF")
+          }
+          if counts != {"GUNW": 15, "GOFF": 18}:
+              raise SystemExit(f"REASSEMBLY_MANIFEST_PRODUCT_COUNTS_INVALID={counts}")
+
+          # Report/bundle identity belongs to this aggregation-only run. All
+          # science identity, AOI, dates, retention and product rows stay pinned.
+          product["source_artifact_runs"] = {
+              "checkpoint_run_id": os.environ["CHECKPOINT_RUN_ID"],
+              "completed_product_run_id": os.environ["PRODUCT_RUN_ID"],
+          }
+          product["reassembly_only"] = True
+          product["run_id"] = f'{os.environ["GITHUB_RUN_ID"]}-{os.environ["GITHUB_RUN_ATTEMPT"]}'
+          target = root / "run-manifest" / "manifest.json"
+          target.write_text(json.dumps(product, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+          print(f"REASSEMBLY_MANIFEST_COMPATIBILITY=PASS PRODUCTS={len(products)}")
+          print(f"REASSEMBLY_CHECKPOINT_RUN={os.environ['CHECKPOINT_RUN_ID']}")
+          print(f"REASSEMBLY_COMPLETED_PRODUCT_RUN={os.environ['PRODUCT_RUN_ID']}")
+          print(f"REASSEMBLY_OUTPUT_RUN_ID={product['run_id']}")
+          PY
+
+      - name: Merge verified checkpoints without re-downloading source data
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/sarguardian-reassemble"
+          python tools/resume_streamed_run.py merge \
+            --kind granule --previous-root "$root/base-granules" \
+            --current-root "$root/product-granules" --output-root "$root/granule-artifacts"
+          python tools/resume_streamed_run.py merge \
+            --kind cleanup --previous-root "$root/base-cleanups" \
+            --current-root "$root/product-cleanups" --output-root "$root/cleanup-artifacts"
+
+      - name: Aggregate outputs and run all baseline comparisons
+        id: aggregate_results
+        shell: bash
+        run: |
+          set -uo pipefail
+          root="$RUNNER_TEMP/sarguardian-reassemble"
+          mkdir -p "$root/output"
+          status=0
+          python tools/aggregate_streamed_outputs.py \
+            --science-root "$PWD/science-source" \
+            --manifest "$root/run-manifest/manifest.json" \
+            --artifact-root "$root/granule-artifacts" \
+            --cleanup-artifact-root "$root/cleanup-artifacts" \
+            --out-root "$root/output" 2>&1 | tee "$root/aggregation.log" || status=$?
+          if [[ -s "$root/output/batch-equivalence-report.json" ]]; then
+            report_status="$(python -c 'import json,sys;print(json.load(open(sys.argv[1]))["status"])' "$root/output/batch-equivalence-report.json")"
+          else
+            report_status="NO_REPORT"
+            status=1
+          fi
+          echo "status=$report_status" >> "$GITHUB_OUTPUT"
+          echo "script_exit=$status" >> "$GITHUB_OUTPUT"
+          echo "BATCH_EQUIVALENCE_STATUS=$report_status"
+          exit "$status"
+
+      - name: Upload final replay bundle and report to Drive only after PASS
+        if: steps.aggregate_results.outputs.status == 'PASS'
+        env:
+          OUT_ROOT: ${{ runner.temp }}/sarguardian-reassemble/output
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="$(find "$OUT_ROOT" -maxdepth 1 -name 'sarguardian-*-results.zip' -type f -print -quit)"
+          report="$OUT_ROOT/batch-equivalence-report.json"
+          test -s "$bundle" && test -s "$report"
+          python tools/drive_resumable_upload.py \
+            --root "$OUT_ROOT" --run-name "$RUN_ID_SAFE" \
+            --files "$bundle" "$report" --out "$OUT_ROOT/drive-run-upload-receipt.json"
+          python tools/drive_resumable_upload.py \
+            --root "$OUT_ROOT" --run-name "$RUN_ID_SAFE" \
+            --files "$OUT_ROOT/drive-run-upload-receipt.json" \
+            --out "$OUT_ROOT/drive-run-receipt-upload.json"
+          echo "FINAL_RUN_BUNDLE_DRIVE_VERIFICATION=PASS"
+
+      - name: Publish replay report, bundle and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarguardian-reassemble-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/sarguardian-reassemble/output
+            ${{ runner.temp }}/sarguardian-reassemble/aggregation.log
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6

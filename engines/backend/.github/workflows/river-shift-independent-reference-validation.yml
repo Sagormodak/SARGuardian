@@ -1,0 +1,133 @@
+name: RiverShift independent reference validation
+
+run-name: RiverShift validation · ${{ inputs.source_job_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_job_id:
+        description: Completed RiverShift job UUID
+        required: true
+        type: string
+        default: 4e6e4071-fb9d-4e20-a331-867f3f2bd88f
+      api_base_url:
+        description: Deployed SARGuardian Dynamic API base URL
+        required: true
+        type: string
+        default: https://sarguardian-backend-api.vercel.app
+      reference_drive_file_id:
+        description: Google Drive file ID of an independently prepared binary reference GeoTIFF
+        required: true
+        type: string
+      reference_source:
+        description: Independent reference data source and product/version
+        required: true
+        type: string
+      reference_date:
+        description: Reference observation date (YYYY-MM-DD)
+        required: true
+        type: string
+      reference_method:
+        description: Reference mask production and review method
+        required: true
+        type: string
+      maximum_date_offset_days:
+        description: Maximum temporal offset from the NISAR observation
+        required: true
+        type: choice
+        options: ["0", "1", "2", "3", "5", "7", "10"]
+        default: "3"
+      minimum_common_support_fraction:
+        description: Minimum reference-valid support over NISAR-valid pixels
+        required: true
+        type: choice
+        options: ["0.80", "0.85", "0.90", "0.95", "0.99"]
+        default: "0.80"
+      block_size_pixels:
+        description: Spatial block size for uncertainty estimation
+        required: true
+        type: choice
+        options: ["32", "64", "128", "256"]
+        default: "64"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: river-shift-independent-validation-${{ inputs.source_job_id }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Compare retained NISAR water mask with independent reference
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RIVERSHIFT_SOURCE_JOB_ID: ${{ inputs.source_job_id }}
+      RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+      PYTHONPATH: ${{ github.workspace }}/tools/river_shift
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Check out RiverShift validation code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Install pinned geospatial runtime
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+
+      - name: Run independent reference validation
+        shell: micromamba-shell {0}
+        env:
+          RIVERSHIFT_SOURCE_JOB_ID: ${{ inputs.source_job_id }}
+          RIVERSHIFT_VALIDATION_API_BASE_URL: ${{ inputs.api_base_url }}
+          RIVERSHIFT_REFERENCE_DRIVE_FILE_ID: ${{ inputs.reference_drive_file_id }}
+          RIVERSHIFT_REFERENCE_SOURCE: ${{ inputs.reference_source }}
+          RIVERSHIFT_REFERENCE_DATE: ${{ inputs.reference_date }}
+          RIVERSHIFT_REFERENCE_METHOD: ${{ inputs.reference_method }}
+          RIVERSHIFT_MAXIMUM_DATE_OFFSET_DAYS: ${{ inputs.maximum_date_offset_days }}
+          RIVERSHIFT_MINIMUM_COMMON_SUPPORT_FRACTION: ${{ inputs.minimum_common_support_fraction }}
+          RIVERSHIFT_VALIDATION_BLOCK_SIZE: ${{ inputs.block_size_pixels }}
+        run: |
+          set -euo pipefail
+          python -u tools/river_shift/validate_independent_reference.py \
+            --source-job-id "$RIVERSHIFT_SOURCE_JOB_ID" \
+            --api-base-url "$RIVERSHIFT_VALIDATION_API_BASE_URL" \
+            --reference-drive-file-id "$RIVERSHIFT_REFERENCE_DRIVE_FILE_ID" \
+            --reference-source "$RIVERSHIFT_REFERENCE_SOURCE" \
+            --reference-date "$RIVERSHIFT_REFERENCE_DATE" \
+            --reference-method "$RIVERSHIFT_REFERENCE_METHOD" \
+            --maximum-date-offset-days "$RIVERSHIFT_MAXIMUM_DATE_OFFSET_DAYS" \
+            --minimum-common-support-fraction "$RIVERSHIFT_MINIMUM_COMMON_SUPPORT_FRACTION" \
+            --block-size-pixels "$RIVERSHIFT_VALIDATION_BLOCK_SIZE" \
+            --work-dir validation-work \
+            --output validation-work/outputs/validation/independent_reference_validation.json
+
+      - name: Retain independent validation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: river-shift-independent-validation-${{ inputs.source_job_id }}
+          path: validation-work/outputs/validation/independent_reference_validation.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+      - name: Publish interpretation
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## RiverShift independent reference validation"
+            echo
+            echo "- Source job: ${{ inputs.source_job_id }}"
+            echo "- The original processing job is unchanged."
+            echo "- Metrics are review evidence, not release approval."
+            echo "- Release remains PROVISIONAL until an independent reviewer accepts reference quality and suitability."
+          } >> "$GITHUB_STEP_SUMMARY"

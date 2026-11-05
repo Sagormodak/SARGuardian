@@ -1,0 +1,267 @@
+[WARNING] No --ref-lat/--ref-lon. Each interferogram keeps its own arbitrary offset, so the assembled series will be meaningless. Strongly advised.
+[INFO] Measuring displacement for 15 pairs...
+[INFO] group      : science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH
+[INFO] phase      : (4275, 4356)
+[INFO] coherence  : coherenceMagnitude
+[INFO] components : connectedComponents
+[INFO] ionosphere : ionospherePhaseScreen
+[INFO] Wavelength from file: 0.2439 m (1229.0 MHz)
+[INFO] Ionosphere screen subtracted (RMS 430.9 mm in LOS)
+[INFO] AOI dominant connected component: 1 (100% of AOI)
+[INFO] Auto reference: grid (1776, 1809), coherence 0.93, component 1, block 100% valid
+[INFO] Referenced automatically: subtracted -573.12 mm (121 px)
+[INFO] 2025-11-25 -> 2025-12-07 :   +10.42 mm  (211 px, coh 0.50)
+[INFO] group      : science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH
+[INFO] phase      : (4230, 4311)
+[INFO] coherence  : coherenceMagnitude
+[INFO] components : connectedComponents
+[INFO] ionosphere : ionospherePhaseScreen
+[INFO] Wavelength from file: 0.2420 m (1239.0 MHz)
+[INFO] Ionosphere screen subtracted (RMS 1403.1 mm in LOS)
+[INFO] AOI dominant connected component: 1 (100% of AOI)
+[INFO] Auto reference: grid (1743, 3239), coherence 0.97, component 1, block 100% valid
+[INFO] Referenced automatically: subtracted -1382.00 mm (121 px)
+[INFO] 2025-11-28 -> 2025-12-10 :   -84.85 mm  (215 px, coh 0.59)
+[INFO] group      : science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH
+[INFO] phase      : (4275, 4356)
+[INFO] coherence  : coherenceMagnitude
+[INFO] components : connectedComponents
+[INFO] ionosphere : ionospherePhaseScreen
+[INFO] Wavelength from file: 0.2439 m (1229.0 MHz)
+[INFO] Ionosphere screen subtracted (RMS 296.3 mm in LOS)
+[INFO] AOI dominant connected component: 1 (100% of AOI)
+[INFO] Auto reference: grid (1776, 1809), coherence 0.95, component 1, block 100% valid
+[INFO] Referenced automatically: subtracted -251.29 mm (121 px)
+[INFO] 2025-12-07 -> 2025-12-19 :   -29.77 mm  (220 px, coh 0.50)
+[INFO] group      : science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH
+[INFO] phase      : (4230, 4311)
+[INFO] coherence  : coherenceMagnitude
+[INFO] components : connectedComponents
+[INFO] ionosphere : ionospherePhaseScreen
+[INFO] Wavelength from file: 0.2420 m (1239.0 MHz)
+[INFO] Ionosphere screen subtracted (RMS 135.4 mm in LOS)
+[INFO] AOI dominant connected component: 1 (100% of AOI)
+[INFO] Auto reference: grid (1534, 2040), coherence 0.97, component 1, block 100% valid
+[INFO] Referenced automatically: subtracted -65.53 mm (121 px)
+[INFO] 2025-12-10 -> 2025-12-22 :   -19.88 mm  (219 px, coh 0.57)
+[INFO] group      : science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH
+[INFO] phase      : (4230, 4311)
+[INFO] coherence  : coherenceMagnitude
+[INFO] components : connectedComponents
+[INFO] ionosphere : ionospherePhaseScreen
+[INFO] Wavelength from file: 0.2420 m (1239.0 MHz)
+[INFO] Ionosphere screen subtracted (RMS 4211.3 mm in LOS)
+[INFO] AOI dominant connected component: 1 (100% of AOI)
+[INFO] Auto reference: grid (1743, 3239), coherence 0.97, component 1, block 100% valid
+[INFO] Referenced automatically: subtracted 4209.69 mm (121 px)
+[INFO] 2025-12-22 -> 2026-01-03 :    +8.57 mm  (226 px, coh 0.60)
+[INFO] group      : science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH
+[INFO] phase      : (4230, 4311)
+[INFO] coherence  : coherenceMagnitude
+[INFO] components : connectedComponents
+[INFO] ionosphere : ionospherePhaseScreen
+[INFO] Wavelength from file: 0.2420 m (1239.0 MHz)
+[INFO] Ionosphere screen subtracted (RMS 75.0 mm in LOS)
+[INFO] AOI dominant connected component: 1 (100% of AOI)
+[INFO] Auto reference: grid (1534, 2040), coherence 0.97, component 1, block 100% valid
+[INFO] Referenced automatically: subtracted 23.13 mm (121 px)
+[INFO] 2026-01-03 -> 2026-01-15 :   -21.77 mm  (201 px, coh 0.63)
+[INFO] group      : science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH
+[INFO] phase      : (4230, 4311)
+[INFO] coherence  : coherenceMagnitude
+[INFO] components : connectedComponents
+[INFO] ionosphere : ionospherePhaseScreen
+[INFO] Wavelength from file: 0.2420 m (1239.0 MHz)
+[INFO] Ionosphere screen subtracted (RMS 452.2 mm in LOS)
+[INFO] AOI dominant connected component: 1 (100% of AOI)
+[INFO] Auto reference: grid (1842, 566), coherence 0.82, component 1, block 80% valid
+[INFO] Referenced automatically: subtracted 236.42 mm (110 px)
+[INFO] 2026-06-20 -> 2026-07-02 :   +44.22 mm  (1 px, coh 0.36)
+[INFO] group      : science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH
+[INFO] phase      : (4275, 4356)
+[INFO] coherence  : coherenceMagnitude
+[INFO] components : connectedComponents
+[INFO] ionosphere : ionospherePhaseScreen
+[INFO] Wavelength from file: 0.2439 m (1229.0 MHz)
+[INFO] Ionosphere screen subtracted (RMS 314.5 mm in LOS)
+[INFO] AOI dominant connected component: 1 (100% of AOI)
+[INFO] Auto reference: grid (1897, 2392), coherence 0.93, component 1, block 100% valid
+[INFO] Referenced automatically: subtracted -464.15 mm (121 px)
+[INFO] 2026-06-29 -> 2026-07-11 :   +20.53 mm  (48 px, coh 0.40)
+[INFO] group      : science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH
+[INFO] phase      : (4230, 4311)
+[INFO] coherence  : coherenceMagnitude
+[INFO] components : connectedComponents
+[INFO] ionosphere : ionospherePhaseScreen
+[INFO] Wavelength from file: 0.2420 m (1239.0 MHz)
+[INFO] Ionosphere screen subtracted (RMS 369.5 mm in LOS)
+[INFO] AOI dominant connected component: 1 (100% of AOI)
+[INFO] Auto reference: grid (1842, 566), coherence 0.73, component 1, block 80% valid
+[INFO] Referenced automatically: subtracted 284.25 mm (104 px)
+[INFO] 2026-07-02 -> 2026-07-14 :   -34.78 mm  (6 px, coh 0.45)
+[INFO] group      : science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH
+[INFO] phase      : (4275, 4356)
+[INFO] coherence  : coherenceMagnitude
+[INFO] components : connectedComponents
+[INFO] ionosphere : ionospherePhaseScreen
+[INFO] Wavelength from file: 0.2439 m (1229.0 MHz)
+[INFO] Ionosphere screen subtracted (RMS 1153.6 mm in LOS)
+[INFO] AOI dominant connected component: 1 (100% of AOI)
+[INFO] Auto reference: grid (753, 2722), coherence 0.89, component 1, block 100% valid
+[INFO] Referenced automatically: subtracted -299.52 mm (121 px)
+[INFO] 2026-07-11 -> 2026-07-23 :   +30.66 mm  (111 px, coh 0.50)
+[INFO] group      : science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH
+[INFO] phase      : (4230, 4311)
+[INFO] coherence  : coherenceMagnitude
+[INFO] components : connectedComponents
+[INFO] ionosphere : ionospherePhaseScreen
+[INFO] Wavelength from file: 0.2420 m (1239.0 MHz)
+[INFO] Ionosphere screen subtracted (RMS 437.5 mm in LOS)
+[INFO] AOI dominant connected component: 1 (100% of AOI)
+[INFO] Auto reference: grid (1787, 555), coherence 0.83, component 1, block 80% valid
+[INFO] Referenced automatically: subtracted -319.34 mm (99 px)
+[INFO] 2026-07-14 -> 2026-07-26 :   -27.06 mm  (2 px, coh 0.37)
+[INFO] group      : science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH
+[INFO] phase      : (4275, 4356)
+[INFO] coherence  : coherenceMagnitude
+[INFO] components : connectedComponents
+[INFO] ionosphere : ionospherePhaseScreen
+[INFO] Wavelength from file: 0.2420 m (1239.0 MHz)
+[INFO] Ionosphere screen subtracted (RMS 90.1 mm in LOS)
+[INFO] AOI dominant connected component: 1 (100% of AOI)
+[INFO] Auto reference: grid (1457, 3877), coherence 0.92, component 1, block 80% valid
+[INFO] Referenced automatically: subtracted 43.17 mm (108 px)
+[INFO] 2026-07-23 -> 2026-08-16 :    -4.11 mm  (42 px, coh 0.48)
+[INFO] group      : science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH
+[INFO] phase      : (4230, 4311)
+[INFO] coherence  : coherenceMagnitude
+[INFO] components : connectedComponents
+[INFO] ionosphere : ionospherePhaseScreen
+[INFO] Wavelength from file: 0.2420 m (1239.0 MHz)
+[INFO] Ionosphere screen subtracted (RMS 559.2 mm in LOS)
+[INFO] AOI dominant connected component: 1 (100% of AOI)
+[INFO] Auto reference: grid (1842, 566), coherence 0.77, component 1, block 80% valid
+[INFO] Referenced automatically: subtracted 466.10 mm (109 px)
+[INFO] 2026-07-26 -> 2026-08-19 :   +24.86 mm  (19 px, coh 0.53)
+[INFO] group      : science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH
+[INFO] phase      : (4275, 4356)
+[INFO] coherence  : coherenceMagnitude
+[INFO] components : connectedComponents
+[INFO] ionosphere : ionospherePhaseScreen
+[INFO] Wavelength from file: 0.2439 m (1229.0 MHz)
+[INFO] Ionosphere screen subtracted (RMS 1002.1 mm in LOS)
+[INFO] AOI dominant connected component: 1 (100% of AOI)
+[INFO] Auto reference: grid (1809, 1435), coherence 0.88, component 1, block 100% valid
+[INFO] Referenced automatically: subtracted -61.51 mm (121 px)
+[INFO] 2026-08-16 -> 2026-08-28 :   -21.19 mm  (23 px, coh 0.45)
+[INFO] group      : science/LSAR/GUNW/grids/frequencyA/unwrappedInterferogram/HH
+[INFO] phase      : (4275, 4356)
+[INFO] coherence  : coherenceMagnitude
+[INFO] components : connectedComponents
+[INFO] ionosphere : ionospherePhaseScreen
+[INFO] Wavelength from file: 0.2439 m (1229.0 MHz)
+[INFO] Ionosphere screen subtracted (RMS 888.3 mm in LOS)
+[INFO] AOI dominant connected component: 1 (100% of AOI)
+[INFO] Auto reference: grid (1622, 2469), coherence 0.87, component 1, block 100% valid
+[INFO] Referenced automatically: subtracted 549.13 mm (121 px)
+[INFO] 2026-08-16 -> 2026-08-28 :  -292.21 mm  (18 px, coh 0.46)
+[INFO] Wrote outputs/ts_candidate.csv (18 rows)
+
+15 interferograms across 2 geometries
+
+====================================================================
+ASCENDING path 98   8 pairs, 10 epochs, 2 connected component(s)
+====================================================================
+  !! NETWORK IS DISCONNECTED - these blocks cannot be joined.
+     Displacements in one block are NOT comparable to another.
+
+  Component 1: 2025-11-28 .. 2026-01-15  (48 d, 5 epochs, 4 pairs)
+    unknowns 4, redundancy 0  <- exactly determined: no residual, no error estimate
+      2025-11-28 -> 2025-12-10  (12 d)
+      2025-12-10 -> 2025-12-22  (12 d)
+      2025-12-22 -> 2026-01-03  (12 d)
+      2026-01-03 -> 2026-01-15  (12 d)  <- last before event
+
+  Component 2: 2026-06-20 .. 2026-08-19  (60 d, 5 epochs, 4 pairs)
+    unknowns 4, redundancy 0  <- exactly determined: no residual, no error estimate
+      2026-06-20 -> 2026-07-02  (12 d)
+      2026-07-02 -> 2026-07-14  (12 d)
+      2026-07-14 -> 2026-07-26  (12 d)
+      2026-07-26 -> 2026-08-19  (24 d)  <- last before event
+
+====================================================================
+DESCENDING path 48   7 pairs, 8 epochs, 2 connected component(s)
+====================================================================
+  !! NETWORK IS DISCONNECTED - these blocks cannot be joined.
+     Displacements in one block are NOT comparable to another.
+
+  Component 1: 2025-11-25 .. 2025-12-19  (24 d, 3 epochs, 2 pairs)
+    unknowns 2, redundancy 0  <- exactly determined: no residual, no error estimate
+      2025-11-25 -> 2025-12-07  (12 d)
+      2025-12-07 -> 2025-12-19  (12 d)  <- last before event
+
+  Component 2: 2026-06-29 .. 2026-08-28  (60 d, 5 epochs, 5 pairs)
+    unknowns 4, redundancy 1
+      2026-06-29 -> 2026-07-11  (12 d)
+      2026-07-11 -> 2026-07-23  (12 d)
+      2026-07-23 -> 2026-08-16  (24 d)  <- last before event
+      2026-08-16 -> 2026-08-28  (12 d)
+      2026-08-16 -> 2026-08-28  (12 d)
+
+
+ASC path 98  -  component 1
+  4 pairs, 5 epochs, dof 0
+  exactly determined - residual and error are undefined
+
+  EPOCH         CUMULATIVE mm    +/- mm   DAYS
+  --------------------------------------------
+  2025-11-28             0.00   n/a      0
+  2025-12-10           -84.85   n/a     12
+  2025-12-22          -104.73   n/a     24
+  2026-01-03           -96.16   n/a     36
+  2026-01-15          -117.94   n/a     48
+
+  linear velocity -2.060 +/- 0.779 mm/day   (-752 mm/yr, over 48 d)
+
+ASC path 98  -  component 2
+  4 pairs, 5 epochs, dof 0
+  exactly determined - residual and error are undefined
+
+  EPOCH         CUMULATIVE mm    +/- mm   DAYS
+  --------------------------------------------
+  2026-06-20             0.00   n/a      0
+  2026-07-02            44.22   n/a     12
+  2026-07-14             9.44   n/a     24
+  2026-07-26           -17.62   n/a     36
+  2026-08-19             7.24   n/a     60
+
+  linear velocity -0.275 +/- 0.541 mm/day   (-100 mm/yr, over 60 d)
+  NOT significant at 2 sigma - consistent with no motion.
+
+DESC path 48  -  component 1
+  2 pairs, 3 epochs, dof 0
+  exactly determined - residual and error are undefined
+
+  EPOCH         CUMULATIVE mm    +/- mm   DAYS
+  --------------------------------------------
+  2025-11-25             0.00   n/a      0
+  2025-12-07            10.42   n/a     12
+  2025-12-19           -19.35   n/a     24
+
+  linear velocity -0.806 +/- 0.967 mm/day   (-294 mm/yr, over 24 d)
+  NOT significant at 2 sigma - consistent with no motion.
+
+DESC path 48  -  component 2
+  5 pairs, 5 epochs, dof 1
+  residual RMS 85.71 mm  (sigma 191.64 mm)
+
+  EPOCH         CUMULATIVE mm    +/- mm   DAYS
+  --------------------------------------------
+  2026-06-29             0.00      0.00      0
+  2026-07-11            20.53    191.64     12
+  2026-07-23            51.19    271.02     24
+  2026-08-16            47.07    331.93     48
+  2026-08-28          -109.62    358.53     60
+
+  linear velocity -1.254 +/- 1.341 mm/day   (-458 mm/yr, over 60 d)
+  NOT significant at 2 sigma - consistent with no motion.

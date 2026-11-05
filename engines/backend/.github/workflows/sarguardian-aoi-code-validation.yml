@@ -1,0 +1,176 @@
+name: SARGuardian AOI branch code validation
+
+on:
+  push:
+    branches:
+      - feat/e2e-aoi-wkt-date-dashboard
+      - feat/final-aoi-science-integration
+      - main
+    paths:
+      - "tools/**"
+      - "dashboard/**"
+      - ".github/workflows/sarguardian-aoi-*.yml"
+      - ".github/workflows/sarguardian-aoi-*.yaml"
+      - ".github/workflows/sarguardian-streaming-batch.yml"
+      - ".github/workflows/sarguardian-product-worker.yml"
+      - ".github/workflows/sarguardian-aoi-code-validation.yml"
+  pull_request:
+    branches:
+      - main
+      - feat/find-displacements-aoi-screen-20261029
+      - feat/final-aoi-science-integration
+      - fix/find-displacements-science-20261029
+    paths:
+      - "tools/**"
+      - "dashboard/**"
+      - ".github/workflows/sarguardian-aoi-*.yml"
+      - ".github/workflows/sarguardian-aoi-*.yaml"
+      - ".github/workflows/sarguardian-streaming-batch.yml"
+      - ".github/workflows/sarguardian-product-worker.yml"
+      - ".github/workflows/sarguardian-aoi-code-validation.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  static-and-parser-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout backend feature branch
+        uses: actions/checkout@v4
+
+      - name: Checkout dynamic-WKT scientific parser
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian
+          ref: 006d4cd1485cf80e509eaf8717c12e9c6390ac09
+          path: science-source
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install static test tools
+        run: python -m pip install --disable-pip-version-check pytest pyyaml requests numpy scipy h5py rasterio pyproj pillow matplotlib
+
+      - name: Compile every backend Python tool
+        run: python -m compileall -q tools dashboard
+
+      - name: Syntax-check the generated dashboard JavaScript
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source = Path("tools/aggregate_aoi_run.py").read_text(encoding="utf-8")
+          marker = 'doc = r"""'
+          start = source.find(marker)
+          if start < 0:
+              raise SystemExit("ERROR=DASHBOARD_HTML_TEMPLATE_NOT_FOUND")
+          start += len(marker)
+          end = source.find('"""', start)
+          if end < 0:
+              raise SystemExit("ERROR=DASHBOARD_HTML_TEMPLATE_UNTERMINATED")
+          html = source[start:end]
+          script_marker = "<script>\\n"
+          script_start = html.find(script_marker)
+          if script_start < 0:
+              script_marker = "<script>"
+              script_start = html.find(script_marker)
+              if script_start < 0:
+                  raise SystemExit("ERROR=DASHBOARD_INTERACTIVE_SCRIPT_NOT_FOUND")
+              script_start += len(script_marker)
+          else:
+              script_start += len(script_marker)
+          script_end = html.find("</script>", script_start)
+          if script_end < 0:
+              raise SystemExit("ERROR=DASHBOARD_INTERACTIVE_SCRIPT_UNTERMINATED")
+          Path("/tmp/sarguardian-dashboard.js").write_text(html[script_start:script_end], encoding="utf-8")
+          print("DASHBOARD_JS_EXTRACTED=/tmp/sarguardian-dashboard.js")
+          PY
+          node --check /tmp/sarguardian-dashboard.js
+
+      - name: Parse workflow YAML syntax
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          files = sorted(Path(".github/workflows").glob("sarguardian-aoi-*.yml"))
+          if not files:
+              raise SystemExit("ERROR=AOI_WORKFLOW_FILES_MISSING")
+          for path in files:
+              with path.open(encoding="utf-8") as handle:
+                  yaml.compose(handle, Loader=yaml.BaseLoader)
+              print(f"YAML_SYNTAX_PASS={path}")
+          PY
+
+      - name: Test WKT parser, GOFF metadata-layer discovery, AOI discovery, validator identity and dashboard integrity
+        env:
+          PYTHONPATH: ${{ github.workspace }}/science-source/src
+        run: python -m pytest -q science-source/tests/test_aoi_wkt.py science-source/tests/test_goff_reader.py tools/tests/test_discover_aoi_products.py tools/tests/test_validate_aoi_derived_outputs.py tools/tests/test_plan_aoi_retries.py tools/tests/test_aggregate_aoi_run.py tools/tests/test_aoi_wide_displacement_screen.py tools/tests/test_run_export_science_diagnostics.py tools/tests/test_science_engine_dispatch_contract.py dashboard/tests/test_prepare_web_assets.py
+
+      - name: Download already-retained Run 32 AOI dashboard for integration smoke test
+        uses: actions/download-artifact@v4
+        with:
+          name: sarguardian-aoi-dashboard-40809709950-1
+          run-id: 40809709950
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/sarguardian-run32-dashboard
+
+      - name: Run target-free Find Displacements against retained Run 32 rasters
+        env:
+          RUN32_ARTIFACT_ROOT: ${{ runner.temp }}/sarguardian-run32-dashboard
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from tools.aoi_wide_displacement_screen import run_aoi_wide_screen
+
+          artifact_root = Path(os.environ["RUN32_ARTIFACT_ROOT"])
+          reports = list(artifact_root.rglob("aoi-processing-report.json"))
+          if len(reports) != 1:
+              raise SystemExit(f"RUN32_REPORT_COUNT_EXPECTED_1_GOT_{len(reports)}")
+          root = reports[0].parent
+          report = json.loads(reports[0].read_text(encoding="utf-8"))
+          summary = report.get("summary") or {}
+          products = report.get("products")
+          if not isinstance(products, list) or not products:
+              raise SystemExit("RUN32_PRODUCTS_MISSING")
+          aoi_wkt = str(summary.get("aoi_wkt") or "")
+          out = root / "aoi-wide-displacement-screen-ci"
+          result = run_aoi_wide_screen(products, root, out, aoi_wkt)
+          print("RUN32_FIND_DISPLACEMENTS_STATUS=" + str(result.get("status")))
+          print("RUN32_FIND_DISPLACEMENTS_GOFF_SERIES=" + str(result.get("series_count")))
+          print("RUN32_FIND_DISPLACEMENTS_CANDIDATES=" + str(result.get("candidate_count")))
+          for series in result.get("series", []):
+              print("RUN32_GOFF_SERIES=" + json.dumps({
+                  "series_id": series.get("series_id"),
+                  "status": series.get("status"),
+                  "pair_count": series.get("pair_count"),
+                  "candidate_components": series.get("candidate_components"),
+                  "persistent_pixels_before_direction_gate": series.get("persistent_pixels_before_direction_gate"),
+                  "persistent_pixels_after_direction_gate": series.get("persistent_pixels_after_direction_gate"),
+              }, sort_keys=True))
+          if result.get("target_required") is not False or result.get("target_coordinates_used") is not False:
+              raise SystemExit("RUN32_TARGET_FREE_CONTRACT_BROKEN")
+          if result.get("status") not in {
+              "COMPLETED_EXPLORATORY_RANKING",
+              "INSUFFICIENT_TEMPORAL_SUPPORT",
+              "NO_USABLE_GOFF_SERIES",
+          }:
+              raise SystemExit("RUN32_SCREEN_STATUS_NOT_CLASSIFIED")
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text(
+              "## Retained Run 32 Find Displacements smoke test\n\n"
+              + "- Status: " + str(result.get("status")) + "\n"
+              + "- Compatible GOFF series: " + str(result.get("series_count")) + "\n"
+              + "- Review candidate polygons: " + str(result.get("candidate_count")) + "\n\n"
+              + "This used already-retained AOI GeoTIFFs. It did not download or reprocess raw NISAR products. "
+              + "Candidate polygons are exploratory spatial offset anomalies, not validated hazard detections.\n",
+              encoding="utf-8",
+          )
+          PY

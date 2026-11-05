@@ -1,0 +1,272 @@
+name: SARGuardian displacement processing
+
+run-name: Displacement ${{ inputs.job_id }}
+
+"on":
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Durable SARGuardian Dynamic displacement job UUID
+        required: true
+        type: string
+      aoi_wkt:
+        description: Single-ring EPSG:4326 POLYGON WKT
+        required: true
+        type: string
+      start_date:
+        description: Inclusive acquisition window start
+        required: true
+        type: string
+      end_date:
+        description: Inclusive acquisition window end
+        required: true
+        type: string
+      callback_url:
+        description: Trusted public SARGuardian Dynamic API URL
+        required: true
+        type: string
+      product_type:
+        required: false
+        default: BOTH
+        type: choice
+        options: [BOTH, GUNW, GOFF]
+      acquisition_window:
+        required: false
+        default: secondary-acquisition-in-window
+        type: choice
+        options: [secondary-acquisition-in-window, both-acquisitions-in-window]
+      retention_mode:
+        required: false
+        default: derived-only
+        type: choice
+        options: [derived-only, full-lossless]
+      processing_profile:
+        required: false
+        default: full-aoi
+        type: choice
+        options: [validation-pilot, full-aoi]
+      place_name:
+        description: Optional selected place name for dashboard context; not hazard evidence.
+        required: false
+        type: string
+        default: ''
+      place_latitude:
+        description: Optional selected place latitude in WGS84.
+        required: false
+        type: string
+        default: ''
+      place_longitude:
+        description: Optional selected place longitude in WGS84.
+        required: false
+        type: string
+        default: ''
+      target_latitude:
+        description: Optional measurement target latitude; must lie inside submitted AOI.
+        required: false
+        type: string
+        default: ''
+      target_longitude:
+        description: Optional measurement target longitude; must lie inside submitted AOI.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: sarguardian-displacement-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+jobs:
+  report-running:
+    name: Bind account job to this workflow run
+    runs-on: ubuntu-24.04
+    outputs:
+      reported: ${{ steps.callback.outputs.reported }}
+      request_fingerprint: ${{ steps.fingerprint.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Compute the immutable request fingerprint
+        id: fingerprint
+        env:
+          AOI_WKT: ${{ inputs.aoi_wkt }}
+          START_DATE: ${{ inputs.start_date }}
+          END_DATE: ${{ inputs.end_date }}
+          PRODUCT_TYPE: ${{ inputs.product_type }}
+          ACQUISITION_WINDOW: ${{ inputs.acquisition_window }}
+          RETENTION_MODE: ${{ inputs.retention_mode }}
+          PROCESSING_PROFILE: ${{ inputs.processing_profile }}
+          PLACE_NAME: ${{ inputs.place_name }}
+          PLACE_LATITUDE: ${{ inputs.place_latitude }}
+          PLACE_LONGITUDE: ${{ inputs.place_longitude }}
+          TARGET_LATITUDE: ${{ inputs.target_latitude }}
+          TARGET_LONGITUDE: ${{ inputs.target_longitude }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          value="$(PYTHONPATH="$GITHUB_WORKSPACE/Backend" python - <<'PY'
+          import os
+          from science_adapter.geometry import processing_fingerprint
+          def optional_float(name):
+              value = os.environ.get(name, "").strip()
+              return float(value) if value else None
+          print(processing_fingerprint(
+              aoi_wkt=os.environ["AOI_WKT"], start_date=os.environ["START_DATE"], end_date=os.environ["END_DATE"],
+              product_type=os.environ["PRODUCT_TYPE"], acquisition_window=os.environ["ACQUISITION_WINDOW"],
+              retention_mode=os.environ["RETENTION_MODE"], processing_profile=os.environ["PROCESSING_PROFILE"],
+              place_name=os.environ.get("PLACE_NAME", "").strip() or None,
+              place_latitude=optional_float("PLACE_LATITUDE"), place_longitude=optional_float("PLACE_LONGITUDE"),
+              target_latitude=optional_float("TARGET_LATITUDE"), target_longitude=optional_float("TARGET_LONGITUDE"),
+          ))
+          PY
+          )"
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+
+      - name: Report running state
+        id: callback
+        env:
+          CALLBACK_SECRET: ${{ secrets.DISPLACEMENT_CALLBACK_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH="$GITHUB_WORKSPACE/Backend" python -m science_adapter.dynamic_callback \
+            --state running --stage initializing --sequence 1 \
+            --callback-url "${{ inputs.callback_url }}" --callback-secret "$CALLBACK_SECRET" \
+            --job-id "${{ inputs.job_id }}" --request-fingerprint "${{ steps.fingerprint.outputs.value }}" \
+            --github-run-id "$GITHUB_RUN_ID" \
+            --github-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          echo "reported=true" >> "$GITHUB_OUTPUT"
+
+  process-dynamic-aoi:
+    name: Run upstream streaming batch for the submitted AOI
+    needs: report-running
+    if: needs.report-running.result == 'success'
+    uses: ./.github/workflows/sarguardian-aoi-wkt-dashboard.yml
+    with:
+      aoi_wkt: ${{ inputs.aoi_wkt }}
+      start_date: ${{ inputs.start_date }}
+      end_date: ${{ inputs.end_date }}
+      date_filter_mode: ${{ inputs.acquisition_window }}
+      run_profile: ${{ inputs.processing_profile == 'full-aoi' && 'full-aoi-baseline' || 'validation-pilot' }}
+      retention_profile: ${{ inputs.retention_mode }}
+      product_type: ${{ inputs.product_type }}
+      job_id: ${{ inputs.job_id }}
+      callback_url: ${{ inputs.callback_url }}
+      request_fingerprint: ${{ needs.report-running.outputs.request_fingerprint }}
+      place_name: ${{ inputs.place_name }}
+      place_latitude: ${{ inputs.place_latitude }}
+      place_longitude: ${{ inputs.place_longitude }}
+      target_latitude: ${{ inputs.target_latitude }}
+      target_longitude: ${{ inputs.target_longitude }}
+    secrets: inherit
+
+  report-terminal:
+    name: Report validated terminal state
+    needs: [report-running, process-dynamic-aoi]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Download the assembled dynamic-AOI dashboard
+        if: needs.process-dynamic-aoi.result == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-aoi-dashboard-*
+          path: ${{ runner.temp }}/sarguardian-account-result/dashboard
+          merge-multiple: true
+
+      - name: Download the verified private-storage receipt
+        if: needs.process-dynamic-aoi.result == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: sarguardian-aoi-account-callback
+          path: ${{ runner.temp }}/sarguardian-account-result/storage
+
+      - name: Validate results and report terminal callback
+        if: always()
+        env:
+          CALLBACK_SECRET: ${{ secrets.DISPLACEMENT_CALLBACK_SECRET }}
+          PIPELINE_RESULT: ${{ needs.process-dynamic-aoi.result }}
+          RUNNING_REPORTED: ${{ needs.report-running.outputs.reported }}
+          PROGRESS_REPORTED: ${{ needs.process-dynamic-aoi.outputs.progress_reported }}
+          REQUEST_FINGERPRINT: ${{ needs.report-running.outputs.request_fingerprint }}
+          AOI_WKT: ${{ inputs.aoi_wkt }}
+          START_DATE: ${{ inputs.start_date }}
+          END_DATE: ${{ inputs.end_date }}
+          PRODUCT_TYPE: ${{ inputs.product_type }}
+          ACQUISITION_WINDOW: ${{ inputs.acquisition_window }}
+          RETENTION_MODE: ${{ inputs.retention_mode }}
+          PROCESSING_PROFILE: ${{ inputs.processing_profile }}
+          PLACE_NAME: ${{ inputs.place_name }}
+          PLACE_LATITUDE: ${{ inputs.place_latitude }}
+          PLACE_LONGITUDE: ${{ inputs.place_longitude }}
+          TARGET_LATITUDE: ${{ inputs.target_latitude }}
+          TARGET_LONGITUDE: ${{ inputs.target_longitude }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/sarguardian-account-result"
+          request_fingerprint="$REQUEST_FINGERPRINT"
+          if [[ -z "$request_fingerprint" ]]; then
+            request_fingerprint="$(PYTHONPATH="$GITHUB_WORKSPACE/Backend" python - <<'PY'
+          import os
+          from science_adapter.geometry import processing_fingerprint
+          def optional_float(name):
+              value = os.environ.get(name, "").strip()
+              return float(value) if value else None
+          print(processing_fingerprint(
+              aoi_wkt=os.environ["AOI_WKT"], start_date=os.environ["START_DATE"], end_date=os.environ["END_DATE"],
+              product_type=os.environ["PRODUCT_TYPE"], acquisition_window=os.environ["ACQUISITION_WINDOW"],
+              retention_mode=os.environ["RETENTION_MODE"], processing_profile=os.environ["PROCESSING_PROFILE"],
+              place_name=os.environ.get("PLACE_NAME", "").strip() or None,
+              place_latitude=optional_float("PLACE_LATITUDE"), place_longitude=optional_float("PLACE_LONGITUDE"),
+              target_latitude=optional_float("TARGET_LATITUDE"), target_longitude=optional_float("TARGET_LONGITUDE"),
+          ))
+          PY
+          )"
+          fi
+          sequence=1
+          if [[ "$RUNNING_REPORTED" == "true" ]]; then sequence=2; fi
+          if [[ "$PROGRESS_REPORTED" == "true" ]]; then sequence=3; fi
+          state=failed
+          stage=failed
+          error_code=GITHUB_ACTIONS_WORKER_FAILED
+          error_message='The upstream streaming-batch science workflow did not complete successfully.'
+          summary_args=()
+          if [[ "$PIPELINE_RESULT" == "success" ]]; then
+            if PYTHONPATH="$GITHUB_WORKSPACE/Backend" python -m science_adapter.dynamic_callback \
+              --dashboard-root "$root" --github-run-id "$GITHUB_RUN_ID" \
+              --build-summary-out "$root/result-summary.json"; then
+              state=succeeded
+              stage=completed
+              error_code=''
+              error_message=''
+              summary_args=(--result-summary "$root/result-summary.json")
+            else
+              error_code=RESULT_CONTRACT_VALIDATION_FAILED
+              error_message='The streaming batch finished without a complete verified private result package.'
+            fi
+          fi
+          args=(--state "$state" --stage "$stage" --sequence "$sequence" \
+            --callback-url "${{ inputs.callback_url }}" --callback-secret "$CALLBACK_SECRET" \
+            --job-id "${{ inputs.job_id }}" --request-fingerprint "$request_fingerprint" \
+            --github-run-id "$GITHUB_RUN_ID" \
+            --github-run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID")
+          if [[ -n "$error_code" ]]; then
+            args+=(--error-code "$error_code" --error-message "$error_message")
+          fi
+          PYTHONPATH="$GITHUB_WORKSPACE/Backend" python -m science_adapter.dynamic_callback "${args[@]}" "${summary_args[@]}"

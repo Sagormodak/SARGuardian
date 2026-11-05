@@ -1,0 +1,109 @@
+name: Know Place — EGM2008 terrain vertical-datum sensitivity
+
+on:
+  push:
+    branches:
+      - feat/know-place-analysis
+    paths:
+      - ".github/workflows/know-place-terrain-datum-sensitivity.yml"
+      - "tools/know_place/terrain_vertical_datum.py"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: know-place-terrain-datum-sensitivity
+  cancel-in-progress: false
+
+jobs:
+  transform-terrain-height-reference:
+    name: Build explicit EGM2008-to-ellipsoid sensitivity, separate from author reproduction
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out isolated Know Place feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Download immutable source-tile artifact from the successful acquisition run
+        uses: actions/download-artifact@v4
+        with:
+          name: know-place-copernicus-glo90-source-tiles-40052506016-1
+          run-id: 40052506016
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/terrain-source
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install pinned raster and coordinate-operation runtime
+        run: python -m pip install --disable-pip-version-check numpy==2.4.6 rasterio==1.4.4 pyproj==3.8.0
+
+      - name: Download the published PROJ EGM2008 2.5-minute grid once
+        shell: bash
+        run: |
+          set -euo pipefail
+          GRID_DIR="$RUNNER_TEMP/projdata"
+          mkdir -p "$GRID_DIR"
+          curl --fail --location --silent --show-error \
+            --connect-timeout 20 --max-time 900 \
+            https://cdn.proj.org/us_nga_egm08_25.tif \
+            --output "$GRID_DIR/us_nga_egm08_25.tif"
+          test -s "$GRID_DIR/us_nga_egm08_25.tif"
+          sha256sum "$GRID_DIR/us_nga_egm08_25.tif" | tee "$GRID_DIR/us_nga_egm08_25.tif.sha256"
+          echo "EGM2008_GRID_BYTES=$(stat -c '%s' "$GRID_DIR/us_nga_egm08_25.tif")"
+          echo "EGM2008_GRID_SHA256=$(sha256sum "$GRID_DIR/us_nga_egm08_25.tif" | cut -d ' ' -f1)"
+
+      - name: Apply explicit grid-based conversion and create separate sensitivity outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m tools.know_place.terrain_vertical_datum \
+            --source-root "$RUNNER_TEMP/terrain-source" \
+            --geoid-grid "$RUNNER_TEMP/projdata/us_nga_egm08_25.tif" \
+            --out "$RUNNER_TEMP/terrain-datum-output" \
+            --row-chunk-size 96
+
+      - name: Summarize scientific boundary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## EGM2008 vertical datum sensitivity"
+            echo
+            echo "- Uses the PROJ/NGA EGM2008 2.5-minute vertical grid and rejects ballpark/no-op transformations."
+            echo "- Outputs the signed ellipsoidal-minus-orthometric height offset and separate experimental DEM; the archived author path is not overwritten."
+            echo "- Original terrain input bytes are not known; current public GLO-90 tiles only."
+            echo "- Raw NISAR GOFF downloads: 0. No hazard alarm or paper-reproduction claim is made."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ -s "$RUNNER_TEMP/terrain-datum-output/terrain_vertical_datum_sensitivity.json" ]]; then
+            python - "$RUNNER_TEMP/terrain-datum-output/terrain_vertical_datum_sensitivity.json" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1],encoding="utf-8"))
+          print()
+          print("- **Status:** `{}`".format(d.get("status")))
+          print("- **Grid SHA-256:** `{}`".format(d.get("geoid_grid",{}).get("sha256")))
+          print("- **Vertical operation:** `{}`".format(d.get("conversion",{}).get("operation")))
+          print("- **Signed offset stats (m):** `{}`".format(json.dumps(d.get("conversion",{}).get("signed_offset_stats_m",{}),sort_keys=True)))
+          print("- **Paper reproduction:** `{}`".format(d.get("paper_reproduction_status")))
+          print("- **Hazard detection:** `{}`".format(d.get("hazard_detection_status")))
+          PY
+          fi
+
+      - name: Upload the vertical grid, signed offset, experimental DEM and receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: know-place-egm2008-vertical-datum-sensitivity-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/projdata/us_nga_egm08_25.tif
+            ${{ runner.temp }}/projdata/us_nga_egm08_25.tif.sha256
+            ${{ runner.temp }}/terrain-datum-output/**
+          if-no-files-found: warn
+          retention-days: 30

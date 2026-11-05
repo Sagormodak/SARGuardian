@@ -1,0 +1,173 @@
+name: Know Place Analysis - saved-array coherence reanalysis
+
+# Recomputes derived diagnostic arrays from a completed analysis run.
+# It does not download or reprocess raw HDF5.
+on:
+  push:
+    branches:
+      - feat/know-place-analysis
+    paths:
+      - ".github/workflows/know-place-analysis-reanalysis.yml"
+      - "tools/know_place/reanalyse_saved_arrays.py"
+      - "tools/know_place/analyze.py"
+      - "tools/know_place/paper_method.py"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: know-place-saved-array-reanalysis
+  cancel-in-progress: false
+
+jobs:
+  reanalyse:
+    name: Recompute R sensitivity from the hash-verified prior artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      SOURCE_RUN_ID: "40006999011"
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+    steps:
+      - name: Require source run and durable-output credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$GOOGLE_DRIVE_OAUTH_CLIENT_JSON" || -z "$GOOGLE_DRIVE_REFRESH_TOKEN" || -z "$GOOGLE_DRIVE_PARENT_FOLDER_ID" ]]; then
+            echo "ERROR=DRIVE_SECRETS_REQUIRED_FOR_REANALYSIS_ARCHIVE"
+            exit 1
+          fi
+          echo "SOURCE_RUN_ID=$SOURCE_RUN_ID"
+          echo "RAW_HDF5_DOWNLOADS=0"
+
+      - name: Checkout isolated Know Place Analysis code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Download the completed source run's derived-only artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: know-place-analysis-40006999011-1
+          run-id: 40006999011
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/know-place-source-artifact
+
+      - name: Locate source report and diagnostic arrays
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          matches="$(find "$RUNNER_TEMP/know-place-source-artifact" -type f -name know-place-analysis-report.json)"
+          test "$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l)" -eq 1
+          report="$(printf '%s\n' "$matches")"
+          root="$(dirname "$report")"
+          echo "report=$report" >> "$GITHUB_OUTPUT"
+          echo "arrays_dir=$root" >> "$GITHUB_OUTPUT"
+          python - "$root" <<'PY'
+          from pathlib import Path
+          import sys
+          root=Path(sys.argv[1])
+          arrays=sorted(root.glob("*_diagnostic_arrays.npz"))
+          if len(arrays)!=5:
+              raise SystemExit(f"ERROR=EXPECTED_FIVE_DIAGNOSTIC_NPZ_FILES_FOUND_{len(arrays)}")
+          if any(p.suffix.lower() in {".h5",".hdf5"} for p in root.rglob("*")):
+              raise SystemExit("ERROR=RAW_HDF5_PRESENT_IN_REANALYSIS_INPUT")
+          print("DIAGNOSTIC_NPZ_FILES_FOUND=5")
+          print("RAW_HDF5_INPUTS=0")
+          PY
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install pinned numerical and retention runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir \
+            numpy==2.5.4 h5py==3.16.0 scipy==1.18.1 pyproj==3.8.0
+          python -m pip install --disable-pip-version-check --no-cache-dir \
+            -r tools/requirements-retention.txt
+
+      - name: Recompute 5x5 R sensitivity from hash-verified arrays
+        id: analysis
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/know-place-reanalysis"
+          mkdir -p "$out"
+          python -m tools.know_place.reanalyse_saved_arrays \
+            --report "${{ steps.source.outputs.report }}" \
+            --arrays-dir "${{ steps.source.outputs.arrays_dir }}" \
+            --out "$out/coherence-reanalysis-report.json" \
+            --source-run-id "$SOURCE_RUN_ID"
+          python - "$out/coherence-reanalysis-report.json" "$out/summary.md" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1],encoding="utf-8"))
+          rows=d.get("products",[])
+          if len(rows)!=5:
+              raise SystemExit("ERROR=REANALYSIS_DOES_NOT_CONTAIN_FIVE_PAIRS")
+          target=next((p for p in rows if p.get("pair")=="2026-07-26 -> 2026-08-19"),None)
+          if target is None:
+              raise SystemExit("ERROR=TARGET_PAIR_MISSING")
+          stats=target["crown_statistics_R_min1"]
+          sens=target["coherence_sensitivity"]["thresholds"]
+          w=sens["1"].get("target_pair_0_17_to_2_75_m_sensitivity",{})
+          with open(sys.argv[2],"w",encoding="utf-8") as f:
+              f.write("# Know Place Analysis - saved-array R sensitivity reanalysis\n\n")
+              f.write("- Source run: https://github.com/moshiour0/SARGuardian-backend/actions/runs/40006999011\n")
+              f.write("- Source report SHA-256: "+d["source_report_sha256"]+"\n")
+              f.write("- Verified diagnostic NPZ files: 5 (manifest hashes match)\n")
+              f.write("- Original report preserved; this is a separate reanalysis.\n")
+              f.write("- Paper parity status: "+d["paper_reproduction_status"]+"\n")
+              f.write("- Hazard detection status: NOT_EVALUATED\n\n")
+              f.write("## 26 July-19 August 2026\n\n")
+              f.write("| Metric | Reanalysis | Published target |\n|---|---:|---:|\n")
+              f.write("| Crown median horizontal magnitude | {:.3f} m | ~0.96 m |\n".format(stats["crown_median_horizontal_magnitude_m"]))
+              f.write("| Mean-vector magnitude | {:.3f} m | ~1.72 m |\n".format(stats["crown_mean_vector_magnitude_m"]))
+              f.write("| Mean-vector azimuth | {:.2f} deg | ~278 deg |\n".format(stats["crown_mean_vector_azimuth_deg_clockwise_from_north"]))
+              f.write("| R at eligible crown centres (minimum 1 neighbour) | {:.3f} (n={}) | not same support as common-motion-window R |\n".format(stats["crown_median_directional_coherence_R"],stats["valid_crown_pixels"]))
+              f.write("| R on pointwise common-motion window 0.17-2.75 m | {:.3f} (n={}) | ~0.869 (n=147) |\n".format(w.get("crown_median_R",float("nan")),w.get("crown_valid_centres",0)))
+              f.write("| Background R on same pointwise window | {:.3f} (n={}) | ~0.693 (paper sampled comparison) |\n".format(w.get("box_median_R_at_centres_with_same_pointwise_magnitude_window",float("nan")),w.get("box_valid_centres_at_same_pointwise_magnitude_window",0)))
+              f.write("\nSimilar scalar displacement and common-window R values are not author-supplement parity. The crown is a rectangle from published coordinate bounds, product release variants are not verified against author inputs, and our exploratory circular controls differ from the published control sample. No hazard alarm is inferred.\n")
+          print("TARGET_CROWN_MEDIAN_M={:.6f}".format(stats["crown_median_horizontal_magnitude_m"]))
+          print("TARGET_COMMON_WINDOW_R={:.6f}".format(w.get("crown_median_R",float("nan"))))
+          print("TARGET_COMMON_WINDOW_CENTRES={}".format(w.get("crown_valid_centres",0)))
+          print("PAPER_PARITY_BLOCKED="+d["paper_reproduction_status"])
+          PY
+
+      - name: Upload reanalysis report to Drive with remote verification
+        shell: bash
+        env:
+          OUT_ROOT: ${{ runner.temp }}/know-place-reanalysis
+        run: |
+          set -euo pipefail
+          python tools/drive_resumable_upload.py \
+            --root "$OUT_ROOT" \
+            --run-name "KnowPlace-R-Sensitivity-${{ github.run_id }}-${{ github.run_attempt }}" \
+            --files "$OUT_ROOT/coherence-reanalysis-report.json" "$OUT_ROOT/summary.md" \
+            --out "$OUT_ROOT/drive-upload-receipt.json"
+          python - "$OUT_ROOT/drive-upload-receipt.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1],encoding="utf-8"))
+          if d.get("remote_verification")!="PASS":
+              raise SystemExit("ERROR=REANALYSIS_DRIVE_VERIFICATION_FAILED")
+          print("REANALYSIS_DRIVE_VERIFICATION=PASS")
+          PY
+
+      - name: Upload compact reanalysis artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: know-place-coherence-reanalysis-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/know-place-reanalysis/coherence-reanalysis-report.json
+            ${{ runner.temp }}/know-place-reanalysis/summary.md
+            ${{ runner.temp }}/know-place-reanalysis/drive-upload-receipt.json
+          if-no-files-found: error
+          retention-days: 30

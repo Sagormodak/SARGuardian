@@ -1,0 +1,197 @@
+name: SARGuardian AOI live catalog discovery diagnostic
+
+on:
+  push:
+    branches:
+      - feat/final-aoi-science-integration
+    paths:
+      - ".github/workflows/sarguardian-aoi-live-discovery-check.yml"
+      - "tools/discover_aoi_products.py"
+  workflow_dispatch:
+    inputs:
+      aoi_wkt:
+        description: "One WGS84 polygon ring; longitude latitude."
+        type: string
+        required: true
+        default: "POLYGON ((84.99140223107368 28.499061219892724, 84.945606791564 28.28220804656594, 85.18844724834032 28.270753557383987, 85.20285565607317 28.414428221022945, 85.11305609453537 28.49639181334535, 84.99140223107368 28.499061219892724))"
+      start_date:
+        description: "Inclusive secondary acquisition date (YYYY-MM-DD)."
+        type: string
+        required: true
+        default: "2026-06-17"
+      end_date:
+        description: "Inclusive secondary acquisition date (YYYY-MM-DD)."
+        type: string
+        required: true
+        default: "2026-09-15"
+      date_filter_mode:
+        description: "Default selects by secondary acquisition date; strict mode requires both pair acquisition dates in the interval."
+        type: choice
+        required: true
+        options:
+          - both-acquisitions-in-window
+          - secondary-acquisition-in-window
+        default: secondary-acquisition-in-window
+
+permissions:
+  contents: read
+
+jobs:
+  catalog-only:
+    name: Check AOI catalog coverage (no downloads)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      SARGUARDIAN_AOI_WKT: ${{ inputs.aoi_wkt || 'POLYGON ((84.99140223107368 28.499061219892724, 84.945606791564 28.28220804656594, 85.18844724834032 28.270753557383987, 85.20285565607317 28.414428221022945, 85.11305609453537 28.49639181334535, 84.99140223107368 28.499061219892724))' }}
+      START_DATE: ${{ inputs.start_date || '2026-06-17' }}
+      END_DATE: ${{ inputs.end_date || '2026-09-15' }}
+      DATE_FILTER_MODE: ${{ inputs.date_filter_mode || 'secondary-acquisition-in-window' }}
+    steps:
+      - name: Checkout isolated AOI orchestration branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/final-aoi-science-integration
+
+      - name: Checkout pinned scientific WKT parser
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian
+          ref: 10639a916c9829850775410b3ed7de62e527770d
+          path: science-source
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install discovery dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r science-source/requirements.txt
+          python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r tools/requirements-retention.txt
+
+      - name: Query ASF and keep full discovery diagnostics
+        id: discover
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -uo pipefail
+          root="$RUNNER_TEMP/sarguardian-aoi-diagnostic"
+          mkdir -p "$root"
+          echo "AOI_DIAGNOSTIC_START_DATE=$START_DATE"
+          echo "AOI_DIAGNOSTIC_END_DATE=$END_DATE"
+          echo "AOI_DIAGNOSTIC_DATE_FILTER_MODE=$DATE_FILTER_MODE"
+          echo "AOI_DIAGNOSTIC_PROFILE=full-aoi-baseline"
+          echo "AOI_DIAGNOSTIC_RETENTION=derived-only"
+          python tools/discover_aoi_products.py \
+            --science-root "$PWD/science-source" \
+            --start-date "$START_DATE" \
+            --end-date "$END_DATE" \
+            --date-filter-mode "$DATE_FILTER_MODE" \
+            --run-profile full-aoi-baseline \
+            --retention-profile derived-only \
+            --out "$root/manifest.json" 2>&1 | tee "$root/discovery.log"
+          rc=${PIPESTATUS[0]}
+          echo "AOI_DIAGNOSTIC_EXIT_CODE=$rc" | tee -a "$root/discovery.log"
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+
+      - name: Compare custom AOI with known research AOI and no-geometry catalog controls
+        if: always()
+        shell: bash
+        env:
+          CONTROL_AOI_WKT: "POLYGON ((85.46451876449485 28.345047192655944, 85.46623537826439 28.277644183693493, 85.48958132553001 28.247707190492925, 85.53558657455345 28.245287672353218, 85.55618593978782 28.260106359331573, 85.55069277572532 28.290342185190823, 85.54931948470970 28.311199899644855, 85.53558657455345 28.330240328302096, 85.51018069076439 28.340212525080158, 85.49644778060814 28.352903058100104, 85.46451876449485 28.345047192655944))"
+        run: |
+          python - <<'PY'
+          import json, os
+          import requests
+          url = "https://api.daac.asf.alaska.edu/services/search/param"
+          start = "2024-01-01T00:00:00Z"
+          end = os.environ["END_DATE"] + "T23:59:59Z"
+          base = {"output": "geojson", "maxResults": "50", "start": start, "end": end}
+          user_aoi = os.environ["SARGUARDIAN_AOI_WKT"]
+          known_aoi = os.environ["CONTROL_AOI_WKT"]
+          cases = [
+            ("custom_gunw_maturity_provisional", {**base, "intersectsWith": user_aoi, "dataset": "NISAR", "processingLevel": "GUNW", "dataMaturity": "PROVISIONAL"}),
+            ("custom_gunw_maturity_beta", {**base, "intersectsWith": user_aoi, "dataset": "NISAR", "processingLevel": "GUNW", "dataMaturity": "BETA"}),
+            ("custom_goff_maturity_provisional", {**base, "intersectsWith": user_aoi, "dataset": "NISAR", "processingLevel": "GOFF", "dataMaturity": "PROVISIONAL"}),
+            ("custom_goff_maturity_beta", {**base, "intersectsWith": user_aoi, "dataset": "NISAR", "processingLevel": "GOFF", "dataMaturity": "BETA"}),
+            ("known_research_aoi_gunw_maturity_provisional", {**base, "intersectsWith": known_aoi, "dataset": "NISAR", "processingLevel": "GUNW", "dataMaturity": "PROVISIONAL"}),
+            ("no_geometry_gunw_maturity_provisional", {**base, "dataset": "NISAR", "processingLevel": "GUNW", "dataMaturity": "PROVISIONAL"}),
+          ]
+          with requests.Session() as session:
+            for label, params in cases:
+              try:
+                response = session.get(url, params=params, timeout=(20, 90))
+                response.raise_for_status()
+                payload = response.json()
+                if isinstance(payload, list):
+                  rows = payload
+                  keys = "list"
+                elif isinstance(payload, dict):
+                  rows = payload.get("results", payload.get("features", []))
+                  keys = ",".join(sorted(payload.keys()))
+                else:
+                  rows = []
+                  keys = type(payload).__name__
+                names = []
+                maturity_samples = []
+                crid_counts = {}
+                collection_counts = {}
+                processing_counts = {}
+                unusual_samples = []
+                for row in rows if isinstance(rows, list) else []:
+                  if not isinstance(row, dict): continue
+                  props = row.get("properties") if isinstance(row.get("properties"), dict) else row
+                  name = props.get("granuleName") or props.get("granule_name") or props.get("fileName") or props.get("sceneName") or props.get("fileID") or props.get("productName")
+                  if name:
+                    name = str(name)
+                    names.append(name)
+                    crid = str(props.get("crid") or ("_" + name.rsplit("_",4)[0] if False else ""))
+                    match = __import__("re").search(r"_([A-Z]\\d{5})_[A-Z]_[A-Z]_[A-Z]_\\d{3}(?:\\.h5)?$", name)
+                    crid = str(props.get("crid") or (match.group(1) if match else "unknown"))
+                    collection = str(props.get("collectionName") or "unknown")
+                    ptype = str(props.get("productionConfiguration") or (name.split("_")[2] if len(name.split("_")) > 2 else "unknown"))
+                    crid_counts[crid] = crid_counts.get(crid, 0) + 1
+                    collection_counts[collection] = collection_counts.get(collection, 0) + 1
+                    processing_counts[ptype] = processing_counts.get(ptype, 0) + 1
+                    sample = {k:props.get(k) for k in ("granuleName","fileName","sceneName","fileID","productName","processingLevel","productionConfiguration","collectionName","crid","dataMaturity","productType","startTime","stopTime") if props.get(k) is not None}
+                    if len(maturity_samples) < 3: maturity_samples.append(sample)
+                    if "_X05026_" in name or crid.startswith("X"):
+                      if len(unusual_samples) < 4: unusual_samples.append(sample)
+                print("ASF_CONTROL_QUERY " + json.dumps({"case":label,"status":response.status_code,"rows":len(rows) if isinstance(rows,list) else -1,"root_keys":keys,"sample_names":names[:3],"metadata_samples":maturity_samples,"crid_counts":crid_counts,"collection_counts":collection_counts,"processing_counts":processing_counts,"unusual_crid_samples":unusual_samples},separators=(",",":")))
+              except Exception as exc:
+                status = getattr(getattr(exc,"response",None),"status_code",None)
+                print("ASF_CONTROL_QUERY " + json.dumps({"case":label,"error":type(exc).__name__,"http_status":status},separators=(",",":")))
+          PY
+      - name: Write diagnosis summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## AOI live catalog discovery"
+            echo
+            echo "- Date window: $START_DATE through $END_DATE (inclusive secondary date)"
+            echo "- Profile: full-aoi-baseline"
+            echo "- This diagnostic performs catalog search only; it does not download or process products."
+            echo
+            if [ -f "$RUNNER_TEMP/sarguardian-aoi-diagnostic/discovery.log" ]; then
+              echo "### Catalog filter counts / error"
+              grep -E '^(ASF_CATALOG_RESPONSE|ASF_CATALOG_FALLBACK|ASF_CONTROL_QUERY|AOI_DISCOVERY_COUNTS|AOI_WKT_SHA256|AOI_DISCOVERY_INVENTORY|AOI_UNIQUE_ACQUISITION_PAIRS_ACROSS_FAMILIES|AOI_SUPPORTED_VARIANTS|AOI_DUPLICATE_VARIANTS_EXCLUDED|AOI_PRODUCTS_SELECTED|AOI_PRODUCTS_WITH_REFERENCE_OUTSIDE_WINDOW|AOI_BOUNDARY_PAIR_PRODUCTS_INCLUDED|AOI_BASELINE_GUNW|AOI_BASELINE_GOFF|ERROR=|AOI_DIAGNOSTIC_EXIT_CODE)' "$RUNNER_TEMP/sarguardian-aoi-diagnostic/discovery.log" || true
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload raw diagnostics and manifest if found
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarguardian-aoi-live-discovery-diagnostic
+          path: |
+            ${{ runner.temp }}/sarguardian-aoi-diagnostic/discovery.log
+            ${{ runner.temp }}/sarguardian-aoi-diagnostic/manifest.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Preserve failure status when discovery fails
+        if: steps.discover.outcome == 'failure'
+        run: exit 1

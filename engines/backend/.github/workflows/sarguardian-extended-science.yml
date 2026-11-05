@@ -1,0 +1,116 @@
+name: SARGuardian Extended Scientific Evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful full-baseline run ID to use; leave blank to select the newest compatible full-baseline run automatically
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: sarguardian-nisar-data-processing
+  cancel-in-progress: false
+
+jobs:
+  extended-science:
+    name: Recompute the remaining science results from verified derived data
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+      RUN_ID_SAFE: SARGuardian-ScienceExtensions-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Check out backend tools
+        uses: actions/checkout@v4
+
+      - name: Check out the exact science revision used by the baseline
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian
+          ref: ab547ecc82bcc4d6ccef545a59852536c2beacc6
+          path: science-source
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install pinned science and retention dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r science-source/requirements.txt
+          python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r tools/requirements-retention.txt
+
+      - name: Resolve a successful full-baseline result bundle
+        id: source
+        env:
+          REQUESTED_SOURCE_RUN_ID: ${{ inputs.source_run_id || '' }}
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/resolve_science_source_run.py \
+            --requested-run-id "$REQUESTED_SOURCE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --branch main
+
+      - name: Download the selected run's aggregate artifact only
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-streaming-run-${{ steps.source.outputs.run_id }}-*
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/sarguardian-source-bundle
+
+      - name: Run the extended science workflow (never extract raw HDF5)
+        id: science_results
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_root="$RUNNER_TEMP/sarguardian-source-bundle"
+          bundle="$(find "$source_root" -type f -name 'sarguardian-*-results.zip' -print -quit)"
+          test -n "$bundle" && test -s "$bundle"
+          python tools/run_extended_science.py \
+            --source-bundle "$bundle" \
+            --source-run-id "${{ steps.source.outputs.run_id }}" \
+            --science-root "$PWD/science-source" \
+            --out-root "$RUNNER_TEMP/sarguardian-extended-science"
+
+      - name: Publish full science extension report and result bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarguardian-extended-science-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/sarguardian-extended-science/sarguardian-extended-science-*.zip
+            ${{ runner.temp }}/sarguardian-extended-science/science-extension-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload the verified extended science result bundle to Drive
+        if: always() && steps.science_results.outputs.status == 'PASS'
+        env:
+          OUT_ROOT: ${{ runner.temp }}/sarguardian-extended-science
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="$(find "$OUT_ROOT" -maxdepth 1 -name 'sarguardian-extended-science-*.zip' -type f -print -quit)"
+          report="$OUT_ROOT/science-extension-report.json"
+          test -s "$bundle" && test -s "$report"
+          python tools/drive_resumable_upload.py \
+            --root "$OUT_ROOT" --run-name "$RUN_ID_SAFE" \
+            --files "$bundle" "$report" --out "$OUT_ROOT/drive-run-upload-receipt.json"
+          python tools/drive_resumable_upload.py \
+            --root "$OUT_ROOT" --run-name "$RUN_ID_SAFE" \
+            --files "$OUT_ROOT/drive-run-upload-receipt.json" \
+            --out "$OUT_ROOT/drive-run-receipt-upload.json"
+          echo "EXTENDED_SCIENCE_DRIVE_VERIFICATION=PASS"

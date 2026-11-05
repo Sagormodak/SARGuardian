@@ -1,0 +1,138 @@
+{
+  "schema_version": "know-place-multisite-source-geometry-leads/1.0",
+  "audit_date_utc": "2026-10-25",
+  "purpose": "Metadata-only source audit for the first independent Himalayan-glacier validation pair. This file records geometry-source leads; it does not freeze an AOI, product list, or scientific result.",
+  "execution_boundary": {
+    "nisar_raw_payload_downloaded": false,
+    "its_live_payload_downloaded": false,
+    "catalog_query_executed": false,
+    "event_or_velocity_validation_scored": false,
+    "reason": "Exact source AOI/product timing has not been recovered from the reviewed IIRS article text. Geometry and acquisition identity must be frozen before query/scoring."
+  },
+  "primary_reference": {
+    "title": "NISAR for Monitoring Glacier Motion",
+    "authors": [
+      "Apoorva Malviya",
+      "Vaibhav Garg",
+      "Praveen Thakur"
+    ],
+    "publisher": "Sudoor Manthan — IIRS Science Portal",
+    "publication_date": "2026-10-13",
+    "doi": "10.65456/iirs.2026.10.3.1",
+    "url": "https://science.iirs.gov.in/nisar-for-monitoring-glacier-motion/",
+    "accessible_temporal_label_for_himalayan_pairs": "January 2026",
+    "exact_pair_start_end_dates_in_reviewed_page_text": null,
+    "exact_nisar_granule_ids_in_reviewed_page_text": [],
+    "exact_aoi_wkt_or_vector_sha256_in_reviewed_page_text": null,
+    "published_ranges_m_per_year": {
+      "samudra-tapu-glacier-2026-01": {
+        "nisar_goff": [
+          5.7,
+          139.19
+        ],
+        "its_live": [
+          0.7,
+          132.53
+        ]
+      },
+      "bara-shigri-glacier-2026-01": {
+        "nisar_goff": [
+          1.89,
+          68.99
+        ],
+        "its_live": [
+          0.47,
+          70.58
+        ]
+      }
+    },
+    "comparator_limit": "The source compares a single NISAR acquisition pair with multi-year/multi-sensor ITS_LIVE. Published ranges are not a pixelwise truth set and do not establish a single universal error tolerance."
+  },
+  "inventory_source": {
+    "name": "Randolph Glacier Inventory (RGI)",
+    "version": "7.0",
+    "dataset_doi": "10.5067/f6jmovy5navz",
+    "dataset_url": "https://nsidc.org/data/nsidc-0770",
+    "user_guide_url": "https://rgidata.org/user_guide/",
+    "region_14_url": "https://rgidata.org/user_guide/regions/rgi14.html",
+    "region_code": "14",
+    "region_name": "South Asia West",
+    "proposed_role": "INDEPENDENT_INVENTORY_OUTLINE_ROI_ONLY",
+    "equivalence_to_iirs_paper_aoi": "NOT_ESTABLISHED",
+    "temporal_warning": "RGI is an inventory snapshot targeted around year 2000; RGI 7.0 region 14 was replaced by GAMDAM/GGI18 outlines primarily mapped from summer Landsat scenes around 2002. Do not present these as date-matched January 2026 glacier boundaries.",
+    "region_archive_sha256": null,
+    "outline_geometry_sha256": null,
+    "outline_bytes_retrieved": false
+  },
+  "sites": [
+    {
+      "site_id": "samudra-tapu-glacier-2026-01",
+      "legacy_rgi6_id": "RGI60-14.15613",
+      "legacy_id_source_doi": "10.3389/frwa.2022.909246",
+      "legacy_id_source_url": "https://www.frontiersin.org/journals/water/articles/10.3389/frwa.2022.909246/full",
+      "rgi7_id": null,
+      "rgi7_id_status": "NOT_VERIFIED_IN_THIS_AUDIT",
+      "source_geometry_role": "INDEPENDENT_INVENTORY_OUTLINE_ROI_ONLY",
+      "geometry_wkt": null,
+      "region_archive_sha256": null,
+      "canonical_geometry_sha256": null,
+      "exact_product_ids": [],
+      "source_product_sha256": [],
+      "status": "LEAD_ONLY_NO_POLYGON_BYTES_OR_HASH"
+    },
+    {
+      "site_id": "bara-shigri-glacier-2026-01",
+      "legacy_rgi6_id": "RGI60-14.15447",
+      "rgi7_id": "RGI2000-v7.0-G-14-32495",
+      "rgi7_id_source_doi": "10.1029/2025WR041259",
+      "rgi7_id_source_url": "https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2025WR041259",
+      "rgi7_id_status": "LITERATURE_CITED_NOT_VERIFIED_AGAINST_SOURCE_ARCHIVE",
+      "source_geometry_role": "INDEPENDENT_INVENTORY_OUTLINE_ROI_ONLY",
+      "geometry_wkt": null,
+      "region_archive_sha256": null,
+      "canonical_geometry_sha256": null,
+      "exact_product_ids": [],
+      "source_product_sha256": [],
+      "status": "ID_LEAD_ONLY_NO_POLYGON_BYTES_OR_HASH"
+    }
+  ],
+  "freeze_gates": [
+    "Acquire the official RGI 7.0 Region 14 source package or an independently verifiable mirror; record archive bytes and SHA-256.",
+    "Resolve the Samudra Tapu RGI 7 identifier from source attributes/link table; do not infer it from the RGI 6 ID.",
+    "Extract each polygon, validate topology and CRS, preserve the unmodified source outline, and record canonical geometry bytes/hash plus extraction code revision.",
+    "Label these AOIs as independent inventory-outline ROIs. Do not assert they are the IIRS authors' analysis masks.",
+    "Recover exact NISAR pair IDs and dates and a pinned ITS_LIVE product/version before any quantitative comparison.",
+    "Keep raw-source downloads and scored validation behind the existing explicit consent/control workflow."
+  ],
+  "references": [
+    {
+      "id": "IIRS-2026",
+      "url": "https://science.iirs.gov.in/nisar-for-monitoring-glacier-motion/",
+      "doi": "10.65456/iirs.2026.10.3.1",
+      "use": "Reported ranges and January 2026 temporal label"
+    },
+    {
+      "id": "RGI7-DATASET",
+      "url": "https://nsidc.org/data/nsidc-0770",
+      "doi": "10.5067/f6jmovy5navz",
+      "use": "Official outline dataset and version"
+    },
+    {
+      "id": "RGI7-REGION14",
+      "url": "https://rgidata.org/user_guide/regions/rgi14.html",
+      "use": "Region 14 data-lineage and imagery-era caveat"
+    },
+    {
+      "id": "SAMUDRA-RGI6-LEAD",
+      "url": "https://www.frontiersin.org/journals/water/articles/10.3389/frwa.2022.909246/full",
+      "doi": "10.3389/frwa.2022.909246",
+      "use": "Legacy RGI 6 ID only"
+    },
+    {
+      "id": "BARA-RGI7-LEAD",
+      "url": "https://agupubs.onlinelibrary.wiley.com/doi/full/10.1029/2025WR041259",
+      "doi": "10.1029/2025WR041259",
+      "use": "Published RGI 6 and RGI 7 ID lead for Bara Shigri"
+    }
+  ]
+}

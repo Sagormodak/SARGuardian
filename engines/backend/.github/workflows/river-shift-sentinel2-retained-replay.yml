@@ -1,0 +1,236 @@
+name: RiverShift retained-run Sentinel-2 cross-sensor replay
+
+run-name: RiverShift Sentinel-2 replay · run ${{ inputs.source_run_id || '41803576163' }} · ${{ inputs.observation_date || '2026-08-17' }}
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/run-triggers/rivershift-sentinel2-reference-run36-20261104"
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Completed RiverShift run containing retained per-product COG artifacts
+        required: true
+        type: string
+        default: "41803576163"
+      observation_date:
+        description: Exact NISAR acquisition date (YYYY-MM-DD)
+        required: true
+        type: string
+        default: "2026-08-17"
+      max_day_offset:
+        description: Maximum acquisition-date difference
+        required: true
+        type: number
+        default: 3
+      max_cloud_cover:
+        description: Maximum Sentinel-2 scene cloud cover percentage
+        required: true
+        type: number
+        default: 100
+      mndwi_threshold:
+        description: MNDWI threshold using B03 and B11
+        required: true
+        type: string
+        default: "0.0"
+      minimum_common_support:
+        description: Minimum clear optical support fraction
+        required: true
+        type: string
+        default: "0.80"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: river-shift-sentinel2-replay-${{ inputs.source_run_id || '41803576163' }}-${{ inputs.observation_date || '2026-08-17' }}
+  cancel-in-progress: false
+
+jobs:
+  cross-sensor:
+    name: Rebuild retained NISAR mask and compare with Sentinel-2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: Check out the RiverShift science tools
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download retained per-product COG artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-product-b01-*
+          path: source-products/
+          run-id: ${{ inputs.source_run_id || '41803576163' }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Download the exact prepared selection manifest
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rivershift-prepared-*
+          path: prepared/
+          run-id: ${{ inputs.source_run_id || '41803576163' }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          merge-multiple: false
+
+      - name: Install the pinned RiverShift geospatial environment
+        uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: tools/river_shift/environment.yml
+          cache-environment: true
+          generate-run-shell: true
+
+      - name: Verify GDAL and run the retained-data cross-sensor replay
+        shell: micromamba-shell {0}
+        run: |
+          set -euo pipefail
+          echo "::group::RiverShift retained-run cross-sensor replay"
+          python --version
+          gdalinfo --version
+          python -c "import rasterio, numpy, scipy, shapely, pyproj, requests; print('RIVERSHIFT_CROSS_SENSOR_RUNTIME=PASS')"
+          python -u tools/river_shift/replay_sentinel2_from_retained_run.py \
+            --products-dir source-products \
+            --prepared-dir prepared \
+            --source-run-id "${{ inputs.source_run_id || '41803576163' }}" \
+            --observation-date "${{ inputs.observation_date || '2026-08-17' }}" \
+            --output-dir replay-output \
+            --max-day-offset "${{ inputs.max_day_offset || 3 }}" \
+            --max-cloud-cover "${{ inputs.max_cloud_cover || 100 }}" \
+            --mndwi-threshold "${{ inputs.mndwi_threshold || '0.0' }}" \
+            --minimum-common-support "${{ inputs.minimum_common_support || '0.80' }}"
+          echo "::endgroup::"
+
+      - name: Upload candidates to private Drive and validate retained RiverShift prediction
+        id: independent-validation
+        shell: micromamba-shell {0}
+        env:
+          GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+          RIVERSHIFT_CALLBACK_SECRET: ${{ secrets.RIVERSHIFT_CALLBACK_SECRET }}
+        run: |
+          set -euo pipefail
+          python -u tools/river_shift/publish_sentinel2_references.py \
+            --crosscheck-dir replay-output/sentinel2-cross-sensor \
+            --prepared-dir prepared \
+            --api-base-url https://sarguardian-backend-api.vercel.app \
+            --output-dir replay-output/independent-validation \
+            --maximum-date-offset-days 3 \
+            --minimum-common-support-fraction 0.80 \
+            --block-size-pixels 64 \
+            --bootstrap-replicates 500
+
+      - name: Retain Sentinel-2 reference GeoTIFFs and provenance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: river-shift-sentinel2-reference-${{ inputs.source_run_id || '41803576163' }}-${{ inputs.observation_date || '2026-08-17' }}
+          path: |
+            replay-output/sentinel2-cross-sensor/sentinel2_cross_sensor_agreement.json
+            replay-output/sentinel2-cross-sensor/reference-scl-water.tif
+            replay-output/sentinel2-cross-sensor/reference-mndwi-water.tif
+            replay-output/cross_sensor_replay_manifest.json
+            replay-output/independent-validation/independent_reference_validation_scl.json
+            replay-output/independent-validation/independent_reference_validation_mndwi.json
+            replay-output/independent-validation/sentinel2_reference_validation_status.json
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 1
+
+      - name: Publish a privacy-safe summary
+        if: always()
+        shell: bash
+        env:
+          SUMMARY_REPORT: replay-output/sentinel2-cross-sensor/sentinel2_cross_sensor_agreement.json
+          REPLAY_MANIFEST: replay-output/cross_sensor_replay_manifest.json
+          VALIDATION_STATUS: replay-output/independent-validation/sentinel2_reference_validation_status.json
+          DRIVE_RECEIPT: replay-output/independent-validation/sentinel2_reference_drive_receipt.json
+          SOURCE_RUN_ID: ${{ inputs.source_run_id || '41803576163' }}
+          OBSERVATION_DATE: ${{ inputs.observation_date || '2026-08-17' }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report_path = Path(os.environ["SUMMARY_REPORT"])
+          manifest_path = Path(os.environ["REPLAY_MANIFEST"])
+          if not report_path.is_file() or not manifest_path.is_file():
+              with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
+                  stream.write("## RiverShift Sentinel-2 replay\n\nNo cross-sensor report was produced. Review the preceding job logs.\n")
+              raise SystemExit(0)
+
+          report = json.loads(report_path.read_text(encoding="utf-8"))
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          observation = report.get("observation") or {}
+          support = report.get("spatial_support") or {}
+          metrics = report.get("metrics")
+          validation_status_path = Path(os.environ["VALIDATION_STATUS"])
+          validation_status = (
+              json.loads(validation_status_path.read_text(encoding="utf-8"))
+              if validation_status_path.is_file() else {}
+          )
+          lines = [
+              "## RiverShift Sentinel-2 cross-sensor replay",
+              "",
+              f"- Status: **{report.get('status')}**",
+              f"- Source RiverShift run: {manifest.get('source_workflow_run_id') or os.environ['SOURCE_RUN_ID']}",
+              f"- Requested NISAR date: {manifest.get('requested_observation_date') or os.environ['OBSERVATION_DATE']}",
+              f"- NISAR acquisition date: {manifest.get('requested_observation_date')}",
+              f"- NISAR dates in replay: {', '.join(manifest.get('actual_nisar_observation_dates') or [])}",
+              f"- Sentinel-2 item(s): {', '.join(observation.get('sentinel2_item_ids') or []) or 'not found'}",
+              f"- Sentinel-2 date: {observation.get('sentinel2_date') or 'not found'}",
+              f"- MGRS tile(s): {', '.join(observation.get('mgrs_tiles') or []) or 'not reported'}",
+              f"- Tile count: {observation.get('sentinel2_tile_count', 0)}",
+              f"- Mean tile cloud cover: {observation.get('cloud_cover_percent')}",
+              f"- Maximum tile cloud cover: {observation.get('maximum_tile_cloud_cover_percent')}",
+              f"- Date offset: {observation.get('absolute_date_offset_days')}",
+              f"- AOI footprint overlap: {observation.get('aoi_footprint_overlap_fraction')}",
+              f"- Clear common support: {support.get('common_support_fraction')}",
+              "",
+          ]
+          if isinstance(metrics, dict):
+              lines.extend(["### Cross-sensor agreement metrics", "", "| Optical reference | Precision | Recall | F1 | IoU |", "|---|---:|---:|---:|---:|"])
+              for key, label in (("scl_water_class", "Sentinel-2 SCL water"), ("mndwi_water_class", "Sentinel-2 MNDWI")):
+                  values = metrics.get(key) or {}
+                  def fmt(value):
+                      return "not available" if value is None else f"{float(value):.3f}"
+                  lines.append(
+                      f"| {label} | {fmt(values.get('precision'))} | {fmt(values.get('recall'))} | {fmt(values.get('f1_score'))} | {fmt(values.get('intersection_over_union'))} |"
+                  )
+          else:
+              lines.extend(["No agreement metrics were published because no eligible scene or enough clear common support was available.", ""])
+          if validation_status:
+              lines.extend([
+                  "",
+                  "### Retained-output independent validation",
+                  "",
+                  f"- Status: **{validation_status.get('status', 'not available')}**",
+                  f"- Reference date: {validation_status.get('sentinel2_observation_date', 'not available')}",
+                  f"- Release status: **{validation_status.get('release_status', 'PROVISIONAL')}**",
+                  f"- Review required: {validation_status.get('review_required', True)}",
+              ])
+              for key in ("scl", "mndwi"):
+                  value = (validation_status.get("independent_validation") or {}).get(key) or {}
+                  lines.append(f"- {key.upper()}: {value.get('status', 'not available')}")
+                  if value.get("temporal_offset_days") is not None:
+                      lines.append(f"  - Date offset: {value['temporal_offset_days']} days")
+                  if value.get("common_support_fraction") is not None:
+                      lines.append(f"  - Common support: {value['common_support_fraction']}")
+          lines.extend([
+              "",
+              "**Interpretation:** cross-sensor agreement screening only. Sentinel-2 SCL/MNDWI GeoTIFFs are candidate labels, not ground truth or field validation. Confirm hydrological stage and reference quality before formal scoring. The source NISAR run remains PROVISIONAL.",
+              "",
+              "The GeoTIFF candidates, detailed report and replay manifest are retained in a GitHub Actions artifact for 30 days. The workflow does not upload the NISAR prediction mask or source COGs.",
+          ])
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
+              stream.write("\n".join(lines) + "\n")
+          PY

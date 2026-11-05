@@ -1,0 +1,81 @@
+name: Dashboard asset builder tests
+
+on:
+  push:
+    branches:
+      - feat/interactive-geospatial-dashboard-main-integration
+      - main
+    paths:
+      - "dashboard/**"
+      - "tools/aggregate_aoi_run.py"
+      - ".github/workflows/dashboard-assets-test.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "dashboard/**"
+      - "tools/aggregate_aoi_run.py"
+      - ".github/workflows/dashboard-assets-test.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dashboard-assets-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  dashboard-assets:
+    name: Dashboard asset builder unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install geospatial test dependencies
+        run: python -m pip install --disable-pip-version-check --no-cache-dir numpy scipy rasterio matplotlib pillow pyproj
+
+      - name: Compile aggregator, reader evidence helper and dashboard assets
+        run: python -m py_compile tools/aggregate_aoi_run.py tools/measure_target_from_raster.py dashboard/assets/prepare_web_assets.py dashboard/common_reference.py dashboard/science_pipeline.py dashboard/tests/test_science_pipeline.py dashboard/tests/test_science_pipeline_contract.py tools/tests/test_measure_target_from_raster.py
+
+      - name: Syntax-check the interactive viewer JavaScript
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          source = Path("dashboard/assets/prepare_web_assets.py").read_text(encoding="utf-8")
+          marker = "page = r'''"
+          start = source.find(marker)
+          if start < 0:
+              raise SystemExit("ERROR=DASHBOARD_HTML_TEMPLATE_NOT_FOUND")
+          start += len(marker)
+          end = source.find("'''", start)
+          if end < 0:
+              raise SystemExit("ERROR=DASHBOARD_HTML_TEMPLATE_UNTERMINATED")
+          html = source[start:end]
+          script_start = html.rfind('<script type="module">')
+          if script_start < 0:
+              raise SystemExit("ERROR=DASHBOARD_INLINE_SCRIPT_NOT_FOUND")
+          script_start += len('<script type="module">')
+          script_end = html.find("</script>", script_start)
+          if script_end < 0:
+              raise SystemExit("ERROR=DASHBOARD_INLINE_SCRIPT_UNTERMINATED")
+          Path("/tmp/sarguardian-dashboard.mjs").write_text(html[script_start:script_end], encoding="utf-8")
+          PY
+          node --check /tmp/sarguardian-dashboard.mjs
+
+      - name: Validate dashboard workflow YAML
+        shell: bash
+        run: ruby -e 'require "yaml"; YAML.load_file(".github/workflows/sarguardian-aoi-wkt-dashboard.yml"); YAML.load_file(".github/workflows/dashboard-assets-test.yml"); puts "DASHBOARD_WORKFLOW_YAML_PASS"'
+
+      - name: Test georeferenced layers, CRS handling, STAC paths and source immutability
+        env:
+          PYTHONPATH: .
+        run: python -m unittest dashboard.tests.test_prepare_web_assets dashboard.tests.test_aoi_displacement_candidates dashboard.tests.test_aoi_relative_pixel_timeseries dashboard.tests.test_common_reference dashboard.tests.test_aggregation_integration dashboard.tests.test_science_pipeline dashboard.tests.test_science_pipeline_contract dashboard.tests.test_dashboard_workflow_pin tools.tests.test_measure_target_from_raster -v

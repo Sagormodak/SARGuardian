@@ -1,0 +1,50 @@
+name: Dashboard asset builder tests
+
+on:
+  push:
+    branches:
+      - feat/know-place-analysis
+    paths:
+      - "dashboard/**"
+      - "tools/aggregate_aoi_run.py"
+      - ".github/workflows/dashboard-assets-test.yml"
+  pull_request:
+    branches:
+      - feat/final-aoi-science-integration
+    paths:
+      - "dashboard/**"
+      - "tools/aggregate_aoi_run.py"
+      - ".github/workflows/dashboard-assets-test.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dashboard-assets-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  dashboard-assets:
+    name: Dashboard asset builder unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install geospatial test dependencies
+        run: python -m pip install --disable-pip-version-check --no-cache-dir numpy rasterio matplotlib pillow
+
+      - name: Compile aggregator and asset builder
+        run: python -m py_compile tools/aggregate_aoi_run.py dashboard/assets/prepare_web_assets.py
+
+      - name: Test georeferenced layers, CRS handling, STAC paths and source immutability
+        env:
+          PYTHONPATH: .
+        run: python -m unittest dashboard.tests.test_prepare_web_assets -v

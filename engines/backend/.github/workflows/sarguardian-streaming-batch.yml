@@ -1,0 +1,743 @@
+name: SARGuardian Streaming Batch (source AOI)
+
+# Live data-processing is manual to avoid unexpected multi-GB Drive uploads on
+# every code push. Pushes still run the regression CI workflows separately.
+# AOI remains fixed; dates select products from the committed source-AOI baseline.
+on:
+  workflow_dispatch:
+    inputs:
+      run_profile:
+        description: SAFE default is a 2-product pilot. Select full-source-baseline to test all 33 products and the complete downstream science suite.
+        required: true
+        type: choice
+        options:
+          - validation-pilot
+          - full-source-baseline
+        default: validation-pilot
+      start_date:
+        description: Inclusive secondary-acquisition date start (YYYY-MM-DD); filters the pinned source-AOI baseline only
+        required: true
+        type: string
+        default: '2025-01-01'
+      end_date:
+        description: Inclusive secondary-acquisition date end (YYYY-MM-DD); AOI remains fixed to source
+        required: true
+        type: string
+        default: '2026-12-31'
+      retention_profile:
+        description: Derived outputs only for minimum Drive storage, or retain a full-lossless HDF5 dataset archive too
+        required: true
+        type: choice
+        options:
+          - derived-only
+          - full-lossless
+        default: derived-only
+      resume_from_run_id:
+        description: Numeric run ID to resume; blank auto-detects the latest compatible failed full run; use none for a fresh run
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+# Shared with the existing retention pilot so both cannot compete for data resources.
+concurrency:
+  group: sarguardian-nisar-data-processing
+  cancel-in-progress: false
+
+jobs:
+  manifest:
+    name: Build the exact source-AOI product manifest
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.make.outputs.matrix }}
+      worker_matrix: ${{ steps.make.outputs.worker_matrix }}
+      resume_run_id: ${{ steps.resume.outputs.run_id }}
+      resume_mode: ${{ steps.resume.outputs.mode }}
+    steps:
+      - name: Checkout backend repository tools
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned scientific project and committed baselines
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian
+          ref: ab547ecc82bcc4d6ccef545a59852536c2beacc6
+          path: science-source
+
+      - name: Resolve a compatible run for automatic resume
+        id: resume
+        env:
+          INPUT_RUN_ID: ${{ inputs.resume_from_run_id || '' }}
+          RUN_PROFILE: ${{ inputs.run_profile || 'validation-pilot' }}
+          WINDOW_START: ${{ inputs.start_date || '2025-01-01' }}
+          WINDOW_END: ${{ inputs.end_date || '2026-12-31' }}
+          RETENTION_PROFILE: ${{ inputs.retention_profile || 'derived-only' }}
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "RUN_PROFILE_SELECTED=$RUN_PROFILE"
+          if [[ "$RUN_PROFILE" == "validation-pilot" ]]; then
+            echo "::notice title=Pilot mode only::This run processes one GUNW plus one GOFF; it does not execute the full 33-product end-to-end science suite. Select full-source-baseline for complete science validation."
+          else
+            echo "RUN_PROFILE_INTENT=full-source-baseline science validation"
+          fi
+          python tools/resolve_resume_run.py \
+            --science-root science-source \
+            --run-profile "$RUN_PROFILE" \
+            --start-date "$WINDOW_START" \
+            --end-date "$WINDOW_END" \
+            --retention-profile "$RETENTION_PROFILE" \
+            --requested-run-id "$INPUT_RUN_ID"
+
+      - name: Download previous run manifest for safe resume
+        if: steps.resume.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: sarguardian-stream-run-manifest
+          run-id: ${{ steps.resume.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/sarguardian-stream/resume/manifest
+
+      - name: Download previous per-product checkpoints for safe resume
+        if: steps.resume.outputs.run_id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-granule-*
+          run-id: ${{ steps.resume.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/sarguardian-stream/resume/granules
+
+      - name: Download previous cleanup receipts for safe resume
+        if: steps.resume.outputs.run_id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-cleanup-*
+          run-id: ${{ steps.resume.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/sarguardian-stream/resume/cleanups
+
+      - name: Validate product lists and build the run manifest
+        id: make
+        shell: bash
+        env:
+          RUN_PROFILE: ${{ inputs.run_profile || 'validation-pilot' }}
+          WINDOW_START: ${{ inputs.start_date || '2025-01-01' }}
+          WINDOW_END: ${{ inputs.end_date || '2026-12-31' }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SCIENCE_COMMIT: ab547ecc82bcc4d6ccef545a59852536c2beacc6
+          RETENTION_PROFILE: ${{ inputs.retention_profile || 'derived-only' }}
+          RESUME_RUN_ID: ${{ steps.resume.outputs.run_id || '' }}
+          RESUME_MANIFEST_PATH: ${{ runner.temp }}/sarguardian-stream/resume/manifest/manifest.json
+          RESUME_GRANULE_ROOT: ${{ runner.temp }}/sarguardian-stream/resume/granules
+          RESUME_CLEANUP_ROOT: ${{ runner.temp }}/sarguardian-stream/resume/cleanups
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/sarguardian-stream/manifest"
+          python - <<'PY'
+          import csv, json, os, re
+          from pathlib import Path
+          from tools.time_window import filter_products_by_time_window
+
+          root = Path("science-source")
+          rows = []
+          ids_seen = set()
+          for family in ("GUNW", "GOFF"):
+              path = root / "outputs" / f"{family.lower()}_stats_source.csv"
+              if not path.is_file():
+                  raise SystemExit(f"ERROR=BASELINE_CSV_MISSING family={family}")
+              with path.open(newline="", encoding="utf-8-sig") as fh:
+                  reader = csv.DictReader(fh)
+                  if not reader.fieldnames or "file" not in reader.fieldnames or "maturity" not in reader.fieldnames:
+                      raise SystemExit(f"ERROR=BASELINE_SCHEMA_INVALID family={family}")
+                  for row in reader:
+                      name = Path((row.get("file") or "").strip()).name
+                      maturity = (row.get("maturity") or "").strip().upper()
+                      if not re.fullmatch(r"NISAR_L2_(?:(?:PR|UR|OD)_)?"+family+r"_[A-Za-z0-9_.-]{10,250}\.h5", name):
+                          raise SystemExit(f"ERROR=BASELINE_PRODUCT_NAME_INVALID family={family}")
+                      if maturity not in {"BETA", "PROVISIONAL"}:
+                          raise SystemExit(f"ERROR=BASELINE_MATURITY_INVALID family={family}")
+                      key = (family, name)
+                      if key in ids_seen:
+                          continue
+                      ids_seen.add(key)
+                      rows.append({
+                          "product_type": family,
+                          "granule_name": name,
+                          "maturity": maturity,
+                          # Conservative disk preflight estimates observed in this source stack.
+                          "expected_source_bytes": 2400000000 if family == "GUNW" else 1000000000,
+                      })
+          counts = {family: sum(r["product_type"] == family for r in rows) for family in ("GUNW", "GOFF")}
+          if counts != {"GUNW": 15, "GOFF": 18}:
+              raise SystemExit(f"ERROR=PINNED_BASELINE_PRODUCT_COUNTS_CHANGED counts={counts}")
+          window_start = os.environ["WINDOW_START"]
+          window_end = os.environ["WINDOW_END"]
+          try:
+              window_rows = filter_products_by_time_window(rows, window_start, window_end)
+          except ValueError as exc:
+              raise SystemExit(f"ERROR=TIME_WINDOW_INVALID detail={exc}")
+          if not window_rows:
+              raise SystemExit("ERROR=NO_BASELINE_PRODUCTS_IN_SELECTED_TIME_WINDOW")
+
+          available_families = {r["product_type"] for r in window_rows}
+          retention_profile = os.environ["RETENTION_PROFILE"]
+          if retention_profile not in {"derived-only", "full-lossless"}:
+              raise SystemExit("ERROR=RETENTION_PROFILE_INVALID")
+          profile = os.environ["RUN_PROFILE"]
+          if profile == "validation-pilot":
+              missing_families = [family for family in ("GUNW", "GOFF") if family not in available_families]
+              if missing_families:
+                  raise SystemExit(f"ERROR=TIME_WINDOW_MISSING_PRODUCT_FAMILY families={missing_families}")
+              selected = [next(r for r in window_rows if r["product_type"] == family) for family in ("GUNW", "GOFF")]
+              effective_profile = "validation-pilot"
+          elif profile == "full-source-baseline":
+              selected = window_rows
+              all_names = {r["granule_name"] for r in rows}
+              selected_names = {r["granule_name"] for r in window_rows}
+              effective_profile = "full-source-baseline" if selected_names == all_names else "time-window-selection"
+          else:
+              raise SystemExit("ERROR=RUN_PROFILE_INVALID")
+          for idx, row in enumerate(selected, 1):
+              row["id"] = f'{row["product_type"]}-{idx:03d}'
+          all_names = {r["granule_name"] for r in rows}
+          window_names = {r["granule_name"] for r in window_rows}
+          manifest = {
+              "schema_version": "sarguardian-stream-run-manifest/1.0",
+              "run_id": f'{os.environ["RUN_ID"]}-{os.environ["RUN_ATTEMPT"]}',
+              "run_profile": effective_profile,
+              "requested_run_profile": profile,
+              "time_window": {
+                  "start_date": window_start,
+                  "end_date": window_end,
+                  "date_basis": "secondary_acquisition_date",
+                  "inclusive": True,
+                  "baseline_products_in_window": len(window_rows),
+                  "baseline_products_total": len(rows),
+                  "covers_full_baseline": window_names == all_names,
+              },
+              "aoi": "source",
+              "science_commit": os.environ["SCIENCE_COMMIT"],
+              "baseline_product_counts": counts,
+              "products": selected,
+              "retention_profile": retention_profile,
+              "archive_profile": retention_profile,
+              "archive_note": ("All source datasets and attributes retained in an optional full-lossless HDF5 archive."
+                              if retention_profile == "full-lossless" else
+                              "No HDF5 archive is retained; validated derived outputs, source inventory, provenance and source SHA-256 are retained."),
+          }
+          resume_run_id = os.environ.get("RESUME_RUN_ID", "").strip()
+          matrix_products = list(selected)
+          resume_summary = {
+              "enabled": bool(resume_run_id),
+              "source_run_id": resume_run_id or None,
+              "reused_product_ids": [],
+              "products_reused": 0,
+          }
+          if resume_run_id:
+              if not resume_run_id.isdigit():
+                  raise SystemExit("ERROR=RESUME_RUN_ID_MUST_BE_NUMERIC")
+              if effective_profile != "full-source-baseline" or profile != "full-source-baseline":
+                  raise SystemExit("ERROR=RESUME_REQUIRES_FULL_SOURCE_BASELINE")
+              from tools.resume_streamed_run import plan_resume
+              previous_path = Path(os.environ["RESUME_MANIFEST_PATH"])
+              if not previous_path.is_file():
+                  raise SystemExit("ERROR=RESUME_SOURCE_MANIFEST_MISSING")
+              previous_manifest = json.loads(previous_path.read_text(encoding="utf-8"))
+              try:
+                  plan = plan_resume(
+                      manifest, previous_manifest,
+                      Path(os.environ["RESUME_GRANULE_ROOT"]),
+                      Path(os.environ["RESUME_CLEANUP_ROOT"]),
+                  )
+              except ValueError as exc:
+                  raise SystemExit(f"ERROR=RESUME_SOURCE_INCOMPATIBLE detail={exc}") from exc
+              matrix_products = plan["products_to_process"]
+              resume_summary.update({
+                  "reused_product_ids": plan["reused_product_ids"],
+                  "products_reused": plan["products_reused"],
+                  "products_to_process_count": plan["products_to_process_count"],
+                  "decisions": plan["decisions"],
+              })
+              print(f"RESUME_SOURCE_RUN_ID={resume_run_id}")
+              print(f"RESUME_PRODUCTS_REUSED={plan['products_reused']}")
+              print(f"RESUME_PRODUCTS_TO_PROCESS={plan['products_to_process_count']}")
+              for decision in plan["decisions"]:
+                  print(
+                      f"RESUME_PRODUCT_DECISION id={decision['product_id']} "
+                      f"decision={decision['decision']} reason={decision['reason']}"
+                  )
+          manifest["resume"] = resume_summary
+          manifest["products_to_process"] = matrix_products
+          out = Path(os.environ["RUNNER_TEMP"]) / "sarguardian-stream" / "manifest" / "manifest.json"
+          out.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          matrix = [{"id": r["id"], "granule_name": r["granule_name"],
+                     "product_type": r["product_type"], "maturity": r["maturity"],
+                     "expected_source_bytes": r["expected_source_bytes"]} for r in matrix_products]
+          compact = json.dumps(matrix, separators=(",", ":"))
+          # GitHub Actions does not handle an empty reusable-workflow matrix reliably.
+          # Keep the manifest/retry planner's matrix truthful, and use a dedicated no-op
+          # row only for the first-pass worker fan-out when all products were reused.
+          worker_matrix = matrix or [{
+              "id": "__NO_PRODUCTS__",
+              "granule_name": "__NO_PRODUCTS__",
+              "product_type": "__NO_PRODUCTS__",
+              "maturity": "none",
+              "expected_source_bytes": 0,
+          }]
+          compact_worker = json.dumps(worker_matrix, separators=(",", ":"))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as gh:
+              gh.write("matrix=" + compact + "\n")
+              gh.write("worker_matrix=" + compact_worker + "\n")
+          print(f"NO_PRODUCT_WORK_REQUIRED={not matrix}")
+          print(f"PRODUCTS_TO_PROCESS={len(matrix_products)}")
+          print(f"RESUME_ENABLED={bool(resume_run_id)}")
+          print(f"RUN_PROFILE={effective_profile}")
+          print(f"TIME_WINDOW_START={window_start}")
+          print(f"TIME_WINDOW_END={window_end}")
+          print(f"TIME_WINDOW_DATE_BASIS=secondary_acquisition_date")
+          print(f"BASELINE_PRODUCTS_GUNW={counts['GUNW']}")
+          print(f"BASELINE_PRODUCTS_GOFF={counts['GOFF']}")
+          print(f"PRODUCTS_IN_TIME_WINDOW={len(window_rows)}")
+          print(f"PRODUCTS_SELECTED={len(selected)}")
+          PY
+
+      - name: Preserve run manifest for aggregation
+        if: always() && steps.make.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarguardian-stream-run-manifest
+          path: ${{ runner.temp }}/sarguardian-stream/manifest/manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Set up Python for urgent-response source preflight
+        if: inputs.run_profile == 'full-source-baseline'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          check-latest: false
+
+      - name: Install pinned source-acquisition dependencies for urgent-response preflight
+        if: inputs.run_profile == 'full-source-baseline'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --retries 5 --timeout 45 -r tools/requirements-retention.txt
+
+      - name: Fail fast when a selected urgent-response baseline product is unavailable
+        if: inputs.run_profile == 'full-source-baseline'
+        env:
+          EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+          EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+          EARTHDATA_TOKEN: ${{ secrets.EARTHDATA_TOKEN }}
+          MANIFEST_PATH: ${{ runner.temp }}/sarguardian-stream/manifest/manifest.json
+          PREFLIGHT_OUT_DIR: ${{ runner.temp }}/sarguardian-stream/ur-preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$PREFLIGHT_OUT_DIR"
+          python - <<'PY'
+          import json, os, subprocess, sys, time
+          from pathlib import Path
+
+          manifest_path = Path(os.environ["MANIFEST_PATH"])
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          urgent = [
+              p for p in manifest.get("products_to_process", manifest.get("products", []))
+              if "_UR_GUNW_" in p.get("granule_name", "") or "_UR_GOFF_" in p.get("granule_name", "")
+          ]
+          print(f"UR_BASELINE_PRODUCTS_SELECTED={len(urgent)}")
+          if not urgent:
+              print("UR_PREFLIGHT_STATUS=PASS_NO_UR_PRODUCTS_SELECTED")
+              raise SystemExit(0)
+
+          visible_prefixes = (
+              "PRODUCT_PREFLIGHT_STATUS=", "DISCOVERY_BACKEND=",
+              "REMOTE_CONTENT_LENGTH_BYTES=", "DISCOVERY_FALLBACK=",
+              "DIRECT_PRODUCT_HTTP_404=", "NETWORK_RETRY=", "ERROR=",
+              "DIRECT_PRODUCT_DIAGNOSTIC=", "SOURCE_ACQUISITION_MODULE=",
+              "DOWNLOAD_FAILURE_RETRYABLE=",
+          )
+          for product in urgent:
+              product_id = str(product["id"])
+              print(f"UR_PREFLIGHT_PRODUCT={product_id}")
+              command = [
+                  sys.executable, "tools/download_nisar_product.py",
+                  "--product-type", str(product["product_type"]),
+                  "--maturity", str(product["maturity"]),
+                  "--granule-name", str(product["granule_name"]),
+                  "--science-root", str(Path("science-source").resolve()),
+                  "--aoi", "source",
+                  "--out-dir", str(Path(os.environ["PREFLIGHT_OUT_DIR"]) / product_id),
+                  "--probe-only",
+              ]
+              # One preflight attempt; the actual worker handles the product download once too.
+              max_attempts = 1
+              result = None
+              for attempt in range(1, max_attempts + 1):
+                  result = subprocess.run(command, capture_output=True, text=True, env=os.environ.copy())
+                  combined_output = result.stdout + "\n" + result.stderr
+                  for raw in combined_output.splitlines():
+                      line = raw.strip()
+                      if line.startswith(visible_prefixes):
+                          print(line[:500])
+                  if result.returncode == 0:
+                      break
+                  retryable = any(
+                      line.strip() == "DOWNLOAD_FAILURE_RETRYABLE=yes"
+                      for line in combined_output.splitlines()
+                  )
+                  if not retryable or attempt >= max_attempts:
+                      break
+                  delay = min(15 * (2 ** (attempt - 1)), 120)
+                  print(
+                      f"UR_PREFLIGHT_RETRY id={product_id} "
+                      f"next_attempt={attempt + 1}/{max_attempts} sleep_seconds={delay}"
+                  )
+                  time.sleep(delay)
+              if result is None or result.returncode != 0:
+                  print(
+                      f"ERROR=UR_BASELINE_SOURCE_UNAVAILABLE id={product_id}; "
+                      "full-baseline processing stopped before any product downloads"
+                  )
+                  raise SystemExit(2)
+          print("UR_PREFLIGHT_STATUS=PASS_ALL_SELECTED_UR_PRODUCTS_RETRIEVABLE")
+          PY
+
+
+  process-one:
+    name: Initial product pass — ${{ matrix.id }}
+    needs: manifest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJSON(needs.manifest.outputs.worker_matrix) }}
+    uses: ./.github/workflows/sarguardian-product-worker.yml
+    with:
+      product_id: ${{ matrix.id }}
+      granule_name: ${{ matrix.granule_name }}
+      product_type: ${{ matrix.product_type }}
+      maturity: ${{ matrix.maturity }}
+      expected_source_bytes: ${{ matrix.expected_source_bytes }}
+      retention_profile: ${{ inputs.retention_profile || 'derived-only' }}
+      execution_label: initial
+    secrets: inherit
+  retry-plan:
+    name: Check every processed product and identify failed checkpoints
+    needs: [manifest, process-one]
+    if: always() && needs.manifest.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      retry_matrix: ${{ steps.plan.outputs.retry_matrix }}
+      retry_count: ${{ steps.plan.outputs.retry_count }}
+    steps:
+      - name: Checkout retry-gate tools
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          check-latest: false
+
+      - name: Download current manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: sarguardian-stream-run-manifest
+          path: ${{ runner.temp }}/sarguardian-retry-plan/manifest
+
+      - name: Download first-pass product checkpoints
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-granule-*
+          path: ${{ runner.temp }}/sarguardian-retry-plan/granules
+
+      - name: Download first-pass cleanup receipts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-cleanup-*
+          path: ${{ runner.temp }}/sarguardian-retry-plan/cleanups
+
+      - name: Verify receipts and create a retry-only matrix
+        id: plan
+        env:
+          EXPECTED_PRODUCTS_JSON: ${{ needs.manifest.outputs.matrix }}
+          ROOT: ${{ runner.temp }}/sarguardian-retry-plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/expected" "$ROOT/granules" "$ROOT/cleanups"
+          printf '%s' "$EXPECTED_PRODUCTS_JSON" > "$ROOT/expected/products.json"
+          python tools/product_retry_gate.py plan-retries \
+            --manifest "$ROOT/manifest/manifest.json" \
+            --expected-products-json "$ROOT/expected/products.json" \
+            --granule-root "$ROOT/granules" \
+            --cleanup-root "$ROOT/cleanups" \
+            --out "$ROOT/retry-plan.json"
+
+      - name: Preserve retry decision report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarguardian-preassembly-retry-plan
+          path: ${{ runner.temp }}/sarguardian-retry-plan/retry-plan.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  retry-products:
+    name: Retry only products with missing or invalid receipts
+    needs: [manifest, retry-plan]
+    if: needs.retry-plan.result == 'success' && needs.retry-plan.outputs.retry_count != '0'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJSON(needs.retry-plan.outputs.retry_matrix) }}
+    uses: ./.github/workflows/sarguardian-product-worker.yml
+    with:
+      product_id: ${{ matrix.id }}
+      granule_name: ${{ matrix.granule_name }}
+      product_type: ${{ matrix.product_type }}
+      maturity: ${{ matrix.maturity }}
+      expected_source_bytes: ${{ matrix.expected_source_bytes }}
+      retention_profile: ${{ inputs.retention_profile || 'derived-only' }}
+      execution_label: retry-1
+    secrets: inherit
+
+  preassembly-verify:
+    name: Final 33-product receipt gate before reassembly
+    needs: [manifest, process-one, retry-plan, retry-products]
+    if: always() && needs.manifest.result == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      status: ${{ steps.verify.outputs.status }}
+      expected_count: ${{ steps.verify.outputs.expected_count }}
+      verified_count: ${{ steps.verify.outputs.verified_count }}
+    steps:
+      - name: Checkout verification tools
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          check-latest: false
+
+      - name: Download current manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: sarguardian-stream-run-manifest
+          path: ${{ runner.temp }}/sarguardian-preassembly/manifest
+
+      - name: Download current-run granule checkpoints
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-granule-*
+          path: ${{ runner.temp }}/sarguardian-preassembly/current-granules
+
+      - name: Download current-run cleanup receipts
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-cleanup-*
+          path: ${{ runner.temp }}/sarguardian-preassembly/current-cleanups
+
+      - name: Download resume-source granule checkpoints
+        if: needs.manifest.outputs.resume_run_id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-granule-*
+          run-id: ${{ needs.manifest.outputs.resume_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/sarguardian-preassembly/previous-granules
+
+      - name: Download resume-source cleanup receipts
+        if: needs.manifest.outputs.resume_run_id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-cleanup-*
+          run-id: ${{ needs.manifest.outputs.resume_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/sarguardian-preassembly/previous-cleanups
+
+      - name: Verify every selected product has a complete receipt pair
+        id: verify
+        env:
+          ROOT: ${{ runner.temp }}/sarguardian-preassembly
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ROOT/current-granules" "$ROOT/current-cleanups" "$ROOT/previous-granules" "$ROOT/previous-cleanups"
+          python tools/product_retry_gate.py verify \
+            --manifest "$ROOT/manifest/manifest.json" \
+            --current-granule-root "$ROOT/current-granules" \
+            --current-cleanup-root "$ROOT/current-cleanups" \
+            --previous-granule-root "$ROOT/previous-granules" \
+            --previous-cleanup-root "$ROOT/previous-cleanups" \
+            --out "$ROOT/preassembly-verification.json"
+
+      - name: Preserve final preassembly verification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarguardian-preassembly-verification
+          path: ${{ runner.temp }}/sarguardian-preassembly/preassembly-verification.json
+          if-no-files-found: warn
+          retention-days: 14
+  aggregate:
+    name: Reassemble outputs and compare with the committed batch baseline
+    needs: [manifest, process-one, retry-plan, retry-products, preassembly-verify]
+    if: always() && needs.manifest.result == 'success' && needs.retry-plan.result == 'success' && needs.preassembly-verify.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+      RUN_ID_SAFE: SARGuardian-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout backend aggregation tools
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned science baseline
+        uses: actions/checkout@v4
+        with:
+          repository: moshiour0/SARGuardian
+          ref: ab547ecc82bcc4d6ccef545a59852536c2beacc6
+          path: science-source
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install pinned science and retention dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r science-source/requirements.txt
+          python -m pip install --disable-pip-version-check --no-cache-dir --retries 5 --timeout 45 -r tools/requirements-retention.txt
+
+      - name: Download run manifest
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          name: sarguardian-stream-run-manifest
+          path: ${{ runner.temp }}/sarguardian-aggregation/run-manifest
+
+      - name: Download current-run per-granule artifacts
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-granule-*
+          path: ${{ runner.temp }}/sarguardian-aggregation/current-granule-artifacts
+
+      - name: Download current-run post-cleanup evidence
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-cleanup-*
+          path: ${{ runner.temp }}/sarguardian-aggregation/current-cleanup-artifacts
+
+      - name: Download prior per-granule checkpoints for resume
+        if: always() && needs.manifest.outputs.resume_run_id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-granule-*
+          run-id: ${{ needs.manifest.outputs.resume_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/sarguardian-aggregation/resume-granule-artifacts
+
+      - name: Download prior post-cleanup evidence for resume
+        if: always() && needs.manifest.outputs.resume_run_id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sarguardian-cleanup-*
+          run-id: ${{ needs.manifest.outputs.resume_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/sarguardian-aggregation/resume-cleanup-artifacts
+
+      - name: Assemble complete product checkpoints for aggregation
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/sarguardian-aggregation"
+          mkdir -p "$root/resume-granule-artifacts" "$root/resume-cleanup-artifacts" \
+                   "$root/current-granule-artifacts" "$root/current-cleanup-artifacts"
+          python tools/resume_streamed_run.py merge \
+            --kind granule --previous-root "$root/resume-granule-artifacts" \
+            --current-root "$root/current-granule-artifacts" --output-root "$root/granule-artifacts"
+          python tools/resume_streamed_run.py merge \
+            --kind cleanup --previous-root "$root/resume-cleanup-artifacts" \
+            --current-root "$root/current-cleanup-artifacts" --output-root "$root/cleanup-artifacts"
+
+      - name: Aggregate outputs and run batch-equivalence gates
+        id: aggregate_results
+        shell: bash
+        run: |
+          set -uo pipefail
+          root="$RUNNER_TEMP/sarguardian-aggregation"
+          mkdir -p "$root/output"
+          status=0
+          python tools/aggregate_streamed_outputs.py \
+            --science-root "$PWD/science-source" \
+            --manifest "$root/run-manifest/manifest.json" \
+            --artifact-root "$root/granule-artifacts" \
+            --cleanup-artifact-root "$root/cleanup-artifacts" \
+            --out-root "$root/output" 2>&1 | tee "$root/aggregation.log" || status=$?
+          if [[ -s "$root/output/batch-equivalence-report.json" ]]; then
+            report_status="$(python -c 'import json,sys;print(json.load(open(sys.argv[1]))["status"])' "$root/output/batch-equivalence-report.json")"
+          else
+            report_status="NO_REPORT"
+            status=1
+          fi
+          echo "status=$report_status" >> "$GITHUB_OUTPUT"
+          echo "script_exit=$status" >> "$GITHUB_OUTPUT"
+          echo "BATCH_EQUIVALENCE_STATUS=$report_status"
+          exit "$status"
+
+      - name: Publish reports and diagnostics even when comparison fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sarguardian-streaming-run-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sarguardian-aggregation/output
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload final aggregate bundle and comparison report to Drive
+        if: always() && steps.aggregate_results.outputs.status == 'PASS'
+        env:
+          OUT_ROOT: ${{ runner.temp }}/sarguardian-aggregation/output
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="$(find "$OUT_ROOT" -maxdepth 1 -name 'sarguardian-*-results.zip' -type f -print -quit)"
+          report="$OUT_ROOT/batch-equivalence-report.json"
+          test -s "$bundle" && test -s "$report"
+          python tools/drive_resumable_upload.py \
+            --root "$OUT_ROOT" --run-name "$RUN_ID_SAFE" \
+            --files "$bundle" "$report" --out "$OUT_ROOT/drive-run-upload-receipt.json"
+          python tools/drive_resumable_upload.py \
+            --root "$OUT_ROOT" --run-name "$RUN_ID_SAFE" \
+            --files "$OUT_ROOT/drive-run-upload-receipt.json" \
+            --out "$OUT_ROOT/drive-run-receipt-upload.json"
+          echo "FINAL_RUN_BUNDLE_DRIVE_VERIFICATION=PASS"

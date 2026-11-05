@@ -1,0 +1,101 @@
+name: Monorepo validation
+on:
+  push:
+    branches: [main, 'migration/**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: monorepo-ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  integrity:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install PyYAML==6.0.3
+      - run: python scripts/verify_migration.py
+      - name: Scan all preserved source history
+        run: bash scripts/scan_git_history.sh
+  frontend:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: apps/dynamic/Frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/dynamic/Frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - run: npm run lint
+      - run: npm test
+  api:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: apps/dynamic/Backend/requirements-test.txt
+      - run: pip install -r apps/dynamic/Backend/requirements-test.txt
+      - run: python -m pytest -q
+        working-directory: apps/dynamic/Backend
+      - run: node tests/google_maps_dashboard_adapter.test.mjs
+        working-directory: apps/dynamic/Backend
+      - run: python -m pytest tests/test_monorepo_dispatch.py -q
+  workers:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: engines/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements-dev.txt -r tools/requirements-retention.txt -r tools/river_shift/requirements.txt matplotlib pillow
+      - run: python -m pytest -q
+  known-place:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - root: engines/known-place
+            selection: know_place
+          - root: engines/known-place-author-exact
+            selection: 'author or paper_method or footprint'
+    defaults:
+      run:
+        working-directory: ${{ matrix.root }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements-dev.txt -r tools/requirements-retention.txt matplotlib pillow pyproj shapely scipy
+      - run: python -m pytest tools/tests -q -k '${{ matrix.selection }}'
+  science:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: science/nisar-core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: pip install -r requirements.txt
+      - run: python -m pytest tests/ -q

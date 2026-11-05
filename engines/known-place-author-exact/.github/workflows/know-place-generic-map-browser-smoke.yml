@@ -1,0 +1,278 @@
+name: Generic AOI map browser smoke (synthetic fixture only)
+
+on:
+  push:
+    branches:
+      - feat/know-place-analysis
+    paths:
+      - ".github/workflows/know-place-generic-map-browser-smoke.yml"
+      - "tools/know_place/interactive_map.py"
+      - "tools/tests/fixtures/generic_aoi_map_report.json"
+      - "docs/know-place/GENERIC_AOI_MAP_BROWSER_REQUEST.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: know-place-generic-map-browser-smoke
+  cancel-in-progress: false
+
+jobs:
+  generic-aoi-synthetic-browser:
+    name: Browser-test generic AOI map renderer using explicitly synthetic fixture
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout isolated Know Place Analysis branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install only map-generation dependencies
+        run: python -m pip install --disable-pip-version-check numpy pyproj h5py
+
+      - name: Build synthetic-only generic-AOI map fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/generic-aoi-browser
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from tools.know_place.interactive_map import write_interactive_map
+          fixture_path = Path("tools/tests/fixtures/generic_aoi_map_report.json")
+          out = Path("artifacts/generic-aoi-browser")
+          report = json.loads(fixture_path.read_text(encoding="utf-8"))
+          if report.get("fixture_only") is not True or report.get("measurement_status") != "SYNTHETIC_FIXTURE_ONLY":
+              raise SystemExit("ERROR=GENERIC_AOI_FIXTURE_NOT_EXPLICITLY_SYNTHETIC")
+          if report.get("hazard_detection_status") != "NOT_EVALUATED":
+              raise SystemExit("ERROR=GENERIC_AOI_FIXTURE_HAZARD_STATUS_INVALID")
+          html_path = write_interactive_map(report, out / "generic-aoi-synthetic-map.html")
+          (out / "generic-aoi-fixture-report.json").write_text(
+              json.dumps(report, indent=2) + "\n", encoding="utf-8"
+          )
+          print("GENERIC_AOI_FIXTURE_ONLY=PASS")
+          print("GENERIC_AOI_MEASUREMENT_CLAIM=NONE")
+          print("HAZARD_DETECTION_STATUS=NOT_EVALUATED")
+          print("MAP_HTML_BYTES=" + str(html_path.stat().st_size))
+          PY
+
+      - name: Install Playwright and Chromium
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/generic-aoi-playwright"
+          cd "$RUNNER_TEMP/generic-aoi-playwright"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund playwright
+          npx playwright install --with-deps chromium
+
+      - name: Smoke-test synthetic generic-AOI map at four viewport sizes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/generic-aoi-playwright/smoke.cjs" <<'JS'
+          const fs = require("fs");
+          const path = require("path");
+          const { chromium } = require("playwright");
+          (async () => {
+            const root = path.resolve(process.env.GITHUB_WORKSPACE, "artifacts/generic-aoi-browser");
+            const htmlPath = path.join(root, "generic-aoi-synthetic-map.html");
+            const errors = [];
+            const viewports = [
+              {label:"mobile-360x800", width:360, height:800, mobile:true, screenshot:"generic-aoi-mobile.png"},
+              {label:"mobile-390x844", width:390, height:844, mobile:true},
+              {label:"tablet-768x1024", width:768, height:1024, mobile:false, screenshot:"generic-aoi-tablet.png"},
+              {label:"landscape-844x390", width:844, height:390, mobile:false}
+            ];
+            const browser = await chromium.launch({headless:true});
+            const rows = [];
+            let commonChecks = null;
+            try {
+              for (const spec of viewports) {
+                const page = await browser.newPage({
+                  viewport:{width:spec.width,height:spec.height},
+                  deviceScaleFactor:1,
+                  isMobile:spec.mobile,
+                  hasTouch:spec.mobile
+                });
+                page.on("pageerror", error => errors.push(String(error)));
+                await page.goto("file://" + htmlPath, {waitUntil:"domcontentloaded",timeout:30000});
+                await page.waitForFunction(() =>
+                  document.querySelector("#pair-select")?.options.length === 1 &&
+                  typeof window.L !== "undefined",
+                  {timeout:30000}
+                );
+                await page.selectOption("#pair-select","0");
+                await page.waitForFunction(() =>
+                  document.querySelector("#pair-label")?.textContent.includes("2026-07-26"),
+                  {timeout:10000}
+                );
+                const state = await page.evaluate(() => {
+                  const rect = selector => document.querySelector(selector)?.getBoundingClientRect();
+                  const pair = document.querySelector("#pair-select");
+                  const pairRect = pair?.getBoundingClientRect();
+                  const hash = document.querySelector("#source-hash");
+                  const hashRect = hash?.getBoundingClientRect();
+                  const mapRect = rect("#map");
+                  return {
+                    title:document.title,
+                    viewportWidth:window.innerWidth,
+                    viewportHeight:window.innerHeight,
+                    visualViewportWidth:Math.round(window.visualViewport?.width || 0),
+                    documentWidth:document.documentElement.scrollWidth,
+                    bodyWidth:document.body.scrollWidth,
+                    clientWidth:document.documentElement.clientWidth,
+                    mobileMediaQueryMatches:window.matchMedia("(max-width: 920px)").matches,
+                    layoutWidth:Math.round(rect(".layout")?.width || 0),
+                    mapWidth:Math.round(mapRect?.width || 0),
+                    mapHeight:Math.round(mapRect?.height || 0),
+                    pairCount:pair?.options.length || 0,
+                    pairControlWidth:Math.round(pairRect?.width || 0),
+                    pairControlVisible:Boolean(pair && pairRect?.width > 0 && getComputedStyle(pair).display !== "none"),
+                    pairLabel:document.querySelector("#pair-label")?.textContent || "",
+                    pairStatus:document.querySelector("#pair-status")?.textContent || "",
+                    measurementStatus:document.querySelector("#measurement-status")?.textContent || "",
+                    paperStatus:document.querySelector("#paper-status")?.textContent || "",
+                    hazardStatus:document.querySelector("#hazard-status")?.textContent || "",
+                    validPixels:document.querySelector("#valid-pixels")?.textContent || "",
+                    medianMagnitude:document.querySelector("#median-magnitude")?.textContent || "",
+                    medianRate:document.querySelector("#median-rate")?.textContent || "",
+                    geometryNote:document.querySelector("#geometry-note")?.textContent || "",
+                    sourceHashWidth:Math.round(hashRect?.width || 0),
+                    sourceHashScrollWidth:hash?.scrollWidth || 0,
+                    geotiffHidden:document.querySelector("#geotiff-link")?.classList.contains("hidden") || false,
+                    leafletLoaded:typeof window.L !== "undefined" &&
+                      Boolean(document.querySelector(".leaflet-control-zoom")),
+                    selectedOption:pair?.selectedOptions?.[0]?.textContent || ""
+                  };
+                });
+                const viewportChecks = {
+                  viewportWidthStable:state.viewportWidth === spec.width &&
+                    state.documentWidth === spec.width &&
+                    state.bodyWidth <= spec.width &&
+                    state.visualViewportWidth === spec.width,
+                  noHorizontalOverflow:state.documentWidth <= spec.width && state.bodyWidth <= spec.width,
+                  mapFitsViewport:state.mapWidth >= Math.min(300,spec.width - 24) && state.mapWidth <= spec.width,
+                  mapHasUsableHeight:state.mapHeight >= 300,
+                  pairControlVisible:state.pairControlVisible && state.pairControlWidth <= spec.width,
+                  sourceHashWraps:state.sourceHashScrollWidth <= state.sourceHashWidth + 1
+                };
+                const passed = Object.values(viewportChecks).every(Boolean);
+                rows.push({
+                  label:spec.label,
+                  viewport:{width:spec.width,height:spec.height,mobile_emulation:spec.mobile},
+                  status:passed ? "PASS" : "FAIL",
+                  rendered_state:state,
+                  checks:viewportChecks
+                });
+                console.log("GENERIC_FIXTURE_VIEWPORT_" + spec.label.toUpperCase() + "=" + (passed ? "PASS" : "FAIL"));
+                if (spec.screenshot) await page.screenshot({path:path.join(root,spec.screenshot),fullPage:true});
+                if (!commonChecks) commonChecks = {
+                  title:state.title === "SARGuardian — Interactive AOI Map",
+                  onePair:state.pairCount === 1,
+                  syntheticMeasurementLabel:state.measurementStatus === "SYNTHETIC_FIXTURE_ONLY",
+                  pairMarkedSynthetic:state.pairStatus.includes("SYNTHETIC_FIXTURE_ONLY"),
+                  genericPaperStatus:state.paperStatus.includes("NOT_EVALUATED_GENERIC_AOI"),
+                  hazardNotEvaluated:state.hazardStatus === "NOT_EVALUATED",
+                  criticalPairSelectable:state.pairLabel.includes("2026-07-26") && state.pairLabel.includes("2026-08-19"),
+                  validPixelSummary:state.validPixels === "8 / 10 (80.0%)",
+                  medianMagnitude:state.medianMagnitude === "0.120 m",
+                  medianRate:state.medianRate === "0.0060 m/day",
+                  syntheticGeometryNote:state.geometryNote.includes("Synthetic AOI fixture polygon only"),
+                  syntheticHashDoesNotOverflow:state.sourceHashScrollWidth <= state.sourceHashWidth + 1,
+                  noFictitiousGeoTIFF:state.geotiffHidden,
+                  leafletLoaded:state.leafletLoaded
+                };
+                await page.close();
+              }
+              commonChecks.noPageErrors = errors.length === 0;
+              const responsivePassed = rows.length === 4 && rows.every(row => row.status === "PASS");
+              commonChecks.responsiveViewports = responsivePassed;
+              const status = Object.values(commonChecks).every(Boolean) ? "PASS" : "FAIL";
+              const report = {
+                schema_version:"know-place-generic-aoi-synthetic-browser-smoke/1.0",
+                fixture_only:true,
+                measurement_claim:"NONE — synthetic UI test fixture",
+                source_fixture:"tools/tests/fixtures/generic_aoi_map_report.json",
+                status,
+                checks:commonChecks,
+                responsive_viewports:rows,
+                page_errors:errors,
+                raw_hdf5_read_or_downloaded:false,
+                hazard_detection_status:"NOT_EVALUATED"
+              };
+              fs.writeFileSync(path.join(root,"generic-aoi-browser-smoke.json"),JSON.stringify(report,null,2)+"\n");
+              console.log("GENERIC_AOI_SYNTHETIC_BROWSER_SMOKE=" + status);
+              console.log("GENERIC_AOI_RESPONSIVE_VIEWPORTS=" + (responsivePassed ? "PASS" : "FAIL"));
+              console.log("RAW_HDF5_READ_OR_DOWNLOADED=false");
+              if (status !== "PASS") process.exitCode = 1;
+            } finally {
+              await browser.close();
+            }
+          })().catch(error => { console.error(error); process.exit(1); });
+          JS
+          cd "$RUNNER_TEMP/generic-aoi-playwright"
+          node smoke.cjs
+
+      - name: Package and validate synthetic-only browser evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, zipfile
+          from pathlib import Path
+          root=Path("artifacts/generic-aoi-browser")
+          smoke=root/"generic-aoi-browser-smoke.json"
+          if not smoke.is_file():
+              raise SystemExit("ERROR=GENERIC_AOI_BROWSER_REPORT_MISSING")
+          report=json.loads(smoke.read_text(encoding="utf-8"))
+          if report.get("fixture_only") is not True or report.get("raw_hdf5_read_or_downloaded") is not False:
+              raise SystemExit("ERROR=GENERIC_AOI_FIXTURE_BOUNDARY_FAILED")
+          package=root/"generic-aoi-synthetic-browser-evidence.zip"
+          members=[root/"generic-aoi-synthetic-map.html",root/"generic-aoi-fixture-report.json",smoke]
+          members += [p for p in root.glob("*.png")]
+          if not all(p.is_file() for p in members):
+              raise SystemExit("ERROR=GENERIC_AOI_BROWSER_EVIDENCE_MEMBER_MISSING")
+          with zipfile.ZipFile(package,"w",compression=zipfile.ZIP_DEFLATED,compresslevel=6) as z:
+              for p in members: z.write(p,p.name)
+          with zipfile.ZipFile(package) as z:
+              if z.testzip() is not None: raise SystemExit("ERROR=GENERIC_AOI_EVIDENCE_ZIP_CRC_FAILURE")
+              if any(Path(name).suffix.lower() in {".h5",".hdf5"} for name in z.namelist()):
+                  raise SystemExit("ERROR=RAW_HDF5_IN_SYNTHETIC_EVIDENCE")
+          if report.get("status") != "PASS":
+              raise SystemExit("ERROR=GENERIC_AOI_SYNTHETIC_BROWSER_GATE_FAILED")
+          print("GENERIC_AOI_SYNTHETIC_EVIDENCE_PACKAGE=PASS")
+          print("GENERIC_AOI_MEASUREMENT_VALIDATION=NOT_PERFORMED")
+          print("HAZARD_DETECTION_STATUS=NOT_EVALUATED")
+          print("RAW_HDF5_MEMBERS=0")
+          PY
+
+      - name: Preserve synthetic fixture browser artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: know-place-generic-aoi-synthetic-browser-smoke
+          path: artifacts/generic-aoi-browser/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Publish fixture-only summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Generic AOI map browser smoke — synthetic fixture only"
+            echo
+            echo "- This run tests the generic-AOI map renderer using invented fixture values; it is not a scientific measurement."
+            echo "- Browser checks: see artifact know-place-generic-aoi-synthetic-browser-smoke."
+            echo "- Raw HDF5 downloaded/read: no."
+            echo "- Actual generic-AOI measurement bundle browser test: still pending."
+            echo "- Hazard detection: NOT_EVALUATED."
+          } >> "$GITHUB_STEP_SUMMARY"

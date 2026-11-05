@@ -1,0 +1,142 @@
+name: Retained crown-mask audit — real derived artifact
+
+on:
+  push:
+    branches:
+      - feat/know-place-analysis
+    paths:
+      - ".github/workflows/know-place-retained-crown-audit.yml"
+      - "tools/know_place/crown_mask_audit.py"
+      - "tools/tests/test_know_place_crown_mask_audit.py"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: know-place-retained-crown-audit
+  cancel-in-progress: false
+
+jobs:
+  audit-retained-run:
+    name: Audit retained Run 17 artifact without raw HDF5 replay
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout isolated analysis branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install audit dependencies
+        run: python -m pip install --disable-pip-version-check numpy pyproj
+
+      - name: Download the existing derived-only artifact from source Run 17
+        uses: actions/download-artifact@v4
+        with:
+          name: know-place-author-exact-40170290176-1
+          run-id: 40170290176
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/retained-run-17
+
+      - name: Pack downloaded artifact for the deterministic ZIP auditor
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - "${{ runner.temp }}/retained-run-17" "${{ runner.temp }}/retained-run-17.zip" <<'PY'
+          from pathlib import Path
+          import sys, zipfile
+          download_root, output_zip = Path(sys.argv[1]), Path(sys.argv[2])
+          manifests = list(download_root.rglob("author-exact-source-manifest.json"))
+          if len(manifests) != 1:
+              raise SystemExit(f"EXPECTED_ONE_SOURCE_MANIFEST_GOT_{len(manifests)}")
+          root = manifests[0].parent
+          required = (
+              "know-place-inputs.json",
+              "author-exact-source-manifest.json",
+              "author-exact-raw-cleanup-receipt.json",
+              "author-exact-analysis-status.json",
+              "author-raw-site-series-report.json",
+              "author-exact-derived-results.zip",
+          )
+          missing = [name for name in required if not (root / name).is_file()]
+          if missing:
+              raise SystemExit("RETAINED_ARTIFACT_MEMBER_MISSING:" + ",".join(missing))
+          files = sorted(p for p in root.rglob("*") if p.is_file())
+          if not files:
+              raise SystemExit("RETAINED_ARTIFACT_EMPTY")
+          with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+              for path in files:
+                  archive.write(path, path.relative_to(root).as_posix())
+          with zipfile.ZipFile(output_zip) as archive:
+              bad = archive.testzip()
+              if bad:
+                  raise SystemExit(f"REPACKED_ZIP_CRC_FAILURE:{bad}")
+              raw = [n for n in archive.namelist() if n.lower().endswith((".h5", ".hdf5"))]
+              if raw:
+                  raise SystemExit("RAW_HDF5_MEMBER_FOUND:" + ",".join(raw))
+          print(f"RETAINED_ARTIFACT_FILES={len(files)}")
+          print("RETAINED_ARTIFACT_RAW_HDF5_MEMBERS=0")
+          PY
+
+      - name: Retrieve the author archive with frozen byte identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error \
+            https://zenodo.org/api/records/22730419 \
+            --output "${{ runner.temp }}/zenodo-record.json"
+          author_url="$(python - "${{ runner.temp }}/zenodo-record.json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          expected = "bhotekoshi2026_nisar_data-and-code_CC-BY-4.0.zip"
+          matches = [item for item in data.get("files", []) if item.get("key") == expected]
+          if len(matches) != 1:
+              raise SystemExit(f"EXPECTED_ONE_ZENODO_ARCHIVE_GOT_{len(matches)}")
+          item = matches[0]
+          if item.get("size") != 183389034:
+              raise SystemExit("ZENODO_ARCHIVE_SIZE_METADATA_MISMATCH")
+          print(item.get("links", {}).get("self", ""))
+          PY
+          )"
+          test -n "$author_url"
+          curl --fail --location --silent --show-error "$author_url" \
+            --output "${{ runner.temp }}/author-archive.zip"
+          test "$(stat -c '%s' "${{ runner.temp }}/author-archive.zip")" = "183389034"
+          echo "002c2ba173a03693431b79578ca28d6b11e1ec00423d7533e82198871576c5e3  ${{ runner.temp }}/author-archive.zip" | sha256sum --check -
+
+      - name: Run the full source-grid and cleanup-receipt audit on retained Run 17
+        shell: bash
+        run: |
+          set +e
+          python -m tools.know_place.crown_mask_audit \
+            --run-artifact "${{ runner.temp }}/retained-run-17.zip" \
+            --author-archive "${{ runner.temp }}/author-archive.zip" \
+            --out "${{ runner.temp }}/crown-mask-real-artifact-audit.json"
+          audit_rc=$?
+          set -e
+          if test -f "${{ runner.temp }}/crown-mask-real-artifact-audit.json"; then
+            python - "${{ runner.temp }}/crown-mask-real-artifact-audit.json" <<'PY'
+          import json, sys
+          report = json.load(open(sys.argv[1], encoding="utf-8"))
+          print("REAL_RETAINED_CROWN_AUDIT_STATUS=" + str(report.get("status")))
+          print("REAL_RETAINED_CROWN_AUDIT_PAIRS=" + str(report.get("pair_count", 0)))
+          print("PAPER_REPRODUCTION_STATUS=" + str(report.get("paper_reproduction_status")))
+          print("HAZARD_DETECTION_STATUS=" + str(report.get("hazard_detection_status")))
+          PY
+          fi
+          exit "$audit_rc"
+
+      - name: Preserve the retained-artifact audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: know-place-real-retained-crown-audit
+          path: ${{ runner.temp }}/crown-mask-real-artifact-audit.json
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,302 @@
+{
+  "schema_version": "know-place-multisite-benchmark/1.0",
+  "created_at_utc": "2026-10-24",
+  "purpose": "Pre-register independent measurement and negative-control sites for the SARGuardian NISAR displacement engine. This registry is a protocol/lead inventory, not evidence that SARGuardian has detected or reproduced any result.",
+  "current_engine_claim_boundary": {
+    "permitted_claim": "Exploratory NISAR GOFF displacement measurements and spatial motion summaries, subject to source identity, geometry, valid-pixel and reference-region checks.",
+    "prohibited_claims": [
+      "Operational hazard detection or early warning",
+      "Paper reproduction before exact source-byte and method parity are verified",
+      "Training and scoring on the same event without a frozen blind holdout",
+      "Treating GUNW line-of-sight interferometry as equivalent to GOFF horizontal offset tracking",
+      "Claiming a positive detector from a single-event visual match"
+    ],
+    "current_status": {
+      "generic_aoi_engine": "IMPLEMENTED_EXPLORATORY_MEASUREMENT",
+      "author_exact_p05023_source_identity": "CATALOG_IDENTITY_CONFIRMED_5_OF_5",
+      "author_exact_raw_hdf5_bytes_downloaded": 0,
+      "author_exact_source_sha256_pins": 0,
+      "paper_reproduction_status": "BLOCKED_RAW_GOFF_BYTES_AND_IMPLEMENTATION_PARITY_UNVERIFIED",
+      "hazard_detection_status": "NOT_EVALUATED"
+    }
+  },
+  "evaluation_protocol": {
+    "preregister_before_scoring": [
+      "AOI geometry source and hash",
+      "Exact product IDs, data maturity, polarization, track and flight direction",
+      "Acquisition times and pair interval; do not equate interval-average rate with instantaneous velocity",
+      "Reference-region definition and stability evidence",
+      "Source-byte SHA-256, request/config SHA-256, software revision and environment",
+      "Pixel quality gates, coherence policy, null/control procedure, and valid-pixel support",
+      "Independent reference product and its temporal/spatial support",
+      "Site role (positive movement, event/non-event hazard discrimination, or cross-product control)"
+    ],
+    "minimum_reporting": [
+      "Per-pair valid AOI pixels and valid fraction",
+      "East/north displacement, horizontal magnitude and interval-average rate",
+      "Directional coherence and background/reference comparison",
+      "Spatial uncertainty and sensitivity to masks, geometry height, coherence neighbours and reference policy",
+      "Difference against independently sourced reference measurements",
+      "Failure reasons and missing data preserved, never silently dropped",
+      "Separate movement-measurability from hazard-discrimination outcome"
+    ],
+    "pass_policy": "No numeric universal threshold is predeclared here. Freeze site-specific tolerances and model thresholds using the reference methods and training sites before opening the final holdout.",
+    "split_policy": "Bhote Koshi is the author-method reproduction target and must not also serve as an independent blind holdout after tuning. The glacier sites are measurement positives; Budhi Gandaki is a distinct GUNW cross-product no-precursor case until a compatible GUNW adapter and matched protocol exist."
+  },
+  "sites": [
+    {
+      "site_id": "bhote-koshi-2026",
+      "display_name": "Bhote Koshi ice-rock avalanche source, Nepal",
+      "role": [
+        "AUTHOR_METHOD_REPRODUCTION_TARGET",
+        "OBSERVED_PRE_EVENT_MOVEMENT_POSITIVE",
+        "HAZARD_DISCRIMINATION_CHALLENGE"
+      ],
+      "event_date": "2026-08-26",
+      "reference": {
+        "title": "NISAR offsets measure pre-failure motion but do not single out the Bhote Koshi avalanche source",
+        "doi": "10.21203/rs.3.rs-11022365/v1",
+        "url": "https://www.researchsquare.com/article/rs-11022365/v1",
+        "archive_doi": "10.5281/zenodo.22730419",
+        "archive_url": "https://zenodo.org/records/22730419"
+      },
+      "source_product_plan": {
+        "product": "NISAR L2 GOFF",
+        "exact_release": "P05023",
+        "intervals": [
+          "2026-06-20/2026-07-02",
+          "2026-07-02/2026-07-14",
+          "2026-07-14/2026-07-26",
+          "2026-07-26/2026-08-19",
+          "2026-08-19/2026-08-31"
+        ],
+        "polarization": "HH",
+        "track": "098",
+        "direction": "A",
+        "collection_concept_id": "C2854341702-ASF",
+        "exact_catalog_identity": "CONFIRMED_5_OF_5",
+        "raw_byte_download": "PENDING_EXPLICIT_RUN_WORKFLOW",
+        "source_sha256": []
+      },
+      "published_reference": {
+        "last_pre_event_interval": "2026-07-26/2026-08-19",
+        "median_crown_displacement_m": 0.96,
+        "interval_days": 24,
+        "median_rate_cm_per_day_rounded": 4,
+        "displacement_null_percentile": 94.7,
+        "conclusion": "Motion was measurable but did not clear the reported 95th percentile; no acceleration was resolved and the source was not distinctive against the calibrated population."
+      },
+      "aois": {
+        "crown_wkt": "POLYGON ((85.5245 28.2847, 85.5400 28.2847, 85.5400 28.2970, 85.5245 28.2970, 85.5245 28.2847))",
+        "reference_box_wkt": "POLYGON ((85.500 28.265, 85.565 28.265, 85.565 28.318, 85.500 28.318, 85.500 28.265))",
+        "geometry_status": "PUBLISHED_RECTANGLE_TRANSCRIBED; raw per-pixel geometry and vertical datum require separate validation"
+      },
+      "exact_geometry_and_hashes": "PENDING",
+      "expected_engine_test": "Recover comparable pre-event displacement magnitude/direction under a frozen mask/reference protocol, while preserving the non-distinctive hazard-discrimination conclusion.",
+      "current_result": "NOT_RUN_EXACT_SOURCE_BYTES",
+      "eligible_for_independent_holdout": false,
+      "caveats": [
+        "The historical first-pair X05026 version is not a substitute for author-selected P05023.",
+        "The co-event pair decorrelates and must remain a potential unmeasurable interval, not a fabricated displacement.",
+        "A measured pre-event movement is not evidence that this event was predictable."
+      ]
+    },
+    {
+      "site_id": "samudra-tapu-glacier-2026-01",
+      "display_name": "Samudra Tapu glacier, Western Himalaya",
+      "role": [
+        "INDEPENDENT_GLACIER_FLOW_POSITIVE"
+      ],
+      "reference": {
+        "title": "NISAR for Monitoring Glacier Motion",
+        "doi": "10.65456/iirs.2026.10.3.1",
+        "url": "https://science.iirs.gov.in/nisar-for-monitoring-glacier-motion/"
+      },
+      "published_reference": {
+        "period_label": "January 2026",
+        "nisar_goff_velocity_range_m_per_year": [
+          5.7,
+          139.19
+        ],
+        "its_live_velocity_range_m_per_year": [
+          0.7,
+          132.53
+        ],
+        "reference_product": "NASA ITS_LIVE"
+      },
+      "exact_product_plan": {
+        "exact_aoi_wkt": null,
+        "exact_nisar_granule_ids": [],
+        "nisar_source_sha256": [],
+        "its_live_product_ids": [],
+        "aoi_geometry_status": "PENDING_SOURCE_MAP_DIGITIZATION_OR_AUTHOR_VECTOR",
+        "granule_ids_status": "PENDING_CATALOG_LOOKUP"
+      },
+      "expected_engine_test": "Recover coherent glacier-flow spatial pattern and compare compatible velocity summaries to ITS_LIVE after reconciling temporal baseline, projection, masks and units.",
+      "current_result": "NOT_RUN",
+      "eligible_for_independent_holdout": false,
+      "caveats": [
+        "Published NISAR is a single pair and ITS_LIVE is a multi-year/multi-sensor reference; ranges are not pointwise interchangeable without harmonization.",
+        "Exact acquisition IDs, scene footprints, AOI polygon and reference raster must be pinned before scoring."
+      ]
+    },
+    {
+      "site_id": "bara-shigri-glacier-2026-01",
+      "display_name": "Bara Shigri glacier, Western Himalaya",
+      "role": [
+        "INDEPENDENT_GLACIER_FLOW_POSITIVE"
+      ],
+      "reference": {
+        "title": "NISAR for Monitoring Glacier Motion",
+        "doi": "10.65456/iirs.2026.10.3.1",
+        "url": "https://science.iirs.gov.in/nisar-for-monitoring-glacier-motion/"
+      },
+      "published_reference": {
+        "period_label": "January 2026",
+        "nisar_goff_velocity_range_m_per_year": [
+          1.89,
+          68.99
+        ],
+        "its_live_velocity_range_m_per_year": [
+          0.47,
+          70.58
+        ],
+        "reference_product": "NASA ITS_LIVE"
+      },
+      "exact_product_plan": {
+        "exact_aoi_wkt": null,
+        "exact_nisar_granule_ids": [],
+        "nisar_source_sha256": [],
+        "its_live_product_ids": [],
+        "aoi_geometry_status": "PENDING_SOURCE_MAP_DIGITIZATION_OR_AUTHOR_VECTOR",
+        "granule_ids_status": "PENDING_CATALOG_LOOKUP"
+      },
+      "expected_engine_test": "Recover coherent glacier-flow spatial pattern and compare compatible velocity summaries to ITS_LIVE after reconciling temporal baseline, projection, masks and units.",
+      "current_result": "NOT_RUN",
+      "eligible_for_independent_holdout": false,
+      "caveats": [
+        "Published NISAR is a single pair and ITS_LIVE is a multi-year/multi-sensor reference.",
+        "Exact acquisition IDs, AOI polygon and reference raster must be pinned before scoring."
+      ]
+    },
+    {
+      "site_id": "hubbard-glacier-2025-10",
+      "display_name": "Hubbard Glacier, Alaska",
+      "role": [
+        "HIGH_VELOCITY_GLACIER_POSITIVE",
+        "SPECKLE_SENSITIVITY_CHALLENGE"
+      ],
+      "reference": {
+        "title": "NISAR for Monitoring Glacier Motion",
+        "doi": "10.65456/iirs.2026.10.3.1",
+        "url": "https://science.iirs.gov.in/nisar-for-monitoring-glacier-motion/"
+      },
+      "published_reference": {
+        "period_label": "October 2025",
+        "nisar_goff_velocity_range_m_per_year": [
+          2.42,
+          2585.09
+        ],
+        "its_live_velocity_range_m_per_year": [
+          0.29,
+          3247.55
+        ],
+        "reference_product": "NASA ITS_LIVE",
+        "reported_difference_after_speckle_correction": "approximately 20% residual gap"
+      },
+      "exact_product_plan": {
+        "exact_aoi_wkt": null,
+        "exact_nisar_granule_ids": [],
+        "nisar_source_sha256": [],
+        "its_live_product_ids": [],
+        "aoi_geometry_status": "PENDING_SOURCE_MAP_DIGITIZATION_OR_AUTHOR_VECTOR",
+        "granule_ids_status": "PENDING_CATALOG_LOOKUP"
+      },
+      "expected_engine_test": "Test whether the same frozen GOFF processing recovers the main flow structure while preserving the documented high-speed mismatch/speckle sensitivity.",
+      "current_result": "NOT_RUN",
+      "eligible_for_independent_holdout": false,
+      "caveats": [
+        "Do not tune a correction solely to force agreement with ITS_LIVE.",
+        "The reported 20% difference is a comparator challenge, not an acceptable tolerance selected by SARGuardian."
+      ]
+    },
+    {
+      "site_id": "malaspina-glacier-2025-10",
+      "display_name": "Malaspina Glacier, Alaska",
+      "role": [
+        "HIGH_VELOCITY_GLACIER_POSITIVE",
+        "SPECKLE_CORRECTION_SENSITIVITY"
+      ],
+      "reference": {
+        "title": "NISAR for Monitoring Glacier Motion",
+        "doi": "10.65456/iirs.2026.10.3.1",
+        "url": "https://science.iirs.gov.in/nisar-for-monitoring-glacier-motion/"
+      },
+      "published_reference": {
+        "period_label": "October 2025",
+        "nisar_goff_velocity_range_m_per_year": [
+          3.4,
+          1728.31
+        ],
+        "its_live_velocity_range_m_per_year": [
+          0.02,
+          1690.82
+        ],
+        "reference_product": "NASA ITS_LIVE",
+        "reported_corrected_peak_difference": "approximately 2%"
+      },
+      "exact_product_plan": {
+        "exact_aoi_wkt": null,
+        "exact_nisar_granule_ids": [],
+        "nisar_source_sha256": [],
+        "its_live_product_ids": [],
+        "aoi_geometry_status": "PENDING_SOURCE_MAP_DIGITIZATION_OR_AUTHOR_VECTOR",
+        "granule_ids_status": "PENDING_CATALOG_LOOKUP"
+      },
+      "expected_engine_test": "Recover the main high-speed flow structure and characterize sensitivity to speckle treatment without tuning on this site as the only fast-glacier sample.",
+      "current_result": "NOT_RUN",
+      "eligible_for_independent_holdout": false,
+      "caveats": [
+        "The reported convergence depended on speckle correction; preserve pre-correction and post-correction results separately."
+      ]
+    },
+    {
+      "site_id": "budhi-gandaki-2026-10-11",
+      "display_name": "Budhi Gandaki / Ungilung Khola rock-ice avalanche and flood, Nepal",
+      "role": [
+        "CROSS_PRODUCT_NO_PRECURSOR_CHALLENGE",
+        "NEGATIVE_HAZARD_DISCRIMINATION_CONTROL"
+      ],
+      "event_date": "2026-10-11",
+      "reference": {
+        "title": "A steadily flowing glacier and no detectable precursor before the 11 October 2026 Budhi Gandaki rock–ice avalanche and flood, Nepal",
+        "doi": "10.31223/X5QJ8G",
+        "url": "https://eartharxiv.org/repository/view/15540/"
+      },
+      "published_reference": {
+        "product_type": "NISAR L-band GUNW interferograms / line-of-sight interferometry",
+        "interval_end_date": "2026-10-07",
+        "reported_los_behavior_cm": [
+          -2,
+          2
+        ],
+        "reported_finding": "No unusual LOS motion was reported on the hanging glacier in the pair ending 9.5 hours before collapse."
+      },
+      "exact_product_plan": {
+        "exact_aoi_wkt": null,
+        "exact_nisar_granule_ids": [],
+        "source_sha256": [],
+        "aoi_geometry_status": "PENDING_SOURCE_VECTOR_AND_EVENT_SCAR_DELINEATION",
+        "granule_ids_status": "PENDING_CMR_LOOKUP",
+        "compatibility_status": "GUNW_LOS_NOT_DIRECTLY_COMPARABLE_TO_CURRENT_GOFF_HORIZONTAL_OFFSET_PIPELINE"
+      },
+      "expected_engine_test": "After a versioned GUNW adapter exists, check that the frozen procedure does not invent a precursor where independent LOS observations report none.",
+      "current_result": "NOT_RUN; GUNW_ADAPTER_REQUIRED",
+      "eligible_for_independent_holdout": false,
+      "caveats": [
+        "Do not score this as a GOFF false negative/true negative until the same product type and a compatible measurement protocol are available.",
+        "Event source geometry and exact input products must be pinned independently."
+      ]
+    }
+  ]
+}

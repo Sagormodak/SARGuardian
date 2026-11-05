@@ -1,0 +1,96 @@
+name: Retention Archive Regression Tests
+
+on:
+  push:
+    branches:
+      - main
+      - "fix/**"
+    paths:
+      - "tools/sarguardian_hdf5_archive.py"
+      - "tools/verify_reader_equivalence.py"
+      - "tools/validate_product_aoi.py"
+      - "tools/time_window.py"
+      - "tools/aggregate_streamed_outputs.py"
+      - "tests/test_time_window.py"
+      - "tests/test_aggregate_streamed_outputs.py"
+      - ".github/workflows/sarguardian-streaming-batch.yml"
+      - "tests/test_hdf5_archive.py"
+      - "tests/test_pipeline_helpers.py"
+      - ".github/workflows/sarguardian-retention-pilot.yml"
+      - ".github/workflows/sarguardian-live-validation.yml"
+      - ".github/workflows/retention-archive-tests.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "tools/sarguardian_hdf5_archive.py"
+      - "tools/verify_reader_equivalence.py"
+      - "tools/validate_product_aoi.py"
+      - "tools/time_window.py"
+      - "tools/aggregate_streamed_outputs.py"
+      - "tests/test_time_window.py"
+      - "tests/test_aggregate_streamed_outputs.py"
+      - ".github/workflows/sarguardian-streaming-batch.yml"
+      - "tests/test_hdf5_archive.py"
+      - "tests/test_pipeline_helpers.py"
+      - ".github/workflows/sarguardian-retention-pilot.yml"
+      - ".github/workflows/sarguardian-live-validation.yml"
+      - ".github/workflows/retention-archive-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  hdf5-retention-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check -r tools/requirements-retention.txt pytest PyYAML
+
+      - name: Run archive and pipeline regression tests in isolated fixture tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/retention-regression"
+          mkdir -p "$root/tools" "$root/tests"
+          cp tools/sarguardian_hdf5_archive.py tools/download_nisar_product.py \
+            tools/drive_resumable_upload.py tools/verify_reader_equivalence.py \
+            tools/validate_product_aoi.py tools/time_window.py \
+            tools/aggregate_streamed_outputs.py "$root/tools/"
+          cp tests/test_hdf5_archive.py tests/test_pipeline_helpers.py \
+            tests/test_time_window.py tests/test_aggregate_streamed_outputs.py "$root/tests/"
+          # The app-wide tests/conftest.py initializes the web backend and its
+          # database dependencies; the retention utility tests are intentionally
+          # isolated so this job validates only the retention subsystem.
+          PYTHONPATH="$root" python -m pytest -q "$root/tests" --confcutdir="$root"
+
+      - name: Validate workflow YAML syntax
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          for path in (
+              Path(".github/workflows/sarguardian-retention-pilot.yml"),
+              Path(".github/workflows/sarguardian-live-validation.yml"),
+              Path(".github/workflows/sarguardian-streaming-batch.yml"),
+              Path(".github/workflows/sarguardian-reassemble-existing.yml"),
+              Path(".github/workflows/retention-archive-tests.yml"),
+          ):
+              with path.open(encoding="utf-8") as stream:
+                  yaml.safe_load(stream)
+              print(f"YAML_SYNTAX=PASS FILE={path}")
+          PY
+
+      - name: Validate Python syntax and scientific audit manifest
+        run: |
+          python -m compileall -q tools
+          python -m json.tool docs/RAW_DATA_DEPENDENCY_MANIFEST_BN.json > /dev/null

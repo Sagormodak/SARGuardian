@@ -1,0 +1,124 @@
+{
+  "schema_version": "know-place-vertical-datum-sensitivity-summary/1.0",
+  "generated_by_workflow_run": 40053719232,
+  "workflow_run_url": "https://github.com/moshiour0/SARGuardian-backend/actions/runs/40053719232",
+  "workflow_commit_sha": "ef3d88f3892aa2a3e6e9aa21009b94749826c410",
+  "artifact": {
+    "id": 12543419723,
+    "name": "know-place-egm2008-vertical-datum-sensitivity-40053719232-1",
+    "zip_bytes": 174346579,
+    "sha256": "4defe3a608e8514ce76d22f948264fd9aa806fb286a7aa413ea384756d39a13c"
+  },
+  "input_terrain": {
+    "source_dataset": "Copernicus DEM GLO-90 current public AWS mirror",
+    "source_tiles_artifact_run_id": 40052506016,
+    "source_tiles_artifact_name": "know-place-copernicus-glo90-source-tiles-40052506016-1",
+    "source_tiles_artifact_sha256": "0499832696ccf4dbda584a848f6373771c498b168232b3acc486576c2bda26f8",
+    "source_manifest_sha256": "a5b2d9f86a7606352a5e6d41f7cd1d77cb2c772f1bc002586c68ca4e8e09119d",
+    "tile_count": 16,
+    "tile_bytes_total": 76504193,
+    "exact_original_author_tile_bytes": "UNVERIFIED",
+    "archived_prepared_dem_sha256": "d593f74142d930fb3f1f4a320950019f318842f933f4da64139ea4e214ecd8a1",
+    "archived_prepared_dem_bytes": 59400495
+  },
+  "target_grid": {
+    "crs": "EPSG:32645",
+    "width": 4311,
+    "height": 4230,
+    "pixel_size_m": 80,
+    "transform": [
+      80,
+      0,
+      126720,
+      0,
+      -80,
+      3347280
+    ],
+    "finite_cell_count": 18235530
+  },
+  "source_grid_replay": {
+    "finite_masks_exactly_equal": true,
+    "finite_cells_both": 18235530,
+    "float32_bitwise_equal_cells": 18235529,
+    "total_finite_cells": 18235530,
+    "max_absolute_difference_m": 0.000244140625,
+    "rmse_difference_m": 5.717166719054871e-8,
+    "current_replayed_dem_sha256": "fe944efff9c0b3c07141a3fc3030165ac7ea7a25e89a77e1c1773b137863f703",
+    "current_replayed_dem_bytes": 44501120
+  },
+  "vertical_grid": {
+    "filename": "us_nga_egm08_25.tif",
+    "source_url": "https://cdn.proj.org/us_nga_egm08_25.tif",
+    "sha256": "4191d471eefebf24091b56dbc604353cb3b8cf8cc70e448bb9ae56a272bef17a",
+    "bytes": 80585622,
+    "width": 8640,
+    "height": 4321,
+    "resolution_arc_minutes": 2.5,
+    "crs": "EPSG:4979",
+    "source_crs": "EPSG:9518 (WGS 84 + EGM2008 height)",
+    "target_crs": "EPSG:4979 (WGS 84 ellipsoidal height)",
+    "operation": "Inverse of WGS 84 to EGM2008 height (1) (with axis order normalized for visualization)",
+    "operation_accuracy_m": 0.113,
+    "selected_grid": "us_nga_egm08_25.tif",
+    "operation_definition": "+proj=pipeline +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=vgridshift +grids=us_nga_egm08_25.tif +multiplier=1 +step +proj=unitconvert +xy_in=rad +xy_out=deg",
+    "best_available_grid_operation": true,
+    "ballpark_or_noop_used": false
+  },
+  "offset_stats": {
+    "global": {
+      "valid_cells": 18235530,
+      "min_m": -67.04166412353516,
+      "p01_m": -65.51651542663575,
+      "p05_m": -61.8443603515625,
+      "median_m": -30.15869140625,
+      "mean_m": -36.46356374232223,
+      "p95_m": -26.09130859375,
+      "p99_m": -24.81640625,
+      "max_m": -24.2041015625,
+      "std_m": 11.841939801748529
+    },
+    "crown": {
+      "valid_cells": 323,
+      "min_m": -31.96337890625,
+      "p01_m": -31.94216796875,
+      "median_m": -31.7705078125,
+      "mean_m": -31.771912187983745,
+      "p95_m": -31.62919921875,
+      "p99_m": -31.59439453125,
+      "max_m": -31.57275390625
+    }
+  },
+  "output_files": {
+    "experimental_ellipsoidal_dem": {
+      "filename": "elev_m_hae_experimental.tif",
+      "sha256": "786bd5b7952b19b0ffef94573a4508aa8b64a50bca96a6627933b953a72c69a6",
+      "bytes": 44769701,
+      "status": "SEPARATE_VERSIONED_EXPERIMENT_NOT_USED_BY_AUTHOR_REPRODUCTION_PATH"
+    },
+    "signed_offset_grid": {
+      "filename": "ellipsoid_minus_egm2008_m.tif",
+      "sha256": "ee080af90143e83774741395fc67238529cb755033cf7e67ee42a8a449ed7aaa",
+      "bytes": 4565513,
+      "sign": "ellipsoidal height minus EGM2008 orthometric height",
+      "relation_to_float32_output": "equals saved HAE DEM minus saved EGM2008 DEM on valid cells"
+    }
+  },
+  "gates": {
+    "terrain_source_tile_download_and_hash": "PASS",
+    "archived_prepared_dem_raster_value_replay": "PASS_FLOAT32_ROUNDING_ONLY",
+    "original_author_tile_file_identity": "UNVERIFIED",
+    "raw_goff_geometry_cube_available": false,
+    "coefficient_map_sensitivity_computed": false,
+    "exact_first_author_P05023": "NOT_FOUND_UNRESOLVED",
+    "paper_reproduction_status": "BLOCKED_RAW_GOFF_BYTES_AND_IMPLEMENTATION_PARITY_UNVERIFIED",
+    "hazard_detection_status": "NOT_EVALUATED",
+    "raw_nisar_goff_downloaded_by_this_workflow": false,
+    "main_branch_sha": "2218dfeb73353080d8d94bd733d9e7bd9a848886"
+  },
+  "references": {
+    "copernicus_dem": "https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM",
+    "proj_grid_cdn": "https://cdn.proj.org/",
+    "proj_data_definition": "https://github.com/OSGeo/PROJ-data/blob/master/us_nga/us_nga_README.txt",
+    "nisar_modified_dem": "https://nisar-docs.asf.alaska.edu/nisar-dem/"
+  }
+}

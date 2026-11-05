@@ -1,0 +1,117 @@
+name: Displacement-null archive replay (derived fields only)
+on:
+  push:
+    branches: [feat/know-place-analysis]
+    paths:
+      - ".github/workflows/know-place-displacement-null-audit.yml"
+      - "tools/know_place/displacement_null_archive_reconstruction.py"
+      - "tools/tests/test_know_place_displacement_null_archive_reconstruction.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: know-place-displacement-null-audit
+  cancel-in-progress: false
+jobs:
+  reproduce-published-table:
+    name: Reconstruct displacement-null Table S4 fields from author-deposited GeoTIFFs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout isolated analysis branch
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+      - name: Install deterministic audit dependencies
+        run: python -m pip install --disable-pip-version-check numpy rasterio
+      - name: Retrieve author archive and verify exact size/SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error https://zenodo.org/api/records/22730419 --output "$RUNNER_TEMP/zenodo-record.json"
+          author_url="$(python - "$RUNNER_TEMP/zenodo-record.json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          expected = "bhotekoshi2026_nisar_data-and-code_CC-BY-4.0.zip"
+          files = [item for item in data.get("files", []) if item.get("key") == expected]
+          if len(files) != 1 or files[0].get("size") != 183389034:
+              raise SystemExit("ZENODO_ARCHIVE_IDENTITY_INVALID")
+          print(files[0].get("links", {}).get("self", ""))
+          PY
+          )"
+          test -n "$author_url"
+          curl --fail --location --silent --show-error "$author_url" --output "$RUNNER_TEMP/author-archive.zip"
+          test "$(stat -c '%s' "$RUNNER_TEMP/author-archive.zip")" = "183389034"
+          echo "002c2ba173a03693431b79578ca28d6b11e1ec00423d7533e82198871576c5e3  $RUNNER_TEMP/author-archive.zip" | sha256sum --check -
+      - name: Reconstruct the five displacement-null table rows
+        run: |
+          python -m tools.know_place.displacement_null_archive_reconstruction --author-archive "$RUNNER_TEMP/author-archive.zip" --out "displacement-null-reconstruction.json"
+      - name: Enforce output parity but preserve source-method caveat
+        run: |
+          python - "displacement-null-reconstruction.json" <<'PY'
+          import json, sys
+          report=json.load(open(sys.argv[1],encoding="utf-8"))
+          if report.get("status")!="PASS_AT_PUBLISHED_TABLE_PRECISION" or len(report.get("rows",[]))!=5:
+              raise SystemExit("DISPLACEMENT_NULL_NUMERIC_PARITY_FAILED")
+          if any(r.get("comparison_status")!="PASS_AT_PUBLISHED_TABLE_PRECISION" for r in report["rows"]):
+              raise SystemExit("DISPLACEMENT_NULL_PAIR_COVERAGE_FAILED")
+          if report.get("original_generator_source")!="NOT_PRESENT_IN_REVIEWED_ZENODO_ARCHIVE":
+              raise SystemExit("SOURCE_METHOD_CAVEAT_MUST_REMAIN_EXPLICIT")
+          if report.get("hazard_detection_status")!="NOT_EVALUATED":
+              raise SystemExit("HAZARD_STATUS_MUST_REMAIN_UNEVALUATED")
+          print("DISPLACEMENT_NULL_TABLE_FIELDS_MATCH=15/15")
+          print("ORIGINAL_GENERATOR_AND_DRAW_SEQUENCE_IDENTITY=UNVERIFIED")
+          print("PAPER_REPRODUCTION_STATUS="+report["paper_reproduction_status"])
+          print("HAZARD_DETECTION_STATUS=NOT_EVALUATED")
+          PY
+      - name: Summarize displacement-null table parity and limitations
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -s displacement-null-reconstruction.json ]]; then
+            {
+              echo "## Displacement-null Table S4 reconstruction"
+              echo
+              echo "No machine-readable reconstruction report was produced."
+              echo "Paper reproduction remains partial; hazard detection remains NOT_EVALUATED."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          python - "displacement-null-reconstruction.json" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          report=json.load(open(sys.argv[1],encoding="utf-8"))
+          print("## Displacement-null Table S4 reconstruction")
+          print()
+          print(f"- Reconstruction status: `{report.get('status')}`")
+          print(f"- Matched rows: {sum(r.get('comparison_status') == 'PASS_AT_PUBLISHED_TABLE_PRECISION' for r in report.get('rows', []))}/5")
+          print(f"- Archive SHA-256: `{report.get('inputs',{}).get('author_archive',{}).get('sha256','not available')}`")
+          print()
+          print("| Pair | Crown median computed / published (m) | Null median computed / published (m) | Percentile computed / published | Numeric status |")
+          print("|---|---:|---:|---:|---|")
+          for row in report.get("rows", []):
+              pair=row.get("pair","unknown")
+              crown=f"{row.get('crown_median_m',float('nan')):.2f} / {row.get('published_crown_m',float('nan')):.2f}"
+              null=f"{row.get('null_median_m',float('nan')):.2f} / {row.get('published_null_median_m',float('nan')):.2f}"
+              pct=f"{row.get('percentile',float('nan')):.1f} / {row.get('published_percentile',float('nan')):.1f}"
+              print(f"| {pair} | {crown} | {null} | {pct} | {row.get('comparison_status','MISSING')} |")
+          print()
+          print(f"- Original null-generator source: `{report.get('original_generator_source')}`")
+          print(f"- Original draw-sequence identity: `{report.get('author_draw_sequence_identity')}`")
+          print(f"- Paper reproduction: `{report.get('paper_reproduction_status')}`")
+          print(f"- Hazard detection: `{report.get('hazard_detection_status')}`")
+          print()
+          print("**Interpretation boundary:** published rounded values reproduced from the deposited derived GeoTIFFs do not prove identity with the original generator or its draw/rejection sequence. No hazard-detection skill was evaluated.")
+          PY
+
+      - name: Preserve machine-readable comparison report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: know-place-displacement-null-archive-replay
+          path: displacement-null-reconstruction.json
+          if-no-files-found: warn
+          retention-days: 30

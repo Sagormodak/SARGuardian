@@ -1,0 +1,2621 @@
+from __future__ import annotations
+
+import base64
+import math
+import logging
+import hashlib
+import hmac
+import json
+import re
+import shutil
+import tempfile
+import threading
+import time
+from pathlib import Path, PurePosixPath
+from tempfile import TemporaryDirectory
+from zipfile import BadZipFile, ZipFile
+from contextlib import asynccontextmanager
+from datetime import UTC, date, datetime
+from uuid import UUID, uuid4
+
+from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.requests import Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+
+from .asf_catalog import ASFAdapterError, ASFAdapterNotConfigured, normalize_product_rows, search_asf_catalog
+from .auth import get_current_user
+from .config import SettingsError, get_settings, validate_production_settings
+from .jobs import CreateJobRequest, JobResponse, JobState
+from .known_place import (
+    KnownPlaceAnalysisRequest,
+    KnownPlaceAnalysisSubmission,
+    KnownPlacePaperReproductionRequest,
+    KnownPlaceWorkflowError,
+    dispatch_known_place_analysis,
+    dispatch_known_place_paper_reproduction,
+    get_known_place_analysis_status,
+    get_known_place_analysis_results,
+    download_known_place_analysis_bundle,
+    get_known_place_paper_reproduction_status,
+)
+from .displacements import (
+    ACCOUNT_PROCESSING_OPTIONS,
+    PROCESSING_OPTION_DEFAULTS,
+    CreateDisplacementJobRequest,
+    DisplacementJobResponse,
+    GitHubCancellationError,
+    GitHubDispatchError,
+    ResubmitDisplacementJobRequest,
+    WorkerCallback,
+    callback_signature_is_valid,
+    cancel_workflow_run,
+    dispatch_workflow,
+    find_dispatched_workflow_run,
+    is_dispatch_timed_out,
+    request_fingerprint as displacement_request_fingerprint,
+    workflow_run_status,
+)
+from .models import CatalogResponse, CatalogSearchRequest
+from .river_shift import router as river_shift_catalogue_router
+from .river_shift_jobs import router as river_shift_jobs_router
+from .persistence import (
+    PersistenceConfigurationError,
+    PersistenceConflictError,
+    PersistenceError,
+    get_job_store,
+)
+from science_adapter.upload_to_drive import DriveUploadError, download_private_result, download_private_result_to_path
+
+logger = logging.getLogger(__name__)
+
+EARTH_RADIUS_METERS = 6_371_000
+MAX_AOI_AREA_KM2 = 1_000
+MAX_DATE_WINDOW_DAYS = 90
+MAX_REQUEST_BODY_BYTES = 1_000_000
+ELIGIBILITY_UNDETERMINED_REASON = "Catalogue metadata alone does not establish scientific processing eligibility; the science workflow must inspect the selected products and AOI separately."
+
+
+def _cors_origins() -> list[str]:
+    settings = get_settings()
+    configured = settings.cors_origins
+    if settings.app_env == "production" and not configured:
+        raise RuntimeError("CORS_ORIGINS must be explicitly configured in production.")
+    if not configured.strip():
+        configured = "http://localhost:5173,http://127.0.0.1:5173"
+    return [origin.strip() for origin in configured.split(",") if origin.strip()]
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    try:
+        validate_production_settings()
+    except SettingsError as exc:
+        raise RuntimeError(str(exc)) from None
+    yield
+
+
+app = FastAPI(title="SARGuardian Catalogue API", version="0.1.0", lifespan=lifespan)
+app.include_router(river_shift_catalogue_router)
+app.include_router(river_shift_jobs_router)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins(),
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-SARGuardian-Google-Maps-Key"],
+)
+
+
+@app.exception_handler(Exception)
+async def handle_unexpected_error(_request: Request, _exc: Exception) -> JSONResponse:
+    logger.error("Unhandled API error", exc_info=True)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error."})
+
+
+@app.middleware("http")
+async def enforce_request_size(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_REQUEST_BODY_BYTES:
+                return JSONResponse(status_code=413, content={"detail": "Request body is too large."})
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header."})
+    return await call_next(request)
+
+
+def _validate_coordinates(coordinates: list[list[float]]) -> list[tuple[float, float]]:
+    if len(coordinates) < 3:
+        raise HTTPException(status_code=422, detail="AOI must contain at least 3 coordinates.")
+
+    normalized: list[tuple[float, float]] = []
+    for coordinate in coordinates:
+        if len(coordinate) != 2:
+            raise HTTPException(status_code=422, detail="Each AOI coordinate must contain longitude and latitude.")
+        longitude, latitude = coordinate
+        if not math.isfinite(longitude) or not math.isfinite(latitude):
+            raise HTTPException(status_code=422, detail="AOI coordinates must be finite numbers.")
+        if not -180 <= longitude <= 180 or not -90 <= latitude <= 90:
+            raise HTTPException(status_code=422, detail="AOI coordinates must use WGS84 longitude/latitude ranges.")
+        normalized.append((longitude, latitude))
+
+    if normalized[-1] != normalized[0]:
+        raise HTTPException(status_code=422, detail="AOI polygon must be closed by repeating its first coordinate.")
+    normalized.pop()
+    if len(normalized) < 3:
+        raise HTTPException(status_code=422, detail="AOI must contain at least 3 distinct polygon vertices.")
+    return normalized
+
+
+def _area_km2(coordinates: list[tuple[float, float]]) -> float:
+    ring = [*coordinates, coordinates[0]]
+    total = 0.0
+    for (longitude_a, latitude_a), (longitude_b, latitude_b) in zip(ring, ring[1:]):
+        delta_longitude = math.radians(longitude_b - longitude_a)
+        if delta_longitude > math.pi:
+            delta_longitude -= 2 * math.pi
+        if delta_longitude < -math.pi:
+            delta_longitude += 2 * math.pi
+        total += delta_longitude * (
+            math.sin(math.radians(latitude_a)) + math.sin(math.radians(latitude_b))
+        )
+    return abs(total) * EARTH_RADIUS_METERS**2 / 2 / 1_000_000
+
+
+def _validate_request(request: CatalogSearchRequest) -> tuple[float, list[tuple[float, float]]]:
+    coordinates = _validate_coordinates(request.coordinates)
+    area = _area_km2(coordinates)
+    if not math.isfinite(area) or area <= 0:
+        raise HTTPException(status_code=422, detail="AOI must have positive area.")
+    if area > MAX_AOI_AREA_KM2:
+        raise HTTPException(status_code=422, detail=f"AOI exceeds the {MAX_AOI_AREA_KM2} km2 maximum.")
+
+    if request.end_date < request.start_date:
+        raise HTTPException(status_code=422, detail="end_date must be on or after start_date.")
+    if (request.end_date - request.start_date).days > MAX_DATE_WINDOW_DAYS:
+        raise HTTPException(status_code=422, detail=f"Date range cannot exceed {MAX_DATE_WINDOW_DAYS} days.")
+    if request.end_date > date.today():
+        raise HTTPException(status_code=422, detail="end_date cannot be in the future.")
+    return area, coordinates
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok", "service": "sarguardian-catalogue-api"}
+
+
+@app.post("/api/known-place-analysis", response_model=KnownPlaceAnalysisSubmission)
+def submit_known_place_analysis(
+    request: KnownPlaceAnalysisRequest,
+    _user: dict = Depends(get_current_user),
+) -> KnownPlaceAnalysisSubmission:
+    """Dispatch the isolated GOFF Know Place engine, independent of Find Displacements."""
+    try:
+        return dispatch_known_place_analysis(get_settings(), request)
+    except KnownPlaceWorkflowError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+
+
+@app.get("/api/known-place-analysis/requests/{request_id}", response_model=KnownPlaceAnalysisSubmission)
+def read_known_place_analysis_status(
+    request_id: str,
+    _user: dict = Depends(get_current_user),
+) -> KnownPlaceAnalysisSubmission:
+    """Read the requested GitHub run without exposing the server-side Actions token."""
+    try:
+        return get_known_place_analysis_status(get_settings(), request_id)
+    except KnownPlaceWorkflowError as exc:
+        code = 422 if "Invalid Known Place request ID" in str(exc) else 503
+        raise HTTPException(status_code=code, detail=str(exc)) from None
+
+
+@app.get("/api/known-place-analysis/requests/{request_id}/results")
+def read_known_place_analysis_results(
+    request_id: str,
+    _user: dict = Depends(get_current_user),
+) -> dict:
+    """Return the validated generic Known Place artifact for its opaque request ID."""
+    try:
+        return get_known_place_analysis_results(get_settings(), request_id)
+    except KnownPlaceWorkflowError as exc:
+        message = str(exc)
+        code = 422 if "Invalid Known Place request ID" in message else 409 if "NOT_READY" in message else 404 if "NOT_FOUND" in message else 503
+        raise HTTPException(status_code=code, detail=message) from None
+
+
+@app.get("/api/known-place-analysis/requests/{request_id}/bundle")
+def download_known_place_analysis_bundle_route(
+    request_id: str,
+    _user: dict = Depends(get_current_user),
+) -> Response:
+    """Download the original bounded Actions result archive through Firebase auth."""
+    try:
+        filename, archive_bytes = download_known_place_analysis_bundle(get_settings(), request_id)
+    except KnownPlaceWorkflowError as exc:
+        message = str(exc)
+        code = 409 if "NOT_READY" in message else 404 if "NOT_FOUND" in message else 503
+        raise HTTPException(status_code=code, detail=message) from None
+    return Response(
+        content=archive_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+@app.post("/api/known-place-paper-reproduction", response_model=KnownPlaceAnalysisSubmission)
+def submit_known_place_paper_reproduction(
+    request: KnownPlacePaperReproductionRequest,
+    _user: dict = Depends(get_current_user),
+) -> KnownPlaceAnalysisSubmission:
+    """Dispatch the fixed author-exact Bhote Koshi P05023 paper workflow."""
+    try:
+        return dispatch_known_place_paper_reproduction(get_settings(), request)
+    except KnownPlaceWorkflowError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+
+
+@app.get("/api/known-place-paper-reproduction/requests/{request_id}", response_model=KnownPlaceAnalysisSubmission)
+def read_known_place_paper_reproduction_status(
+    request_id: str,
+    _user: dict = Depends(get_current_user),
+) -> KnownPlaceAnalysisSubmission:
+    """Read the author-exact GitHub run without exposing the server-side Actions token."""
+    try:
+        return get_known_place_paper_reproduction_status(get_settings(), request_id)
+    except KnownPlaceWorkflowError as exc:
+        code = 422 if "Invalid Known Place paper-reproduction request ID" in str(exc) else 503
+        raise HTTPException(status_code=code, detail=str(exc)) from None
+
+
+@app.post("/api/catalog/search", response_model=CatalogResponse)
+def search_catalog(request: CatalogSearchRequest, _user: dict = Depends(get_current_user)) -> CatalogResponse:
+    area, coordinates = _validate_request(request)
+    checked_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    query = {
+        "platform": "NISAR",
+        "product_type": request.product_type,
+        "start_date": request.start_date,
+        "end_date": request.end_date,
+        "aoi_area_km2": area,
+    }
+    requested_product_types = "GUNW,GOFF" if request.product_type == "BOTH" else request.product_type
+    try:
+        result = search_asf_catalog(coordinates, request.start_date, request.end_date, requested_product_types)
+    except ASFAdapterNotConfigured:
+        return CatalogResponse(
+            status="not_configured",
+            message="Live ASF catalogue search is disabled by server configuration. No products were returned.",
+            checked_at=checked_at,
+            query=query,
+            processing_eligibility={"status": "undetermined", "reason": ELIGIBILITY_UNDETERMINED_REASON},
+            next_step="Set ASF_CATALOG_ENABLED=true to enable the read-only ASF metadata adapter.",
+            warnings=["Metadata preflight only: no satellite files were downloaded and no scientific movement analysis was performed."],
+        )
+    except ASFAdapterError as exc:
+        return JSONResponse(status_code=502, content={"status": "upstream_error", "message": str(exc)})
+
+    products, unknown_size, metadata_warnings = normalize_product_rows(result.rows, requested_product_types)
+    total_gib = sum(product["size_mb"] or 0 for product in products) / 1024
+    warnings = [*metadata_warnings]
+    if result.truncated:
+        warnings.append("ASF returned the configured result cap; narrow the AOI or date range for a complete search.")
+    if unknown_size:
+        warnings.append(f"Size metadata is unavailable for {unknown_size} product(s); the volume estimate is incomplete.")
+    if not products:
+        status = "no_data"
+        message = "ASF catalogue search completed with no eligible products matching this AOI and date range."
+        next_step = "Try another date range, AOI, or supported product family."
+    else:
+        status = "ready"
+        message = "ASF catalogue metadata search completed. No satellite files were downloaded."
+        next_step = "Review the returned metadata before any separate scientific processing workflow."
+    response = CatalogResponse(
+        status=status,
+        message=message,
+        checked_at=checked_at,
+        query=query,
+        processing_eligibility={"status": "undetermined", "reason": ELIGIBILITY_UNDETERMINED_REASON},
+        product_count=len(products),
+        truncated=result.truncated,
+        products_with_unknown_size=unknown_size,
+        estimated_full_granule_volume_gib=total_gib,
+        estimated_full_granule_volume_is_complete=unknown_size == 0,
+        products=products,
+        next_step=next_step,
+        warnings=[*warnings, "Metadata preflight only: no satellite files were downloaded and no scientific movement analysis was performed."],
+    )
+    if status != "ready" or request.product_type == "BOTH":
+        return response
+
+    try:
+        store = get_job_store()
+        response.preflight_id = store.save_preflight(
+            str(_user["uid"]),
+            request.model_dump(mode="json"),
+            response.model_dump(mode="json"),
+        )
+    except PersistenceConfigurationError as exc:
+        return JSONResponse(status_code=503, content={"status": "persistence_not_configured", "message": str(exc)})
+    except PersistenceError:
+        return JSONResponse(status_code=503, content={"status": "persistence_error", "message": "The preflight could not be persisted for job confirmation."})
+    return response
+
+
+def _required_owner_uid(user: dict) -> str:
+    owner_uid = user.get("uid")
+    if not isinstance(owner_uid, str) or not owner_uid:
+        raise HTTPException(status_code=401, detail="Authenticated Firebase user identity is unavailable.")
+    return owner_uid
+
+
+def _require_store():
+    try:
+        return get_job_store()
+    except PersistenceConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+
+
+def _job_response(record: dict) -> JobResponse:
+    return JobResponse.model_validate(record)
+
+
+def _displacement_response(record: dict) -> DisplacementJobResponse:
+    return DisplacementJobResponse.model_validate(record)
+
+
+@app.post("/api/jobs", response_model=JobResponse)
+def create_job(request: CreateJobRequest, user: dict = Depends(get_current_user)) -> JobResponse:
+    owner_uid = _required_owner_uid(user)
+    store = _require_store()
+    try:
+        preflight = store.get_preflight(owner_uid, request.preflight_id)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not read the preflight persistence service.") from None
+    if not preflight:
+        raise HTTPException(status_code=404, detail="Preflight manifest was not found for this user.")
+    try:
+        expires_at = datetime.fromisoformat(str(preflight["expires_at"]).replace("Z", "+00:00"))
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(status_code=409, detail="Preflight manifest is invalid; run the catalogue search again.") from None
+    if expires_at <= datetime.now(UTC):
+        raise HTTPException(status_code=409, detail="Preflight manifest has expired; run the catalogue search again.")
+    manifest = preflight.get("manifest_snapshot")
+    request_snapshot = preflight.get("request_snapshot")
+    if not isinstance(manifest, dict) or manifest.get("status") != "ready" or not isinstance(request_snapshot, dict):
+        raise HTTPException(status_code=409, detail="Only a current successful preflight can be confirmed as a job.")
+
+    try:
+        existing = store.get_job_by_idempotency(owner_uid, request.idempotency_key)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not read the job persistence service.") from None
+    if existing:
+        return _job_response(existing)
+    values = {
+        "id": str(uuid4()),
+        "owner_uid": owner_uid,
+        "preflight_id": str(request.preflight_id),
+        "idempotency_key": request.idempotency_key,
+        "product_family": request_snapshot.get("product_type"),
+        "state": JobState.QUEUED.value,
+        "request_snapshot": request_snapshot,
+        "manifest_snapshot": manifest,
+    }
+    try:
+        return _job_response(store.create_job(values))
+    except PersistenceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+
+
+@app.get("/api/jobs", response_model=list[JobResponse])
+def list_jobs(user: dict = Depends(get_current_user)) -> list[JobResponse]:
+    owner_uid = _required_owner_uid(user)
+    try:
+        records = _require_store().list_jobs(owner_uid)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not read the job persistence service.") from None
+    return [_job_response(record) for record in records]
+
+
+@app.get("/api/jobs/{job_id}", response_model=JobResponse)
+def get_job(job_id: UUID, user: dict = Depends(get_current_user)) -> JobResponse:
+    owner_uid = _required_owner_uid(user)
+    try:
+        record = _require_store().get_job(owner_uid, job_id)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not read the job persistence service.") from None
+    if not record:
+        raise HTTPException(status_code=404, detail="Processing job was not found for this user.")
+    return _job_response(record)
+
+
+def _validate_displacement_request(request: CreateDisplacementJobRequest) -> None:
+    if request.end_date < request.start_date:
+        raise HTTPException(status_code=422, detail="end_date must be on or after start_date.")
+    if (request.end_date - request.start_date).days > MAX_DATE_WINDOW_DAYS:
+        raise HTTPException(status_code=422, detail=f"Date range cannot exceed {MAX_DATE_WINDOW_DAYS} days.")
+    if request.end_date > date.today():
+        raise HTTPException(status_code=422, detail="end_date cannot be in the future.")
+    if any(getattr(request, name) != value for name, value in ACCOUNT_PROCESSING_OPTIONS.items()):
+        raise HTTPException(status_code=422, detail="Account displacement processing uses the fixed production processing contract.")
+
+
+def _create_and_dispatch_displacement_job(owner_uid: str, request: CreateDisplacementJobRequest, store) -> DisplacementJobResponse:
+    try:
+        existing = store.get_displacement_job_by_idempotency(owner_uid, request.idempotency_key)
+        active = store.find_active_displacement_job(owner_uid, request.aoi_wkt, request.start_date.isoformat(), request.end_date.isoformat())
+        active_jobs = store.list_active_displacement_jobs(owner_uid)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not check displacement job persistence.") from None
+    if existing:
+        if displacement_request_fingerprint(existing) != displacement_request_fingerprint(request.model_dump()):
+            raise HTTPException(status_code=409, detail="That idempotency key is already bound to a different displacement request.")
+        return _displacement_response(existing)
+    if active:
+        # A durable active request already exists for this account and exact
+        # immutable payload. Never use a page refresh or second browser tab to
+        # dispatch a second science workflow.
+        if displacement_request_fingerprint(active) == displacement_request_fingerprint(request.model_dump()):
+            return _displacement_response(active)
+        raise HTTPException(status_code=409, detail="A different processing configuration is already active for this AOI and date window.")
+    if active_jobs:
+        raise HTTPException(status_code=429, detail="This account already has an active scientific processing job. Wait for it to finish or cancel it before submitting another.")
+    values = {
+        "owner_uid": owner_uid,
+        "idempotency_key": request.idempotency_key,
+        "state": JobState.QUEUED.value,
+        "aoi_wkt": request.aoi_wkt,
+        "start_date": request.start_date.isoformat(),
+        "end_date": request.end_date.isoformat(),
+        **{name: getattr(request, name) for name in PROCESSING_OPTION_DEFAULTS},
+        "place_name": request.place_name,
+        "place_latitude": request.place_latitude,
+        "place_longitude": request.place_longitude,
+        "target_latitude": request.target_latitude,
+        "target_longitude": request.target_longitude,
+        "request_fingerprint": displacement_request_fingerprint(request.model_dump()),
+        "worker_contract_version": 2,
+        "stage": "queued",
+    }
+    try:
+        record = store.create_displacement_job(values)
+    except PersistenceError:
+        try:
+            active = store.find_active_displacement_job(owner_uid, request.aoi_wkt, request.start_date.isoformat(), request.end_date.isoformat())
+        except PersistenceError:
+            active = None
+        if active:
+            return _displacement_response(active)
+        raise HTTPException(status_code=503, detail="Could not persist the displacement job.") from None
+    job_id = UUID(str(record["id"]))
+    try:
+        dispatch_workflow(get_settings(), job_id, request)
+        record = store.update_displacement_job(job_id, {"state": JobState.DISPATCHING.value, "stage": "dispatching"})
+    except GitHubDispatchError as exc:
+        logger.warning("Displacement dispatch failed for job %s: %s", job_id, exc)
+        try:
+            record = store.update_displacement_job(job_id, {
+                "state": JobState.FAILED.value,
+                "stage": "dispatch_failed",
+                "error_code": "GITHUB_DISPATCH_FAILED",
+                "error_message": str(exc),
+            })
+        except PersistenceError:
+            raise HTTPException(status_code=503, detail="Displacement dispatch failed and its status could not be persisted.") from None
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="GitHub Actions accepted the job but its dispatch status could not be persisted.") from None
+    return _displacement_response(record)
+
+
+@app.post("/api/displacement-jobs", response_model=DisplacementJobResponse)
+def create_displacement_job(request: CreateDisplacementJobRequest, user: dict = Depends(get_current_user)) -> DisplacementJobResponse:
+    _validate_displacement_request(request)
+    return _create_and_dispatch_displacement_job(_required_owner_uid(user), request, _require_store())
+
+
+@app.get("/api/displacement-jobs", response_model=list[DisplacementJobResponse])
+def list_displacement_jobs(user: dict = Depends(get_current_user)) -> list[DisplacementJobResponse]:
+    try:
+        records = _require_store().list_displacement_jobs(_required_owner_uid(user))
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not list displacement jobs.") from None
+    return [_displacement_response(record) for record in records]
+
+
+def _cancel_active_displacement_job(owner_uid: str, job_id: UUID, store) -> dict:
+    """Cancel a GitHub run and persist cancellation before any replacement exists."""
+    try:
+        current = store.get_displacement_job(owner_uid, job_id)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not read the current displacement job.") from None
+    if not current:
+        raise HTTPException(status_code=404, detail="Displacement job was not found for this user.")
+    if current.get("state") not in {JobState.DISPATCHING.value, JobState.RUNNING.value}:
+        raise HTTPException(status_code=409, detail="Only a currently dispatched or running job can be replaced.")
+
+    settings = get_settings()
+    run_id = current.get("github_run_id")
+    if not run_id:
+        discovered = find_dispatched_workflow_run(settings, job_id)
+        if not discovered:
+            raise HTTPException(status_code=409, detail="The current workflow has not been allocated by GitHub yet. Wait a moment and try refresh again; no replacement was created.")
+        run_id, run_url, run_status, _conclusion = discovered
+        if run_status == "completed":
+            raise HTTPException(status_code=409, detail="The current workflow already completed. Refresh its status before starting a new request.")
+        try:
+            current = store.update_displacement_job(job_id, {"github_run_id": run_id, "github_run_url": run_url})
+        except PersistenceError:
+            raise HTTPException(status_code=503, detail="Could not record the current GitHub Actions run.") from None
+
+    try:
+        cancel_workflow_run(settings, str(run_id))
+    except GitHubCancellationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    try:
+        return store.update_displacement_job(job_id, {
+            "state": JobState.CANCELLED.value,
+            "stage": "cancelled_by_user",
+            "error_code": "CANCELLED_BY_USER",
+            "error_message": "Cancelled by the account owner.",
+        })
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="GitHub Actions was cancelled but the account job state could not be updated.") from None
+
+
+@app.post("/api/displacement-jobs/{job_id}/cancel", response_model=DisplacementJobResponse)
+def cancel_displacement_job(job_id: UUID, user: dict = Depends(get_current_user)) -> DisplacementJobResponse:
+    """Explicit account-owner cancellation; it never creates a new workflow."""
+    owner_uid = _required_owner_uid(user)
+    return _displacement_response(_cancel_active_displacement_job(owner_uid, job_id, _require_store()))
+
+
+@app.post("/api/displacement-jobs/{job_id}/resubmit", response_model=DisplacementJobResponse)
+def resubmit_displacement_job(
+    job_id: UUID, request: ResubmitDisplacementJobRequest, user: dict = Depends(get_current_user),
+) -> DisplacementJobResponse:
+    """Retry a failed job or replace an active workflow for its stored AOI/date window."""
+    owner_uid = _required_owner_uid(user)
+    store = _require_store()
+    try:
+        current = store.get_displacement_job(owner_uid, job_id)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not read the current displacement job.") from None
+    if not current:
+        raise HTTPException(status_code=404, detail="Displacement job was not found for this user.")
+
+    if current.get("state") == JobState.FAILED.value:
+        # A failed job has no active worker to cancel. Its stored WKT and dates
+        # remain the sole source for a retry; current account processing options
+        # are fixed server-side.
+        source = current
+    elif current.get("state") in {JobState.DISPATCHING.value, JobState.RUNNING.value}:
+        source = _cancel_active_displacement_job(owner_uid, job_id, store)
+    else:
+        raise HTTPException(status_code=409, detail="Only a failed, dispatched, or running job can be retried or refreshed.")
+
+    replacement = CreateDisplacementJobRequest(
+        aoi_wkt=str(source["aoi_wkt"]), start_date=source["start_date"], end_date=source["end_date"],
+        idempotency_key=request.idempotency_key,
+        place_name=source.get("place_name"), place_latitude=source.get("place_latitude"),
+        place_longitude=source.get("place_longitude"), target_latitude=source.get("target_latitude"),
+        target_longitude=source.get("target_longitude"),
+        **ACCOUNT_PROCESSING_OPTIONS,
+    )
+    return _create_and_dispatch_displacement_job(owner_uid, replacement, store)
+
+
+@app.get("/api/displacement-jobs/{job_id}", response_model=DisplacementJobResponse)
+def get_displacement_job(job_id: UUID, user: dict = Depends(get_current_user)) -> DisplacementJobResponse:
+    store = _require_store()
+    try:
+        record = store.get_displacement_job(_required_owner_uid(user), job_id)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not read the displacement job.") from None
+    if not record:
+        raise HTTPException(status_code=404, detail="Displacement job was not found for this user.")
+    settings = get_settings()
+    if settings.displacement_actions_enabled and record.get("state") == JobState.DISPATCHING.value:
+        discovered_run = find_dispatched_workflow_run(settings, job_id)
+        if discovered_run:
+            run_id, run_url, status, conclusion = discovered_run
+            updates = {"github_run_id": run_id, "github_run_url": run_url}
+            should_persist = (
+                run_id != record.get("github_run_id") or run_url != record.get("github_run_url")
+            )
+            if status == "completed":
+                code = "WORKER_CALLBACK_MISSING" if conclusion == "success" else "GITHUB_ACTIONS_WORKER_FAILED"
+                message = "GitHub Actions completed without a verified success callback." if conclusion == "success" else "GitHub Actions reported a terminal worker failure before its startup callback."
+                updates |= {"state": JobState.FAILED.value, "stage": "terminal_validation_failed", "error_code": code, "error_message": message}
+                should_persist = True
+            if should_persist:
+                try:
+                    record = store.update_displacement_job(job_id, updates)
+                except PersistenceError:
+                    raise HTTPException(status_code=503, detail="Could not persist the discovered workflow state.") from None
+    if is_dispatch_timed_out(record, settings.displacement_dispatch_timeout_seconds):
+        try:
+            record = store.update_displacement_job(job_id, {"state": JobState.FAILED.value, "stage": "start_timeout", "error_code": "WORKFLOW_START_TIMEOUT", "error_message": "The workflow did not report a start before the configured timeout."})
+        except PersistenceError:
+            raise HTTPException(status_code=503, detail="Could not persist the workflow timeout.") from None
+    elif settings.displacement_actions_enabled and record.get("github_run_id") and record.get("state") == JobState.RUNNING.value:
+        status = workflow_run_status(settings, str(record["github_run_id"]))
+        if status and status[0] == "completed":
+            code = "WORKER_CALLBACK_MISSING" if status[1] == "success" else "GITHUB_ACTIONS_WORKER_FAILED"
+            message = "GitHub Actions completed without a verified success callback." if status[1] == "success" else "GitHub Actions reported a terminal worker failure."
+            try:
+                record = store.update_displacement_job(job_id, {"state": JobState.FAILED.value, "stage": "terminal_validation_failed", "error_code": code, "error_message": message})
+            except PersistenceError:
+                raise HTTPException(status_code=503, detail="Could not persist the terminal worker state.") from None
+    return _displacement_response(record)
+
+
+@app.post("/api/displacement-jobs/{job_id}/callback")
+async def update_displacement_job_from_worker(job_id: UUID, request: Request) -> dict[str, str]:
+    body = await request.body()
+    settings = get_settings()
+    if not callback_signature_is_valid(settings.displacement_callback_secret, body, request.headers.get("X-SARGuardian-Signature")):
+        raise HTTPException(status_code=401, detail="Invalid worker callback signature.")
+    try:
+        payload = WorkerCallback.model_validate_json(body)
+        store = _require_store()
+        record = store.get_displacement_job_unscoped(job_id)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not read worker job state.") from None
+    if not record:
+        raise HTTPException(status_code=404, detail="Displacement job was not found.")
+    if record.get("worker_contract_version") == 2:
+        if payload.contract_version != 2 or payload.job_id != job_id:
+            raise HTTPException(status_code=409, detail="Worker callback is not bound to this version-2 job.")
+        expected_fingerprint = record.get("request_fingerprint") or displacement_request_fingerprint(record)
+        if payload.request_fingerprint != expected_fingerprint:
+            raise HTTPException(status_code=409, detail="Worker callback request fingerprint does not match this job.")
+    current = JobState(record["state"])
+    target = JobState(payload.state)
+    stored_sequence = int(record.get("callback_sequence") or 0)
+    stored_run_id = record.get("github_run_id")
+    if payload.sequence < stored_sequence:
+        raise HTTPException(status_code=409, detail="Stale worker callback sequence.")
+    if payload.sequence == stored_sequence:
+        if current == target and stored_run_id == payload.github_run_id and record.get("stage") == payload.stage:
+            return {"status": "accepted", "job_id": str(job_id), "job_status": current.value}
+        raise HTTPException(status_code=409, detail="Duplicate worker callback does not match the recorded event.")
+    if payload.sequence != stored_sequence + 1:
+        raise HTTPException(status_code=409, detail="Worker callback sequence is out of order.")
+    if stored_run_id and stored_run_id != payload.github_run_id:
+        raise HTTPException(status_code=409, detail="Worker callback run does not match the recorded workflow run.")
+    if target == JobState.SUCCEEDED and current != JobState.RUNNING:
+        raise HTTPException(status_code=409, detail="A result cannot be accepted before the worker reports running.")
+    if target == JobState.SUCCEEDED and record.get("worker_contract_version") == 2:
+        summary = payload.result_summary
+        if (not isinstance(summary, dict) or summary.get("schema_version") != 2
+                or not isinstance(summary.get("validation"), dict)
+                or summary["validation"].get("status") != "PASS"
+                or not isinstance(summary.get("storage_verification"), dict)
+                or summary["storage_verification"].get("status") != "PASS"
+                or not _valid_private_artifacts(summary.get("artifacts"))):
+            raise HTTPException(status_code=409, detail="Version-2 success requires a validated scientific result contract.")
+    if target == JobState.RUNNING and payload.result_summary is not None:
+        summary = payload.result_summary
+        counts = summary.get("catalog_granule_counts") if isinstance(summary, dict) else None
+        selected_counts = summary.get("selected_granule_counts") if isinstance(summary, dict) else None
+        valid_counts = lambda value: isinstance(value, dict) and set(value) == {"GUNW", "GOFF"} and all(
+            isinstance(value[family], int) and not isinstance(value[family], bool) and 0 <= value[family] <= 10_000
+            for family in ("GUNW", "GOFF")
+        )
+        if summary.get("schema_version") != 2 or not valid_counts(counts) or not valid_counts(selected_counts):
+            raise HTTPException(status_code=409, detail="Worker progress summary contains invalid product counts.")
+    allowed = {
+        (JobState.DISPATCHING, JobState.RUNNING), (JobState.DISPATCHING, JobState.FAILED),
+        (JobState.RUNNING, JobState.RUNNING), (JobState.RUNNING, JobState.SUCCEEDED), (JobState.RUNNING, JobState.FAILED),
+    }
+    if (current, target) not in allowed:
+        raise HTTPException(status_code=409, detail="Worker callback requested an invalid state transition.")
+    try:
+        retained_summary = (payload.result_summary if target in {JobState.RUNNING, JobState.SUCCEEDED}
+                            and payload.result_summary is not None else record.get("result_summary"))
+        updated = store.update_displacement_job(job_id, {
+            "state": target.value, "github_run_id": payload.github_run_id,
+            "github_run_url": payload.github_run_url, "error_code": payload.error_code if target == JobState.FAILED else None,
+            "error_message": payload.error_message if target == JobState.FAILED else None, "callback_sequence": payload.sequence,
+            "stage": payload.stage, "result_summary": retained_summary,
+            "artifact_url": payload.artifact_url if target == JobState.SUCCEEDED else None,
+        }, expected_state=current.value, expected_sequence=stored_sequence)
+    except PersistenceConflictError:
+        raise HTTPException(status_code=409, detail="Job state changed while this callback was being accepted.") from None
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not persist worker job state.") from None
+    return {"status": "accepted", "job_id": str(job_id), "job_status": updated["state"]}
+
+
+def _valid_private_artifacts(value: object) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    import re
+    for artifact in value:
+        if not isinstance(artifact, dict):
+            return False
+        path, digest, size, drive_id = (artifact.get("path"), artifact.get("sha256"),
+                                        artifact.get("bytes"), artifact.get("drive_file_id"))
+        if (not isinstance(path, str) or path.startswith("/") or ".." in path.split("/")
+                or not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest)
+                or not isinstance(size, int) or size <= 0
+                or not isinstance(drive_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", drive_id)):
+            return False
+    return True
+
+
+MAX_DASHBOARD_ARCHIVE_BYTES = 100 * 1024 * 1024
+MAX_DASHBOARD_HTML_BYTES = 2 * 1024 * 1024
+# The stored source manifest may contain a very detailed AOI-wide candidate
+# FeatureCollection. It is parsed under a separate bounded limit, then reduced
+# to a clearly-labelled browser display subset before being embedded in HTML.
+MAX_DASHBOARD_SOURCE_MANIFEST_BYTES = 64 * 1024 * 1024
+MAX_DASHBOARD_MANIFEST_BYTES = 16 * 1024 * 1024
+MAX_DASHBOARD_CANDIDATE_FEATURES = 100
+MAX_DASHBOARD_CANDIDATE_RING_POINTS = 128
+MAX_DASHBOARD_PREVIEW_BYTES = 16 * 1024 * 1024
+DASHBOARD_VIEWER_PATH = "web-dashboard/index.html"
+DASHBOARD_MANIFEST_PATH = "web-dashboard/manifest.json"
+DASHBOARD_DATA_PATH = "web-dashboard/dashboard-data.js"
+DASHBOARD_ASSET_TICKET_TTL_SECONDS = 2 * 60 * 60
+DASHBOARD_ARCHIVE_CACHE_TTL_SECONDS = 3 * 60 * 60
+DASHBOARD_ARCHIVE_CACHE_ROOT = Path(tempfile.gettempdir()) / "sarguardian-dashboard-archive-cache"
+_DASHBOARD_ARCHIVE_CACHE_LOCK = threading.Lock()
+
+
+def _point_segment_distance_squared(point: list, start: list, end: list) -> float:
+    px, py = float(point[0]), float(point[1])
+    sx, sy = float(start[0]), float(start[1])
+    ex, ey = float(end[0]), float(end[1])
+    dx, dy = ex - sx, ey - sy
+    denominator = dx * dx + dy * dy
+    if denominator <= 0:
+        return (px - sx) ** 2 + (py - sy) ** 2
+    fraction = max(0.0, min(1.0, ((px - sx) * dx + (py - sy) * dy) / denominator))
+    nearest_x, nearest_y = sx + fraction * dx, sy + fraction * dy
+    return (px - nearest_x) ** 2 + (py - nearest_y) ** 2
+
+
+def _simplify_open_geojson_path(points: list, tolerance: float) -> list:
+    if len(points) <= 2:
+        return points
+    tolerance_squared = tolerance * tolerance
+    keep = {0, len(points) - 1}
+    pending = [(0, len(points) - 1)]
+    while pending:
+        start_index, end_index = pending.pop()
+        farthest_index = None
+        farthest_distance = tolerance_squared
+        for index in range(start_index + 1, end_index):
+            distance = _point_segment_distance_squared(points[index], points[start_index], points[end_index])
+            if distance > farthest_distance:
+                farthest_distance = distance
+                farthest_index = index
+        if farthest_index is not None:
+            keep.add(farthest_index)
+            pending.append((start_index, farthest_index))
+            pending.append((farthest_index, end_index))
+    return [points[index] for index in sorted(keep)]
+
+
+def _simplify_geojson_ring_for_display(ring: list) -> tuple[list, bool]:
+    """Simplify one polygon ring for map display only; source GeoJSON stays in the ZIP."""
+    if not isinstance(ring, list) or len(ring) <= MAX_DASHBOARD_CANDIDATE_RING_POINTS:
+        return ring, False
+    is_closed = (
+        len(ring) >= 4
+        and isinstance(ring[0], (list, tuple))
+        and isinstance(ring[-1], (list, tuple))
+        and list(ring[0][:2]) == list(ring[-1][:2])
+    )
+    points = ring[:-1] if is_closed else ring
+    if len(points) <= MAX_DASHBOARD_CANDIDATE_RING_POINTS:
+        return ring, False
+    try:
+        anchor_index = max(
+            range(1, len(points)),
+            key=lambda index: (
+                (float(points[index][0]) - float(points[0][0])) ** 2
+                + (float(points[index][1]) - float(points[0][1])) ** 2
+            ),
+        )
+        first_path = points[: anchor_index + 1]
+        second_path = points[anchor_index:] + [points[0]]
+        tolerance = 1e-8
+        simplified = points
+        while tolerance <= 360:
+            first = _simplify_open_geojson_path(first_path, tolerance)
+            second = _simplify_open_geojson_path(second_path, tolerance)
+            candidate = first + second[1:]
+            if candidate and candidate[-1][:2] != candidate[0][:2]:
+                candidate.append(candidate[0])
+            simplified = candidate
+            if len(simplified) <= MAX_DASHBOARD_CANDIDATE_RING_POINTS:
+                break
+            tolerance *= 2
+        if len(simplified) < 4:
+            return ring, False
+        return simplified, len(simplified) < len(ring)
+    except (IndexError, TypeError, ValueError, OverflowError):
+        return ring, False
+
+
+def _simplify_geojson_geometry_for_display(geometry: object) -> bool:
+    if not isinstance(geometry, dict):
+        return False
+    geometry_type = geometry.get("type")
+    coordinates = geometry.get("coordinates")
+    simplified_any = False
+
+    def simplify_rings(rings: object) -> None:
+        nonlocal simplified_any
+        if not isinstance(rings, list):
+            return
+        for index, ring in enumerate(rings):
+            simplified, changed = _simplify_geojson_ring_for_display(ring)
+            if changed:
+                rings[index] = simplified
+                simplified_any = True
+
+    if geometry_type == "Polygon" and isinstance(coordinates, list):
+        simplify_rings(coordinates)
+    elif geometry_type == "MultiPolygon" and isinstance(coordinates, list):
+        for polygon in coordinates:
+            simplify_rings(polygon)
+    return simplified_any
+
+
+def _dashboard_dict_subset(value: object, keys: tuple[str, ...]) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    return {key: value[key] for key in keys if key in value}
+
+
+def _dashboard_list_subset(value: object, keys: tuple[str, ...]) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    return [_dashboard_dict_subset(item, keys) for item in value if isinstance(item, dict)]
+
+
+def _project_dashboard_observation(value: object) -> dict:
+    fields = (
+        "id", "product_type", "granule_name", "reference_date", "secondary_date",
+        "track", "look_direction", "maturity", "crid", "status", "valid_pixels",
+        "screen_valid_pixels", "screen_outlier_pixels", "measurement_pixel_support",
+        "grid_pixels_inside_aoi", "source_sha256", "validation_scope",
+    )
+    row = _dashboard_dict_subset(value, fields)
+    if not isinstance(value, dict):
+        return row
+    row["warnings"] = [
+        str(item)[:600] for item in value.get("warnings", [])[:20]
+    ] if isinstance(value.get("warnings"), list) else []
+    row["native_assets"] = [
+        str(item)[:500] for item in value.get("native_assets", [])[:30]
+    ] if isinstance(value.get("native_assets"), list) else []
+    row["layers"] = [
+        str(item)[:180] for item in value.get("layers", [])[:64]
+    ] if isinstance(value.get("layers"), list) else []
+    row["metrics"] = _dashboard_dict_subset(
+        value.get("metrics"),
+        (
+            "reader_median", "reader_median_name", "reader_median_units",
+            "goff_range_median_mm", "goff_azimuth_median_mm",
+            "goff_detect_floor_mm_day", "goff_range_velocity_mm_day",
+            "mean_coherence", "mean_correlation", "target_measurement_status",
+            "target_local_los_median_mm", "target_local_range_median_mm",
+            "target_local_azimuth_median_mm", "target_mean_coherence",
+            "target_mean_correlation", "target_local_floor_status",
+            "target_local_floor_mm_day", "target_local_floor_ci_lo_mm_day",
+            "target_local_floor_ci_hi_mm_day",
+        ),
+    )
+    return row
+
+
+def _project_dashboard_layer(value: object) -> dict:
+    # Retain exactly the layer metadata needed for display, pair-grid checks,
+    # legend units and source provenance. Scientific source arrays stay in ZIP.
+    return _dashboard_dict_subset(
+        value,
+        (
+            "id", "observation_id", "product_type", "band", "description",
+            "units", "kind", "source_sha256", "source_asset", "source_crs",
+            "source_transform", "source_width", "source_height", "preview_crs",
+            "preview_transform", "preview_width", "preview_height", "bounds_wgs84",
+            "corners", "valid_pixels", "preview_asset", "display_scale",
+        ),
+    )
+
+
+def _project_dashboard_site_context(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        "place": _dashboard_dict_subset(
+            value.get("place"),
+            ("name", "latitude", "longitude", "inside_aoi", "category"),
+        ),
+        "measurement_target": _dashboard_dict_subset(
+            value.get("measurement_target"),
+            ("status", "latitude", "longitude", "inside_aoi", "reason"),
+        ),
+    }
+
+
+def _project_dashboard_science_pipeline(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    # The full report includes a second copy of common_reference_timeseries,
+    # site_context, per-product diagnostics and log excerpts. The viewer uses
+    # only stage eligibility and compact acquisition-network topology.
+    return {
+        **_dashboard_dict_subset(
+            value,
+            (
+                "schema_version", "science_commit_expected", "overall_status",
+                "network_assessment_status", "structural_validation_is_geophysical_validation",
+                "product_counts", "network_error",
+            ),
+        ),
+        "networks": _dashboard_list_subset(
+            value.get("networks"),
+            (
+                "geometry", "component", "first_epoch", "last_epoch",
+                "n_epochs", "n_pairs", "redundancy",
+                "formal_residual_error_estimable", "topology_status",
+            ),
+        ),
+        "modules": _dashboard_list_subset(
+            value.get("modules"),
+            (
+                "name", "status", "reason", "interpretation", "limitation",
+                "produces", "products", "pairs_parsed", "networks",
+                "minimum_next_evidence", "products_with_measured_local_floor",
+                "products_with_target_window_measurement", "available_related_metrics",
+            ),
+        ),
+        "warnings": [
+            str(item)[:1000] for item in value.get("warnings", [])[:30]
+        ] if isinstance(value.get("warnings"), list) else [],
+    }
+
+
+def _project_dashboard_common_reference(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {}
+    components = []
+    for item in value.get("components", []) if isinstance(value.get("components"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        component = _dashboard_dict_subset(
+            item,
+            (
+                "network", "component", "status", "first_epoch", "last_epoch",
+                "epochs_count", "pairs_count", "redundancy",
+            ),
+        )
+        component["series"] = _dashboard_list_subset(
+            item.get("series"),
+            (
+                "epoch", "cumulative_los_mm", "graph_fit_standard_error_mm",
+                "graph_fit_ci95_low_mm", "graph_fit_ci95_high_mm",
+            ),
+        )
+        components.append(component)
+    networks = _dashboard_list_subset(
+        value.get("networks"),
+        (
+            "network", "status", "pairs", "common_pixels_outside_target_buffer",
+            "common_valid_aoi_pixels",
+        ),
+    )
+    return {
+        **_dashboard_dict_subset(
+            value,
+            (
+                "schema_version", "status", "series_are_independent_geophysical_validation",
+                "common_reference_is_independently_validated_stable_ground",
+                "interpretation", "reason",
+            ),
+        ),
+        "components": components,
+        "networks": networks,
+    }
+
+
+def _project_dashboard_candidate_screen(value: object) -> tuple[dict, bool]:
+    screen = value if isinstance(value, dict) else {}
+    source_features = []
+    collection = screen.get("candidate_feature_collection")
+    if isinstance(collection, dict) and isinstance(collection.get("features"), list):
+        source_features = collection["features"]
+
+    reported_count = screen.get("candidate_count")
+    total_count = max(
+        len(source_features),
+        reported_count if isinstance(reported_count, int) and not isinstance(reported_count, bool) and reported_count >= 0 else 0,
+    )
+    selected = source_features[:MAX_DASHBOARD_CANDIDATE_FEATURES]
+    simplified_any = False
+    properties_compacted = False
+    display_features = []
+    for feature in selected:
+        if not isinstance(feature, dict):
+            continue
+        geometry = feature.get("geometry")
+        if _simplify_geojson_geometry_for_display(geometry):
+            simplified_any = True
+        properties = feature.get("properties")
+        display_properties = _dashboard_dict_subset(
+            properties,
+            ("candidate_id", "direction", "track", "area_km2_approx", "pairs_with_candidate"),
+        )
+        if display_properties != (properties if isinstance(properties, dict) else {}):
+            properties_compacted = True
+        display_features.append(
+            {"type": "Feature", "properties": display_properties, "geometry": geometry}
+        )
+
+    source_series = screen.get("series") if isinstance(screen.get("series"), list) else []
+    compact_series = _dashboard_list_subset(
+        source_series,
+        ("series_id", "product_family", "track", "direction", "pair_count", "status"),
+    )
+    browser_screen = {
+        **_dashboard_dict_subset(
+            screen,
+            (
+                "schema_version", "status", "purpose", "target_required",
+                "target_coordinates_used", "candidate_count",
+            ),
+        ),
+        # The viewer uses series.length for its compatible GOFF-series count.
+        # Pair-level rows, source hashes and file paths remain in the ZIP.
+        "series": compact_series,
+        "gunw_per_pixel_stack": _dashboard_dict_subset(
+            screen.get("gunw_per_pixel_stack"),
+            ("status", "interpretation"),
+        ),
+        "candidate_feature_collection": {
+            "type": "FeatureCollection",
+            "features": display_features,
+        },
+        "candidate_features_total": total_count,
+        "candidate_features_displayed": len(display_features),
+        "candidate_features_omitted_from_map": max(0, total_count - len(display_features)),
+        "candidate_geometry_simplified_for_display": simplified_any,
+        "candidate_properties_reduced_for_display": properties_compacted,
+        "candidate_overlay_is_complete": (
+            len(display_features) == total_count and not simplified_any and not properties_compacted
+        ),
+        "candidate_overlay_display_note": (
+            "Candidate polygons are a browser-only display representation. Full candidate GeoJSON, "
+            "pair-level screen receipts and all scientific diagnostics remain in the verified result ZIP."
+        ),
+        "warnings": [
+            str(item)[:1000] for item in screen.get("warnings", [])[:20]
+        ] if isinstance(screen.get("warnings"), list) else [],
+    }
+    return browser_screen, (
+        len(display_features) != len(source_features)
+        or simplified_any
+        or properties_compacted
+        or bool(screen.get("series"))
+        or bool(screen.get("rejected_products"))
+    )
+
+
+def _serialize_dashboard_manifest_for_browser(manifest: dict) -> tuple[str, bool, dict]:
+    """Project the source manifest onto the exact interactive-viewer contract.
+
+    This is intentionally a whitelist, not a blacklist: large duplicated
+    science reports, per-pair candidate receipts, unknown diagnostics and
+    internal processing metadata never enter the browser payload. The verified
+    ZIP and all its original JSON/GeoJSON remain byte-for-byte unchanged.
+    """
+    source = manifest if isinstance(manifest, dict) else {}
+    run = _dashboard_dict_subset(
+        source.get("run"),
+        (
+            "github_run_id", "generated_at_utc", "aoi_wkt_sha256",
+            "science_commit", "orchestration_commit", "workflow_commit",
+        ),
+    )
+    validation = _dashboard_dict_subset(
+        source.get("validation"),
+        (
+            "processing_status", "visual_assets_status",
+            "independent_geophysical_validation", "products_expected",
+            "products_validated",
+        ),
+    )
+    aoi = _dashboard_dict_subset(source.get("aoi"), ("type", "properties", "geometry"))
+    if isinstance(aoi.get("properties"), dict):
+        aoi["properties"] = _dashboard_dict_subset(
+            aoi["properties"], ("name", "aoi_wkt_sha256")
+        )
+    aoi_geometry_simplified = False
+    if isinstance(aoi.get("geometry"), dict):
+        aoi_geometry_simplified = _simplify_geojson_geometry_for_display(aoi["geometry"])
+
+    screen, candidate_overlay_compacted = _project_dashboard_candidate_screen(
+        source.get("aoi_wide_displacement_screen")
+    )
+    projected = {
+        "schema_version": source.get("schema_version"),
+        "run": run,
+        "validation": validation,
+        "aoi": aoi,
+        "aoi_bbox": source.get("aoi_bbox"),
+        "time_window": _dashboard_dict_subset(
+            source.get("time_window"),
+            ("start_date", "end_date", "date_basis", "date_filter_mode"),
+        ),
+        "observations": [
+            _project_dashboard_observation(item)
+            for item in source.get("observations", [])
+            if isinstance(item, dict)
+        ] if isinstance(source.get("observations"), list) else [],
+        "layers": [
+            _project_dashboard_layer(item)
+            for item in source.get("layers", [])
+            if isinstance(item, dict)
+        ] if isinstance(source.get("layers"), list) else [],
+        "science_limitations": [
+            str(item)[:1000] for item in source.get("science_limitations", [])[:30]
+        ] if isinstance(source.get("science_limitations"), list) else [],
+        "science_pipeline": _project_dashboard_science_pipeline(source.get("science_pipeline")),
+        "aoi_wide_displacement_screen": screen,
+        "site_context": _project_dashboard_site_context(source.get("site_context")),
+        "common_reference_timeseries": _project_dashboard_common_reference(
+            source.get("common_reference_timeseries")
+        ),
+        "display_policy": str(source.get("display_policy") or "")[:1200],
+    }
+
+    blob = json.dumps(projected, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    if len(blob.encode("utf-8")) > MAX_DASHBOARD_MANIFEST_BYTES:
+        # Surface component sizes so a future schema expansion can be fixed
+        # precisely, rather than hiding the blocker behind the same generic cap.
+        section_sizes = {
+            key: len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8"))
+            for key, value in projected.items()
+        }
+        largest = sorted(section_sizes.items(), key=lambda item: item[1], reverse=True)[:5]
+        detail = ", ".join(f"{key}={size} bytes" for key, size in largest)
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "The projected interactive dashboard metadata exceeds the browser safety limit. "
+                "The full verified result ZIP is unchanged. Largest viewer sections: " + detail
+            ),
+        )
+    return blob, bool(candidate_overlay_compacted or aoi_geometry_simplified), screen
+
+
+def _dashboard_archive_cache_path(job_id: UUID, digest: str) -> Path:
+    if not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise HTTPException(status_code=409, detail="Dashboard archive checksum metadata is invalid.")
+    return DASHBOARD_ARCHIVE_CACHE_ROOT / f"{job_id}-{digest}.zip"
+
+
+def _write_dashboard_archive_cache(source: Path, destination: Path) -> None:
+    DASHBOARD_ARCHIVE_CACHE_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+    DASHBOARD_ARCHIVE_CACHE_ROOT.chmod(0o700)
+    temporary = destination.with_name(destination.name + f".{uuid4().hex}.tmp")
+    try:
+        shutil.copyfile(source, temporary)
+        temporary.chmod(0o600)
+        temporary.replace(destination)
+        now = time.time()
+        for cached in DASHBOARD_ARCHIVE_CACHE_ROOT.glob("*.zip"):
+            try:
+                if cached != destination and now - cached.stat().st_mtime > DASHBOARD_ARCHIVE_CACHE_TTL_SECONDS:
+                    cached.unlink(missing_ok=True)
+            except OSError:
+                continue
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _get_cached_dashboard_archive(job_id: UUID, artifact: dict) -> Path:
+    destination = _dashboard_archive_cache_path(job_id, str(artifact.get("sha256") or ""))
+    now = time.time()
+    try:
+        if destination.is_file() and destination.stat().st_size == artifact.get("bytes") and now - destination.stat().st_mtime <= DASHBOARD_ARCHIVE_CACHE_TTL_SECONDS:
+            destination.chmod(0o600)
+            destination.touch()
+            return destination
+    except OSError:
+        pass
+
+    with _DASHBOARD_ARCHIVE_CACHE_LOCK:
+        now = time.time()
+        try:
+            if destination.is_file() and destination.stat().st_size == artifact.get("bytes") and now - destination.stat().st_mtime <= DASHBOARD_ARCHIVE_CACHE_TTL_SECONDS:
+                destination.touch()
+                return destination
+        except OSError:
+            pass
+
+        with TemporaryDirectory(prefix="sarguardian-dashboard-asset-") as temporary_directory:
+            archive_path = Path(temporary_directory) / "aoi-derived-results.zip"
+            try:
+                received = download_private_result_to_path(
+                    artifact["drive_file_id"],
+                    archive_path,
+                    max_bytes=artifact["bytes"],
+                )
+            except DriveUploadError as exc:
+                logger.warning("Private dashboard Drive retrieval failed for job %s: %s", job_id, exc)
+                raise HTTPException(status_code=503, detail="Private dashboard storage is unavailable. Retry in a moment.") from None
+            if received.get("bytes") != artifact["bytes"] or received.get("sha256") != artifact["sha256"]:
+                raise HTTPException(status_code=409, detail="Stored dashboard bundle no longer matches its verified checksum inventory.")
+            _write_dashboard_archive_cache(archive_path, destination)
+    return destination
+
+
+def _iter_response_bytes(content: bytes, chunk_size: int = 256 * 1024):
+    """Yield bounded chunks so large private viewer responses use HTTP streaming."""
+    for offset in range(0, len(content), chunk_size):
+        yield content[offset : offset + chunk_size]
+
+
+def _create_dashboard_asset_ticket(job_id: UUID, digest: str, owner_uid: str, secret: str) -> str:
+    if not secret:
+        raise HTTPException(status_code=503, detail="Private dashboard asset access is not configured.")
+    claims = {
+        "job": str(job_id),
+        "digest": digest,
+        "owner": hashlib.sha256(owner_uid.encode("utf-8")).hexdigest(),
+        "expires": int(time.time()) + DASHBOARD_ASSET_TICKET_TTL_SECONDS,
+    }
+    payload = json.dumps(claims, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    signature = hmac.new(secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+    return encoded + "." + signature
+
+
+def _read_dashboard_asset_ticket(ticket: str, secret: str) -> dict | None:
+    if not secret or not isinstance(ticket, str) or len(ticket) > 2048 or "." not in ticket:
+        return None
+    encoded, signature = ticket.rsplit(".", 1)
+    if not re.fullmatch(r"[a-f0-9]{64}", signature):
+        return None
+    expected = hmac.new(secret.encode("utf-8"), encoded.encode("ascii", errors="ignore"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(claims, dict) or not isinstance(claims.get("expires"), int):
+        return None
+    if claims["expires"] < int(time.time()):
+        return None
+    if not isinstance(claims.get("job"), str) or not isinstance(claims.get("digest"), str) or not isinstance(claims.get("owner"), str):
+        return None
+    if not re.fullmatch(r"[a-f0-9]{64}", claims["digest"]) or not re.fullmatch(r"[a-f0-9]{64}", claims["owner"]):
+        return None
+    return claims
+
+
+@app.post("/api/displacement-jobs/{job_id}/dashboard-refresh")
+async def refresh_succeeded_job_dashboard(job_id: UUID, request: Request) -> dict[str, str]:
+    """Replace only a succeeded job's verified dashboard ZIP pointer.
+
+    This maintenance-only endpoint is HMAC-authenticated by the worker secret.
+    It never changes job state, callback sequence, processing provenance, or
+    any scientific artifact other than the dashboard ZIP reference itself.
+    """
+    body = await request.body()
+    if len(body) > 32 * 1024:
+        raise HTTPException(status_code=413, detail="Dashboard refresh request is too large.")
+    settings = get_settings()
+    if not callback_signature_is_valid(
+        settings.displacement_callback_secret,
+        body,
+        request.headers.get("X-SARGuardian-Signature"),
+    ):
+        raise HTTPException(status_code=401, detail="Invalid dashboard refresh signature.")
+    try:
+        payload = json.loads(body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=422, detail="Dashboard refresh payload is not valid JSON.") from None
+    if not isinstance(payload, dict) or payload.get("job_id") != str(job_id):
+        raise HTTPException(status_code=422, detail="Dashboard refresh payload is not bound to this job.")
+
+    try:
+        store = _require_store()
+        record = store.get_displacement_job_unscoped(job_id)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not read dashboard refresh job state.") from None
+    if not record:
+        raise HTTPException(status_code=404, detail="Displacement job was not found.")
+    if record.get("state") != JobState.SUCCEEDED.value or record.get("worker_contract_version") != 2:
+        raise HTTPException(status_code=409, detail="Only a succeeded version-2 job can receive a dashboard refresh.")
+
+    source_run_id = record.get("github_run_id")
+    if (not isinstance(source_run_id, str)
+            or payload.get("source_run_id") != source_run_id
+            or payload.get("github_run_id") != source_run_id):
+        raise HTTPException(status_code=409, detail="Dashboard refresh source run does not match the succeeded job.")
+
+    provenance = payload.get("provenance")
+    replacement = payload.get("replacement")
+    dashboard = payload.get("web_dashboard")
+    if not isinstance(provenance, dict) or not isinstance(replacement, dict) or not isinstance(dashboard, dict):
+        raise HTTPException(status_code=422, detail="Dashboard refresh metadata is incomplete.")
+    builder_commit = provenance.get("builder_commit")
+    refresh_run_id = provenance.get("refresh_workflow_run_id")
+    if (not isinstance(builder_commit, str) or not re.fullmatch(r"[a-f0-9]{40}", builder_commit)
+            or not isinstance(refresh_run_id, str) or not re.fullmatch(r"[0-9]{5,15}", refresh_run_id)
+            or provenance.get("raw_hdf5_replayed") is not False
+            or provenance.get("scientific_outputs_changed") is not False):
+        raise HTTPException(status_code=422, detail="Dashboard refresh provenance failed validation.")
+
+    new_file_id = replacement.get("drive_file_id")
+    new_digest = replacement.get("sha256")
+    new_size = replacement.get("bytes")
+    if (not isinstance(new_file_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{10,200}", new_file_id)
+            or not isinstance(new_digest, str) or not re.fullmatch(r"[a-f0-9]{64}", new_digest)
+            or not isinstance(new_size, int) or isinstance(new_size, bool)
+            or new_size <= 0 or new_size > MAX_DASHBOARD_ARCHIVE_BYTES):
+        raise HTTPException(status_code=422, detail="Replacement dashboard archive metadata is invalid.")
+
+    result_summary = record.get("result_summary")
+    if not isinstance(result_summary, dict) or result_summary.get("schema_version") != 2:
+        raise HTTPException(status_code=409, detail="The succeeded job has no supported result contract.")
+    expected_observations = len(result_summary.get("products") or [])
+    selected_counts = result_summary.get("selected_granule_counts")
+    if isinstance(selected_counts, dict):
+        expected_observations = sum(
+            value for value in selected_counts.values()
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        )
+    observation_count = dashboard.get("observations")
+    layer_count = dashboard.get("layers")
+    derived_layer_count = dashboard.get("derived_layers", 0)
+    if (dashboard.get("status") != "PASS"
+            or dashboard.get("schema_version") != "sarguardian-web-dashboard/1.0"
+            or dashboard.get("viewer") != DASHBOARD_VIEWER_PATH
+            or not isinstance(observation_count, int) or isinstance(observation_count, bool)
+            or observation_count <= 0 or observation_count != expected_observations
+            or not isinstance(layer_count, int) or isinstance(layer_count, bool) or layer_count <= 0
+            or not isinstance(derived_layer_count, int) or isinstance(derived_layer_count, bool)
+            or derived_layer_count < 0):
+        raise HTTPException(status_code=422, detail="Refreshed dashboard receipt does not match the job's product inventory.")
+
+    artifacts = result_summary.get("artifacts")
+    if not _valid_private_artifacts(artifacts):
+        raise HTTPException(status_code=409, detail="The succeeded job's private artifact inventory is invalid.")
+    bundle_entries = [item for item in artifacts if item.get("path") == "aoi-derived-results.zip"]
+    if len(bundle_entries) != 1:
+        raise HTTPException(status_code=409, detail="A unique existing dashboard ZIP reference was not found.")
+    old_bundle = bundle_entries[0]
+    current_refresh = result_summary.get("dashboard_refresh")
+    if (old_bundle.get("sha256") == new_digest
+            and old_bundle.get("drive_file_id") == new_file_id
+            and isinstance(current_refresh, dict)
+            and current_refresh.get("refresh_workflow_run_id") == refresh_run_id):
+        return {"status": "accepted", "job_id": str(job_id), "job_status": JobState.SUCCEEDED.value}
+
+    expected_old_digest = payload.get("expected_previous_sha256")
+    if (not isinstance(expected_old_digest, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", expected_old_digest)
+            or old_bundle.get("sha256") != expected_old_digest):
+        raise HTTPException(status_code=409, detail="The stored dashboard bundle changed since this refresh was prepared.")
+
+    refreshed_summary = dict(result_summary)
+    refreshed_artifacts = [dict(item) for item in artifacts]
+    refreshed_bundle = next(item for item in refreshed_artifacts if item.get("path") == "aoi-derived-results.zip")
+    refreshed_bundle.update({"sha256": new_digest, "bytes": new_size, "drive_file_id": new_file_id})
+    refreshed_summary["artifacts"] = refreshed_artifacts
+    refreshed_summary["web_dashboard"] = {
+        "status": "PASS",
+        "schema_version": "sarguardian-web-dashboard/1.0",
+        "viewer": DASHBOARD_VIEWER_PATH,
+        "observations": observation_count,
+        "layers": layer_count,
+        "derived_layers": derived_layer_count,
+        "renderable_layers": dashboard.get("renderable_layers"),
+        "derived_layer_errors": dashboard.get("derived_layer_errors"),
+    }
+    refreshed_summary["dashboard_refresh"] = {
+        "status": "PASS",
+        "refreshed_at": datetime.now(UTC).isoformat(),
+        "source_run_id": source_run_id,
+        "refresh_workflow_run_id": refresh_run_id,
+        "builder_commit": builder_commit,
+        "raw_hdf5_replayed": False,
+        "scientific_outputs_changed": False,
+    }
+    try:
+        store.update_displacement_job(
+            job_id,
+            {"result_summary": refreshed_summary},
+            expected_state=JobState.SUCCEEDED.value,
+            expected_sequence=int(record.get("callback_sequence") or 0),
+        )
+    except PersistenceConflictError:
+        raise HTTPException(status_code=409, detail="Job state changed during dashboard refresh; no pointer was replaced.") from None
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not persist the refreshed dashboard reference.") from None
+    return {"status": "accepted", "job_id": str(job_id), "job_status": JobState.SUCCEEDED.value}
+
+
+
+# Presentation is added at read-time so older, checksum-verified result bundles
+# can receive responsive layout and truthful measurement-state messaging without
+# repeating expensive NISAR processing or rewriting retained scientific assets.
+DASHBOARD_PRESENTATION_CSS = r"""
+:root{color-scheme:dark;--bg:#06111b;--panel:#0c1c29;--panel-raised:#102838;--edge:#274455;--ink:#edf7ff;--muted:#a9bdcb;--aqua:#70e6dc;--amber:#ffcf78;--danger:#ff8a80}
+html{scroll-behavior:smooth;background:var(--bg)}
+body{margin:0;background:radial-gradient(1100px 520px at 18% -8%,#163e4d 0%,transparent 65%),linear-gradient(155deg,#06111b,#081825 60%,#07121d);color:var(--ink);font:15px/1.58 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:.005em}
+main{width:min(100%,1760px);max-width:1760px;margin:0 auto;padding:clamp(14px,2.3vw,36px)}
+header{align-items:center;gap:20px;padding:10px 0 24px;border-color:rgba(134,190,207,.19)}
+header>div:first-child{min-width:0;max-width:78ch}
+h1{font-size:clamp(28px,3.3vw,46px);line-height:1.08;letter-spacing:-.045em;font-weight:800;margin:9px 0 10px}
+h2{font-size:clamp(19px,2vw,25px);line-height:1.2;letter-spacing:-.025em}
+p{max-width:82ch}
+.kicker{font-size:10px;line-height:1.4;letter-spacing:.17em}
+.muted{color:var(--muted);line-height:1.65}
+button,select,input{font:inherit}
+button,select{border:1px solid #35596b;border-radius:10px;background:linear-gradient(180deg,#153446,#102838);padding:9px 12px;min-height:40px}
+button{transition:transform .16s ease,border-color .16s ease,background .16s ease}
+button:hover{border-color:#70e6dc;background:#174052}
+button:active{transform:translateY(1px)}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--aqua);outline-offset:3px}
+header .controls{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+header .controls button{font-weight:700}
+header .controls a,header .controls span{font-size:12px}
+.warn{margin:20px 0;padding:14px 16px;border:1px solid rgba(255,207,120,.5);border-left:4px solid var(--amber);background:linear-gradient(100deg,rgba(105,72,26,.35),rgba(105,72,26,.12));border-radius:12px;color:#ffebc5;line-height:1.65}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,158px),1fr));gap:12px;margin:18px 0}
+.card,.panel{min-width:0;border:1px solid rgba(116,175,196,.2);border-radius:18px;background:linear-gradient(145deg,rgba(17,42,57,.96),rgba(9,24,36,.96));padding:clamp(14px,1.35vw,22px);box-shadow:0 16px 40px rgba(0,0,0,.14);backdrop-filter:blur(10px)}
+.card{position:relative;overflow:hidden}
+.card:before{content:"";position:absolute;inset:0 0 auto;height:2px;background:linear-gradient(90deg,rgba(112,230,220,.7),transparent 80%)}
+.label{color:#a9bfcd;font-size:11px;font-weight:750;line-height:1.35;letter-spacing:.09em;text-transform:uppercase}
+.big{font-size:clamp(22px,2.2vw,32px);line-height:1.12;font-weight:800;letter-spacing:-.04em;margin-top:9px;overflow-wrap:anywhere}
+.layout{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(320px,.85fr);align-items:start;gap:18px}
+.layout>.panel{min-width:0}
+.maphead{align-items:flex-start;flex-wrap:wrap;gap:14px;margin-bottom:14px}
+.maphead>div:first-child{min-width:0}
+.maphead strong{font-size:clamp(14px,1.3vw,18px);letter-spacing:-.015em}
+.controls{display:flex;align-items:center;gap:9px;flex-wrap:wrap;min-width:0}
+.controls label{display:inline-flex;align-items:center;gap:7px;flex-wrap:wrap;color:var(--muted);font-size:12px}
+.controls select{max-width:100%;min-width:0}
+.mapbox{position:relative;isolation:isolate;overflow:hidden;width:100%;height:clamp(380px,58svh,690px);min-height:340px;border:1px solid rgba(112,230,220,.2);border-radius:15px;background:radial-gradient(ellipse at 50% 42%,#0d2a39 0%,#071722 68%,#06111a 100%)}
+#map,.compare-mapbox>div{width:100%;height:100%;min-height:0;background:transparent}
+.maplibregl-canvas,.maplibregl-canvas-container{outline:none}
+.maplibregl-ctrl-group{border:1px solid rgba(150,205,217,.25)!important;border-radius:10px!important;overflow:hidden;background:rgba(7,25,36,.92)!important}
+.maplibregl-ctrl-group button{background-color:transparent!important}
+.maplibregl-ctrl-attrib{background:rgba(4,15,24,.82)!important;color:#d6e8ef!important}
+.maplibregl-ctrl-attrib a{color:#8eece4!important}
+.map-basemap-status{position:absolute;z-index:5;left:12px;right:12px;bottom:12px;margin:auto;max-width:620px;padding:12px 14px;border:1px solid rgba(255,207,120,.5);border-radius:12px;background:rgba(10,28,39,.96);color:#ffe9bc;box-shadow:0 8px 30px rgba(0,0,0,.25);font-size:13px;line-height:1.5}
+.timeline{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;margin-top:14px}
+.timeline .controls{display:flex;gap:7px}
+input[type=range]{width:100%;min-width:0;accent-color:var(--aqua)}
+.timeline small{color:var(--muted);font-size:12px;white-space:nowrap}
+.metriclist{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:14px 0 18px}
+.metricitem{min-width:0;padding:12px;border:1px solid rgba(116,175,196,.18);border-radius:12px;background:rgba(4,17,28,.68)}
+.metricitem .label{font-size:10px;letter-spacing:.07em}
+.metricitem strong{display:block;margin-top:5px;font-size:clamp(13px,1.05vw,16px);line-height:1.4;font-weight:750;overflow-wrap:anywhere}
+.metricitem small{display:block;margin-top:6px;color:var(--muted);font-size:12px;line-height:1.55;overflow-wrap:anywhere}
+.chart{display:block;width:100%;height:auto;min-height:170px;margin:10px 0 14px;overflow:visible}
+#supportChart{min-height:145px}
+details{margin-top:14px;border:1px solid rgba(116,175,196,.19);border-radius:14px;background:rgba(4,17,28,.44);padding:14px}
+details>summary{cursor:pointer;font-weight:750;line-height:1.5}
+details>summary::marker{color:var(--aqua)}
+details[open]>summary{margin-bottom:12px;color:var(--aqua)}
+.compare-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.compare-mapbox{height:300px;min-height:260px;overflow:hidden;border:1px solid var(--edge);border-radius:12px;background:#071722}
+.compare-map-title{font-size:14px}
+.compare-controls{display:flex;gap:10px;flex-wrap:wrap}
+.compare-controls label{display:grid;gap:6px;min-width:min(100%,170px);flex:1}
+.scenario-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.scenario-grid label{display:grid;align-content:start;gap:7px;min-width:0;color:var(--muted);font-size:12px}
+.scenario-grid input{width:100%;min-width:0}
+.legend{margin:12px 0;color:var(--muted);font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+.legendbar{height:10px;margin-top:9px;border-radius:99px;border:1px solid rgba(255,255,255,.15)}
+.foot{margin:26px 0 0;padding:18px 0 8px;border-top:1px solid rgba(116,175,196,.18);color:#91aab9;font-size:12px;line-height:1.65}
+.run-readiness{margin:0 0 18px;padding:clamp(15px,1.7vw,23px);border:1px solid rgba(112,230,220,.2);border-radius:18px;background:linear-gradient(115deg,rgba(13,42,56,.95),rgba(8,24,36,.96));box-shadow:0 14px 34px rgba(0,0,0,.12)}
+.readiness-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:13px}
+.readiness-head h2{margin:6px 0 0}
+.readiness-intro{margin:8px 0 0;max-width:86ch;color:var(--muted);font-size:13px;line-height:1.6}
+.readiness-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.readiness-card{min-width:0;padding:14px;border:1px solid rgba(116,175,196,.19);border-radius:13px;background:rgba(3,16,26,.56)}
+.readiness-card .readiness-value{display:block;margin:8px 0 4px;color:var(--ink);font-size:clamp(18px,1.8vw,25px);font-weight:800;line-height:1.2;letter-spacing:-.025em;overflow-wrap:anywhere}
+.readiness-card p{margin:0;color:var(--muted);font-size:12px;line-height:1.6}
+.readiness-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:99px;background:rgba(255,207,120,.12);color:#ffdfa0;font-size:10px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+.readiness-badge.good{background:rgba(112,230,220,.12);color:#8af2e4}
+@media(max-width:1050px){main{padding:18px}.layout{grid-template-columns:minmax(0,1fr)}.layout>aside{grid-row:auto}.mapbox{height:clamp(340px,55svh,580px)}.readiness-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.compare-mapbox{height:280px}}
+@media(max-width:680px){main{padding:12px 10px 24px}header{align-items:flex-start;gap:13px;padding-bottom:18px}header>div:first-child{width:100%;max-width:none}header .controls{width:100%;justify-content:flex-start;gap:8px}h1{font-size:clamp(26px,7vw,34px)}.cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:14px 0}.card,.panel{padding:13px;border-radius:14px}.label{font-size:10px}.big{font-size:clamp(20px,6vw,27px);margin-top:7px}.layout{grid-template-columns:minmax(0,1fr);gap:12px}.maphead{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}.maphead .controls{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:9px}.maphead .controls label{display:grid;align-content:start;gap:5px;min-width:0}.maphead .controls label:first-child{grid-column:1/-1}.maphead .controls select{width:100%;max-width:none}.mapbox{height:54svh;min-height:320px;max-height:480px}.timeline{grid-template-columns:minmax(0,1fr);gap:9px}.timeline small{white-space:normal}.metriclist{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.metricitem{padding:10px}.metricitem strong{font-size:13px}.chart{min-height:155px}.compare-grid,.scenario-grid{grid-template-columns:minmax(0,1fr)}.compare-mapbox{height:260px;min-height:240px}.compare-controls{display:grid;grid-template-columns:minmax(0,1fr)}.compare-controls label{min-width:0}.readiness-grid{grid-template-columns:minmax(0,1fr)}.readiness-card{padding:12px}.run-readiness{border-radius:14px;padding:13px}.warn{padding:12px;font-size:13px}.foot{font-size:11px}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+"""
+
+DASHBOARD_MODES_CSS = r"""
+.sg-mode-navigation{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:20px 0 22px}
+.sg-mode-tab{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;column-gap:12px;row-gap:4px;min-width:0;min-height:78px;padding:15px 17px;border:1px solid rgba(135,190,207,.23);border-radius:15px;background:linear-gradient(145deg,rgba(15,39,54,.94),rgba(7,23,35,.96));color:var(--ink);text-align:left;cursor:pointer}
+.sg-mode-tab:hover{border-color:rgba(112,230,220,.65);background:linear-gradient(145deg,rgba(20,58,72,.98),rgba(8,28,41,.98))}
+.sg-mode-tab[aria-selected="true"]{border-color:rgba(112,230,220,.82);background:linear-gradient(135deg,rgba(17,67,78,.98),rgba(10,35,49,.98));box-shadow:inset 0 0 0 1px rgba(112,230,220,.12),0 12px 30px rgba(0,0,0,.18)}
+.sg-mode-number{grid-row:1 / span 2;display:grid;place-items:center;width:37px;height:37px;border:1px solid rgba(112,230,220,.32);border-radius:11px;background:rgba(112,230,220,.08);color:var(--aqua);font-size:12px;font-weight:850;letter-spacing:.04em}
+.sg-mode-title{display:block;min-width:0;font-size:14px;font-weight:850;letter-spacing:-.015em}
+.sg-mode-caption{display:block;min-width:0;color:var(--muted);font-size:11px;font-weight:500;line-height:1.4}
+.sg-dashboard-view{min-width:0;margin:0 0 24px;scroll-margin-top:18px}
+.sg-dashboard-view[hidden]{display:none!important}
+.sg-public-guide{margin:18px 0 0;padding:clamp(16px,2vw,24px);border:1px solid rgba(116,175,196,.22);border-radius:18px;background:linear-gradient(135deg,rgba(17,44,59,.95),rgba(8,24,36,.97));}
+.sg-public-guide h2{margin:5px 0 8px}
+.sg-public-guide-intro{max-width:82ch;margin:0 0 15px;color:var(--muted);font-size:13px;line-height:1.65}
+.sg-meaning-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.sg-meaning-card{min-width:0;padding:14px;border:1px solid rgba(116,175,196,.18);border-radius:13px;background:rgba(3,16,26,.53)}
+.sg-meaning-card strong{display:block;margin:0 0 6px;color:var(--ink);font-size:13px}
+.sg-meaning-card p{margin:0;color:var(--muted);font-size:12px;line-height:1.6}
+.sg-explore-grid{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(290px,.85fr);align-items:start;gap:16px}
+.sg-explore-grid>.panel{min-width:0}
+.sg-evidence-aside{display:grid;align-content:start;gap:11px}
+.sg-evidence-aside>.kicker{margin-top:2px}
+.sg-evidence-aside>h2{margin:0}
+.sg-evidence-aside>p{margin:0}
+.sg-evidence-aside>.metriclist{margin:4px 0 8px}
+.sg-evidence-aside>details{margin-top:2px}
+.sg-science-intro{margin:0 0 15px;padding:clamp(16px,1.8vw,22px);border:1px solid rgba(255,207,120,.28);border-left:3px solid var(--amber);border-radius:15px;background:linear-gradient(115deg,rgba(69,52,27,.35),rgba(10,28,40,.93))}
+.sg-science-intro h2{margin:5px 0 7px}
+.sg-science-intro p{max-width:100ch;margin:0;color:#d8e7ee;font-size:13px;line-height:1.7}
+.sg-science-panel{display:grid;gap:5px}
+.sg-science-panel>.candidate-section{margin-top:12px}
+.sg-science-panel>details{margin-top:8px}
+.sg-dashboard-view .panel{min-width:0}
+@media(max-width:1050px){.sg-explore-grid{grid-template-columns:minmax(0,1fr)}.sg-evidence-aside{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}.sg-evidence-aside>.kicker,.sg-evidence-aside>h2,.sg-evidence-aside>p,.sg-evidence-aside>#productMetrics{grid-column:1/-1}}
+@media(max-width:680px){.sg-mode-navigation{grid-template-columns:minmax(0,1fr);gap:8px;margin:13px 0 16px}.sg-mode-tab{grid-template-columns:34px minmax(0,1fr);min-height:64px;padding:10px 12px;border-radius:12px}.sg-mode-number{width:30px;height:30px;border-radius:9px}.sg-mode-title{font-size:13px}.sg-mode-caption{font-size:10px}.sg-meaning-grid{grid-template-columns:minmax(0,1fr)}.sg-public-guide{padding:14px;border-radius:14px}.sg-meaning-card{padding:12px}.sg-explore-grid{gap:11px}.sg-evidence-aside{grid-template-columns:minmax(0,1fr)}.sg-evidence-aside>.kicker,.sg-evidence-aside>h2,.sg-evidence-aside>p,.sg-evidence-aside>#productMetrics{grid-column:auto}}
+@media(prefers-reduced-motion:reduce){.sg-mode-tab{transition:none!important}}
+""";
+
+DASHBOARD_MODES_MARKUP = """
+<nav class="sg-mode-navigation" id="sgDashboardModes" role="tablist" aria-label="Choose a dashboard view">
+  <button class="sg-mode-tab" id="sgModePublic" type="button" role="tab" data-sg-mode="public" aria-controls="sgPublicView" aria-selected="true" tabindex="0">
+    <span class="sg-mode-number">01</span><span class="sg-mode-title">Public Discovery</span><span class="sg-mode-caption">Understand the result in plain language</span>
+  </button>
+  <button class="sg-mode-tab" id="sgModeEvidence" type="button" role="tab" data-sg-mode="evidence" aria-controls="sgEvidenceView" aria-selected="false" tabindex="-1">
+    <span class="sg-mode-number">02</span><span class="sg-mode-title">Explore the Evidence</span><span class="sg-mode-caption">Maps, real acquisition pairs and layers</span>
+  </button>
+  <button class="sg-mode-tab" id="sgModeScience" type="button" role="tab" data-sg-mode="science" aria-controls="sgScienceView" aria-selected="false" tabindex="-1">
+    <span class="sg-mode-number">03</span><span class="sg-mode-title">Scientific Evidence</span><span class="sg-mode-caption">Measurements, quality gates and provenance</span>
+  </button>
+</nav>
+""";
+
+DASHBOARD_MODES_SCRIPT = r"""<script id="sg-dashboard-modes-script">
+(function(){
+  function createElement(tag,className,textValue){
+    var node=document.createElement(tag);
+    if(className)node.className=className;
+    if(textValue!==undefined)node.textContent=textValue;
+    return node;
+  }
+  function setup(){
+    var root=document.querySelector('body > main')||document.querySelector('main');
+    var nav=document.getElementById('sgDashboardModes');
+    if(!root||!nav||nav.dataset.initialized==='true')return;
+    var quick=root.querySelector(':scope > .quick-panel');
+    var cards=root.querySelector(':scope > #summaryCards');
+    var readiness=root.querySelector(':scope > #sgRunReadiness');
+    var layout=root.querySelector(':scope > .layout');
+    var mapPanel=layout&&layout.querySelector(':scope > section.panel');
+    var sourceAside=layout&&layout.querySelector(':scope > aside.panel');
+    if(!quick||!cards||!layout||!mapPanel||!sourceAside){nav.remove();return;}
+
+    var notice=root.querySelector(':scope > .warn');
+    var header=root.querySelector(':scope > header');
+    if(notice)notice.after(nav);else if(header)header.after(nav);
+
+    var publicPage=createElement('section','sg-dashboard-view sg-public-view');
+    publicPage.id='sgPublicView';
+    publicPage.setAttribute('role','tabpanel');
+    publicPage.setAttribute('aria-labelledby','sgModePublic');
+    publicPage.append(quick,cards);
+    if(readiness)publicPage.append(readiness);
+
+    var guide=createElement('section','sg-public-guide');
+    guide.setAttribute('aria-labelledby','sgPublicGuideTitle');
+    guide.innerHTML='<div class="kicker">EVIDENCE BEFORE INTERPRETATION</div><h2 id="sgPublicGuideTitle">What can this result tell us?</h2><p class="sg-public-guide-intro">SARGuardian screens the whole drawn area without asking the user to guess where movement might be. Read each evidence state separately: a candidate is a review lead, a measurement needs valid scientific support, and a hazard is not confirmed by this dashboard.</p><div class="sg-meaning-grid"><article class="sg-meaning-card"><strong>01 · Candidate pattern</strong><p>A spatial SAR anomaly worth reviewing. It is not, by itself, measured ground movement or a confirmed landslide.</p></article><article class="sg-meaning-card"><strong>02 · Measured displacement</strong><p>A value is shown only when the source pixels, units, geometry, reference and quality checks support that measurement.</p></article><article class="sg-meaning-card"><strong>03 · Not assessed</strong><p>A withheld or unavailable result is not zero movement. It means the current observations did not support that analysis.</p></article></div>';
+    publicPage.append(guide);
+
+    var evidencePage=createElement('section','sg-dashboard-view sg-evidence-view');
+    evidencePage.id='sgEvidenceView';
+    evidencePage.setAttribute('role','tabpanel');
+    evidencePage.setAttribute('aria-labelledby','sgModeEvidence');
+    var evidenceGrid=createElement('div','sg-explore-grid');
+    var evidenceAside=createElement('aside','panel sg-evidence-aside');
+
+    var selectedKicker=sourceAside.querySelector(':scope > .kicker');
+    var productTitle=sourceAside.querySelector(':scope > #productTitle');
+    var productDescription=sourceAside.querySelector(':scope > #productDescription');
+    var productMetrics=sourceAside.querySelector(':scope > #productMetrics');
+    var directChildren=Array.prototype.slice.call(sourceAside.children);
+    var technicalBlock=directChildren.find(function(node){return node.querySelector&&node.querySelector('#productTechnicalMetrics');});
+    var productSelector=directChildren.find(function(node){return node.tagName==='LABEL'&&node.querySelector&&node.querySelector('#productSelect');});
+    var supportBlock=directChildren.find(function(node){return node.querySelector&&node.querySelector('#supportChart');});
+    [selectedKicker,productTitle,productDescription,productMetrics,technicalBlock,productSelector,supportBlock].forEach(function(node){
+      if(node)evidenceAside.append(node);
+    });
+
+    evidenceGrid.append(mapPanel,evidenceAside);
+    evidencePage.append(evidenceGrid);
+
+    var sciencePage=createElement('section','sg-dashboard-view sg-science-view');
+    sciencePage.id='sgScienceView';
+    sciencePage.setAttribute('role','tabpanel');
+    sciencePage.setAttribute('aria-labelledby','sgModeScience');
+    var scienceIntro=createElement('section','sg-science-intro');
+    scienceIntro.innerHTML='<div class="kicker">SCIENTIFIC REVIEW</div><h2>What the measurements support</h2><p>Processing PASS confirms structural and provenance checks, not independent geophysical accuracy. GUNW values are pairwise line-of-sight observations—not automatically cumulative or 3-D motion. GOFF offset anomalies are candidate patterns, not displacement velocity. Playback shows actual acquisitions; it does not interpolate or forecast.</p>';
+    sourceAside.classList.add('sg-science-panel');
+    sciencePage.append(scienceIntro,sourceAside);
+
+    layout.remove();
+    nav.after(publicPage,evidencePage,sciencePage);
+    nav.dataset.initialized='true';
+
+    var tabs=Array.prototype.slice.call(nav.querySelectorAll('[data-sg-mode]'));
+    var pages={public:publicPage,evidence:evidencePage,science:sciencePage};
+    function activate(mode,moveFocus){
+      if(!pages[mode])return;
+      Object.keys(pages).forEach(function(key){pages[key].hidden=key!==mode;});
+      tabs.forEach(function(tab){
+        var selected=tab.getAttribute('data-sg-mode')===mode;
+        tab.setAttribute('aria-selected',selected?'true':'false');
+        tab.tabIndex=selected?0:-1;
+        if(selected&&moveFocus)tab.focus();
+      });
+      document.body.setAttribute('data-sarguardian-view',mode);
+      if(mode==='evidence'){
+        window.dispatchEvent(new CustomEvent('sarguardian:dashboard-mode',{detail:{mode:mode}}));
+      }
+    }
+    tabs.forEach(function(tab){
+      tab.addEventListener('click',function(){activate(tab.getAttribute('data-sg-mode'),false);});
+    });
+    nav.addEventListener('keydown',function(event){
+      var current=tabs.indexOf(document.activeElement);
+      if(current<0)return;
+      var next=current;
+      if(event.key==='ArrowRight')next=(current+1)%tabs.length;
+      else if(event.key==='ArrowLeft')next=(current+tabs.length-1)%tabs.length;
+      else if(event.key==='Home')next=0;
+      else if(event.key==='End')next=tabs.length-1;
+      else return;
+      event.preventDefault();
+      var mode=tabs[next].getAttribute('data-sg-mode');
+      activate(mode,true);
+    });
+    activate('public',false);
+  }
+  if(document.readyState==='loading')setup();else setup();
+})();
+</script>""";
+
+DASHBOARD_READINESS_MARKUP = """
+<section class="run-readiness" id="sgRunReadiness" aria-label="Plain-language AOI scan summary" aria-live="polite">
+  <div class="readiness-head">
+    <div><div class="kicker">WHAT THIS RUN FOUND</div><h2>AOI scan summary</h2>
+      <p class="readiness-intro">This scan checks the whole drawn area. A target point is not required. The cards below separate usable observations, anomaly candidates and analyses that could not pass their science gates.</p>
+    </div>
+  </div>
+  <div class="readiness-grid" id="sgRunReadinessGrid"></div>
+</section>
+"""
+DASHBOARD_READINESS_SCRIPT = r"""<script id="sg-dashboard-readiness">
+(function(){
+  function text(node,value){node.textContent=String(value==null?"—":value);}
+  function mountReadiness(){
+    var manifest=window.SARGUARDIAN_DASHBOARD;
+    var root=document.getElementById("sgRunReadinessGrid");
+    if(!manifest||!root)return;
+    var obs=Array.isArray(manifest.observations)?manifest.observations:[];
+    var candidates=manifest.aoi_displacement_candidates||{};
+    var features=Array.isArray(candidates.features)?candidates.features:[];
+    var repeated=features.filter(function(f){return f&&f.properties&&f.properties.status==="REPEATED_SPATIAL_CANDIDATE";});
+    var single=features.filter(function(f){return f&&f.properties&&f.properties.status==="SINGLE_PAIR_CANDIDATE_UNCONFIRMED";});
+    var repeatedGoff=repeated.filter(function(f){return f.properties.product_type==="GOFF";}).length;
+    var repeatedGunw=repeated.filter(function(f){return f.properties.product_type==="GUNW";}).length;
+    var singleGoff=single.filter(function(f){return f.properties.product_type==="GOFF";}).length;
+    var singleGunw=single.filter(function(f){return f.properties.product_type==="GUNW";}).length;
+    var valid=obs.filter(function(p){return Number(p&&p.valid_pixels)>0;}).length;
+    var legacy=manifest.aoi_wide_displacement_screen||{};
+    var legacyCount=Number(legacy.candidate_count||0);
+    var pixel=manifest.aoi_relative_pixel_timeseries||{};
+    var networks=Array.isArray(pixel.networks)?pixel.networks:[];
+    var pixelStack=manifest.pixel_stack_diagnostic||{};
+    var noCompatibleStack=pixelStack.status==="WITHHELD_NO_COMPATIBLE_REPEATED_NETWORK";
+    var context=manifest.site_context||{},target=context.measurement_target||{};
+    var targetMeasured=obs.filter(function(p){var m=p&&p.metrics||{};return m.target_measurement_status==="MEASURED"&&(m.target_local_los_median_mm!=null||m.target_local_range_median_mm!=null||m.target_local_azimuth_median_mm!=null);}).length;
+    var targetFloors=obs.filter(function(p){var m=p&&p.metrics||{};return m.target_local_floor_status==="MEASURED"&&m.target_local_floor_mm_day!=null;}).length;
+    var targetRecorded=target.status==="IN_AOI_TARGET_CAPTURED";
+    var targetNote=targetRecorded
+      ?"A point was recorded, but only pairs marked MEASURED count. Missing local values are not zero motion."
+      :"No explicit measurement point was supplied. That is expected for Find Displacements: it scans the whole AOI without a target. Target-local values are optional. Not measured is not the same as zero motion.";
+    var validation=manifest.validation||{};
+    var pixelTimeSeriesValue=noCompatibleStack
+      ?"NOT TESTABLE — no compatible repeated GUNW network"
+      :String(pixel.status||"NOT REPORTED");
+    var pixelTimeSeriesNote=noCompatibleStack
+      ?String(pixelStack.interpretation||"The retained GUNW pairs did not form a compatible repeated measurement network. This is NOT TESTABLE, not NO DETECTION.")
+        +(pixel.status==="WITHHELD_SCIENCE_GATES"?" The separate AOI-wide inversion was also withheld: "+String(pixel.reason||"connected-network and common-reference gates were not met."):"")
+        +" This is a network-data limitation, not a missing target point."
+      :(pixel.status==="WITHHELD_SCIENCE_GATES"
+        ?"The "+networks.length+" strict geometry/sub-swath groups did not pass the connected/redundant network, common-pixel and reference-support gates. This is a network-data limitation, not a missing target point."
+        :String(pixel.reason||"Read the network gate and reference limitations before interpreting any derived velocity."));
+    var rows=[
+      {label:"Observation coverage",value:valid+" of "+obs.length+" products had usable pixels",note:(obs.length-valid)+" products had no usable raster pixels for this AOI. No usable pixels does not mean zero movement.",status:valid>0?"PARTLY AVAILABLE":"NOT AVAILABLE"},
+      {label:"Repeated anomaly fragments",value:repeated.length+" fragments",note:repeatedGoff+" GOFF offset fragments and "+repeatedGunw+" GUNW pairwise LOS fragments (not cumulative motion) recur in compatible pairs. These records are not unique places or confirmed moving slopes.",status:repeated.length?"CANDIDATES ONLY":"NONE AT SCREEN THRESHOLD"},
+      {label:"Single-pair anomaly fragments",value:single.length+" fragments",note:singleGoff+" GOFF and "+singleGunw+" GUNW records appeared in only one acquisition pair. They have weaker temporal support and are unconfirmed review leads.",status:single.length?"UNCONFIRMED":"NONE REPORTED"},
+      {label:"Separate legacy GOFF screen",value:legacyCount+" candidate regions",note:"This is a different GOFF-only method. It is not the same count as the "+features.length+" extended metric records and must not be added to them. Neither count is a count of unique landslides.",status:"SEPARATE RESULT"},
+      {label:"AOI-wide GUNW time-series",value:pixelTimeSeriesValue,note:pixelTimeSeriesNote,status:noCompatibleStack?"NOT TESTABLE":"SCIENCE GATES"},
+      {label:"Optional target-point measurements",value:targetMeasured+" of "+obs.length+" pairs measured · "+targetFloors+" local floors",note:targetNote,status:targetRecorded?"TARGET RECORDED":"NO POINT PROVIDED"},
+      {label:"Processing checks",value:(validation.products_validated||0)+" of "+(validation.products_expected||obs.length)+" products passed",note:"Structural and provenance checks only. Independent geophysical validation: "+String(validation.independent_geophysical_validation||"NOT REPORTED")+". A processing PASS is not proof of actual ground movement.",status:String(validation.processing_status||"NOT REPORTED")}
+    ];
+    root.replaceChildren();
+    rows.forEach(function(row){
+      var card=document.createElement("div");card.className="readiness-card";
+      var label=document.createElement("div");label.className="label";text(label,row.label);
+      var badge=document.createElement("span");badge.className="readiness-badge";text(badge,row.status);
+      var value=document.createElement("strong");value.className="readiness-value";text(value,row.value);
+      var note=document.createElement("p");text(note,row.note);
+      card.append(label,badge,value,note);root.append(card);
+    });
+    var summary=document.getElementById("summaryCards");
+    if(summary){
+      var cards=[
+        ["NISAR products",obs.length],
+        ["GUNW products",obs.filter(function(p){return p.product_type==="GUNW";}).length],
+        ["GOFF products",obs.filter(function(p){return p.product_type==="GOFF";}).length],
+        ["Products with usable pixels",valid],
+        ["Repeated anomaly fragments",repeated.length],
+        ["Single-pair fragments",single.length],
+        ["Legacy GOFF-only candidates",legacyCount]
+      ];
+      summary.replaceChildren();
+      cards.forEach(function(item){
+        var card=document.createElement("div");card.className="card";
+        var label=document.createElement("div");label.className="label";text(label,item[0]);
+        var value=document.createElement("div");value.className="big";text(value,item[1]);
+        card.append(label,value);summary.append(card);
+      });
+    }
+  }
+  if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",mountReadiness,{once:true});else mountReadiness();
+})();
+</script>
+"""
+
+
+
+DASHBOARD_NATIVE_MODE_SCRIPT = r"""<script id="sg-native-dashboard-mode-resize">
+(function(){
+  document.addEventListener('click',function(event){
+    var button=event.target&&event.target.closest?event.target.closest('[data-sg-mode]'):null;
+    if(!button||button.getAttribute('data-sg-mode')!=='evidence')return;
+    requestAnimationFrame(function(){
+      window.dispatchEvent(new CustomEvent('sarguardian:dashboard-mode',{detail:{mode:'evidence'}}));
+    });
+  });
+})();
+</script>"""
+
+
+def _apply_dashboard_presentation(html: str) -> str:
+
+    """Enhance an already verified dashboard document without changing its data."""
+    if "</head>" not in html or "</body>" not in html:
+        raise ValueError("Interactive dashboard HTML is missing its document boundaries.")
+    if 'name="referrer"' not in html:
+        html = html.replace("</head>", '<meta name="referrer" content="strict-origin-when-cross-origin"></head>', 1)
+
+    native_mode_controls = all(
+        f'data-sg-mode="{mode}"' in html for mode in ("public", "evidence", "science")
+    )
+    if "/* SARGuardian responsive science dashboard */" not in html:
+        mode_css = "" if native_mode_controls else DASHBOARD_MODES_CSS + "\n"
+        if "</style>" in html:
+            html = html.replace("</style>", "/* SARGuardian responsive science dashboard */\n" + DASHBOARD_PRESENTATION_CSS + "\n" + mode_css + "</style>", 1)
+        else:
+            html = html.replace("</head>", "<style>/* SARGuardian responsive science dashboard */\\n" + DASHBOARD_PRESENTATION_CSS + "\n" + mode_css + "</style></head>", 1)
+
+    if not native_mode_controls and "<main>" in html and 'id="sgDashboardModes"' not in html:
+        html = html.replace("<main>", "<main>\n" + DASHBOARD_MODES_MARKUP, 1)
+
+    cards_anchor = '<div class="cards" id="summaryCards"></div>'
+    if cards_anchor in html and 'id="sgRunReadiness"' not in html:
+        html = html.replace(cards_anchor, cards_anchor + DASHBOARD_READINESS_MARKUP, 1)
+
+    map_anchor = '<div id="map"></div>'
+    status_markup = '<div id="mapBasemapStatus" class="map-basemap-status hidden" role="status">Basemap tiles are blocked or unavailable. The georeferenced AOI and scientific raster overlays remain available on the map canvas.</div>'
+    if map_anchor in html and 'id="mapBasemapStatus"' not in html:
+        html = html.replace(map_anchor, map_anchor + status_markup, 1)
+
+    resize_hook = "let M=null,selected=0,playing=false,timer=null,activeLayer=null;"
+    resize_replacement = resize_hook + (
+        "window.addEventListener('sarguardian:dashboard-mode',function(event){"
+        "if(event&&event.detail&&event.detail.mode==='evidence'&&M){"
+        "requestAnimationFrame(function(){M.resize();});}});"
+    )
+    if resize_hook in html and "window.addEventListener('sarguardian:dashboard-mode'" not in html:
+        html = html.replace(resize_hook, resize_replacement, 1)
+
+    primary_hook = "M.addControl(new maplibregl.NavigationControl(),'top-right');M.on('load',function(){"
+    primary_replacement = (
+        "M.addControl(new maplibregl.NavigationControl(),'top-right');"
+        "let osmAccessErrors=0;M.on('error',function(event){"
+        "if(event&&event.sourceId==='osm'&&event.error&&[401,403,429].includes(event.error.status)){"
+        "osmAccessErrors++;if(osmAccessErrors>=2&&M.getLayer('osm')){M.removeLayer('osm');"
+        "if(M.getSource('osm'))M.removeSource('osm');"
+        "const status=document.getElementById('mapBasemapStatus');if(status)status.classList.remove('hidden');}}});"
+        "M.on('load',function(){"
+    )
+    if primary_hook in html and "let osmAccessErrors=0" not in html:
+        html = html.replace(primary_hook, primary_replacement, 1)
+
+    compare_hook = "map.addControl(new maplibregl.NavigationControl(),'top-right');\n map.on('load',function(){"
+    compare_replacement = (
+        "map.addControl(new maplibregl.NavigationControl(),'top-right');"
+        "let compareOsmAccessErrors=0;map.on('error',function(event){"
+        "if(event&&event.sourceId==='osm'&&event.error&&[401,403,429].includes(event.error.status)){"
+        "compareOsmAccessErrors++;if(compareOsmAccessErrors>=2&&map.getLayer('osm')){map.removeLayer('osm');"
+        "if(map.getSource('osm'))map.removeSource('osm');}}});"
+        "\n map.on('load',function(){"
+    )
+    if compare_hook in html and "let compareOsmAccessErrors=0" not in html:
+        html = html.replace(compare_hook, compare_replacement, 1)
+
+    if native_mode_controls:
+        scripts = ""
+        if 'id="sg-native-dashboard-mode-resize"' not in html:
+            scripts += DASHBOARD_NATIVE_MODE_SCRIPT
+        if 'id="sg-dashboard-readiness"' not in html:
+            scripts += DASHBOARD_READINESS_SCRIPT
+        if scripts:
+            html = html.replace("</body>", scripts + "</body>", 1)
+    elif 'id="sg-dashboard-modes-script"' not in html:
+        html = html.replace("</body>", DASHBOARD_MODES_SCRIPT + DASHBOARD_READINESS_SCRIPT + "</body>", 1)
+    elif 'id="sg-dashboard-readiness"' not in html:
+        html = html.replace("</body>", DASHBOARD_READINESS_SCRIPT + "</body>", 1)
+    return html
+
+
+DASHBOARD_GOOGLE_MAPS_ADAPTER_SCRIPT = r"""<script>
+window.SARGUARDIAN_GOOGLE_MAPS_ADAPTER = new Promise(function(resolve) {
+  var complete = false;
+  function unavailable(message) {
+    if (complete) return;
+    complete = true;
+    window.SARGUARDIAN_GOOGLE_MAPS_ERROR = message;
+    resolve({ Map: null, NavigationControl: function() {} });
+  }
+  var callbackName = "__sarguardianGoogleMapsLoaded";
+  window.gm_authFailure = function() {
+    window.SARGUARDIAN_GOOGLE_MAPS_ERROR = "Google Maps rejected the browser API key. Check Maps JavaScript API enablement and HTTP-referrer restrictions.";
+  };
+  window.addEventListener("securitypolicyviolation", function(event) {
+    var blocked = String(event.blockedURI || "");
+    if (/googleapis\.com|gstatic\.com|google\.com/i.test(blocked)
+        && !window.SARGUARDIAN_GOOGLE_MAPS_ERROR) {
+      window.SARGUARDIAN_GOOGLE_MAPS_ERROR =
+        "Google Maps was blocked by Content Security Policy (" + event.violatedDirective + ").";
+    }
+  });
+  var script = document.createElement("script");
+  script.src = "https://maps.googleapis.com/maps/api/js?key=__GOOGLE_MAPS_API_KEY__&v=weekly&loading=async&callback=" + callbackName;
+  script.async = true;
+  script.defer = true;
+  script.referrerPolicy = "origin";
+  // With loading=async, API readiness is signalled by the Google callback,
+  // not by the element's ordinary load event.
+  window[callbackName] = function() {
+    if (window.SARGUARDIAN_GOOGLE_MAPS_ERROR) {
+      unavailable(window.SARGUARDIAN_GOOGLE_MAPS_ERROR);
+      return;
+    }
+    if (!window.google || !google.maps || typeof google.maps.Map !== "function") {
+      unavailable("Google Maps callback ran but the Maps JavaScript API did not initialize.");
+      return;
+    }
+    if (complete) return;
+    complete = true;
+
+    function featuresFor(data) {
+      if (!data) return [];
+      if (data.type === "FeatureCollection") {
+        return Array.isArray(data.features)
+          ? data.features.filter(function(feature) { return feature && feature.geometry; })
+          : [];
+      }
+      if (data.type === "Feature") return data.geometry ? [data] : [];
+      return [{ type: "Feature", properties: {}, geometry: data }];
+    }
+    function geometryTypeFor(geometry) {
+      if (!geometry) return "";
+      return geometry.type === "MultiPolygon" ? "Polygon" : geometry.type;
+    }
+    function polygonPathGroups(geometry) {
+      if (!geometry) return [];
+      var polygons = geometry.type === "Polygon"
+        ? [geometry.coordinates || []]
+        : geometry.type === "MultiPolygon" ? (geometry.coordinates || []) : [];
+      return polygons.map(function(rings) {
+        return rings.map(function(ring) {
+          return ring.map(function(coord) {
+            return { lat: Number(coord[1]), lng: Number(coord[0]) };
+          }).filter(function(point) {
+            return Number.isFinite(point.lat) && Number.isFinite(point.lng);
+          });
+        }).filter(function(path) { return path.length >= 3; });
+      }).filter(function(paths) { return paths.length > 0; });
+    }
+    function pointFor(geometry) {
+      if (!geometry || geometry.type !== "Point" || !Array.isArray(geometry.coordinates)) return null;
+      return { lat: Number(geometry.coordinates[1]), lng: Number(geometry.coordinates[0]) };
+    }
+    function valueFor(expression, feature) {
+      if (!Array.isArray(expression)) return expression;
+      var operator = expression[0];
+      if (operator === "get") return (feature.properties || {})[expression[1]];
+      if (operator === "geometry-type") return geometryTypeFor(feature.geometry);
+      if (operator === "==") return valueFor(expression[1], feature) === valueFor(expression[2], feature);
+      if (operator === "!=") return valueFor(expression[1], feature) !== valueFor(expression[2], feature);
+      if (operator === "!") return !valueFor(expression[1], feature);
+      if (operator === "all") return expression.slice(1).every(function(item) { return Boolean(valueFor(item, feature)); });
+      if (operator === "any") return expression.slice(1).some(function(item) { return Boolean(valueFor(item, feature)); });
+      if (operator === "case") {
+        for (var index = 1; index < expression.length - 1; index += 2) {
+          if (Boolean(valueFor(expression[index], feature))) return valueFor(expression[index + 1], feature);
+        }
+        return valueFor(expression[expression.length - 1], feature);
+      }
+      return undefined;
+    }
+    function matchesFilter(filter, feature) {
+      if (!Array.isArray(filter) || !filter.length) return true;
+      if (filter[0] === "==") return valueFor(filter[1], feature) === valueFor(filter[2], feature);
+      if (filter[0] === "!=") return valueFor(filter[1], feature) !== valueFor(filter[2], feature);
+      if (filter[0] === "all") return filter.slice(1).every(function(item) { return matchesFilter(item, feature); });
+      if (filter[0] === "any") return filter.slice(1).some(function(item) { return matchesFilter(item, feature); });
+      if (filter[0] === "!") return !matchesFilter(filter[1], feature);
+      return false;
+    }
+    function paintValue(value, feature, fallback) {
+      var resolved = valueFor(value, feature);
+      return resolved === undefined || resolved === null ? fallback : resolved;
+    }
+    function boundsForCorners(corners) {
+      if (!Array.isArray(corners) || corners.length < 4) return null;
+      var lngs = corners.map(function(p) { return Number(p[0]); });
+      var lats = corners.map(function(p) { return Number(p[1]); });
+      if (lngs.some(function(v) { return !Number.isFinite(v); }) || lats.some(function(v) { return !Number.isFinite(v); })) return null;
+      return { west: Math.min.apply(null, lngs), east: Math.max.apply(null, lngs), south: Math.min.apply(null, lats), north: Math.max.apply(null, lats) };
+    }
+    class GoogleMapCompatibilityAdapter {
+      constructor(options) {
+        this.container = typeof options.container === "string" ? document.getElementById(options.container) : options.container;
+        if (!this.container) throw new Error("Google Maps container was not found.");
+        this.sources = new globalThis.Map();
+        this.layers = new globalThis.Map();
+        this.handlers = new globalThis.Map();
+        this.layerHandlers = new globalThis.Map();
+        this.isLoaded = false;
+        var center = Array.isArray(options.center) ? { lat: Number(options.center[1]), lng: Number(options.center[0]) } : (options.center || { lat: 0, lng: 0 });
+        this.map = new google.maps.Map(this.container, {
+          center: center,
+          zoom: Number(options.zoom) || 2,
+          mapTypeId: google.maps.MapTypeId.TERRAIN,
+          mapTypeControl: true,
+          mapTypeControlOptions: { style: google.maps.MapTypeControlStyle.DROPDOWN_MENU },
+          fullscreenControl: false,
+          streetViewControl: false,
+          zoomControl: true,
+          clickableIcons: false,
+          backgroundColor: "#071722",
+          controlSize: 28,
+          styles: [
+            { elementType: "labels.text.fill", stylers: [{ color: "#d9e7ed" }] },
+            { elementType: "labels.text.stroke", stylers: [{ color: "#132c3a" }, { weight: 3 }] },
+            { featureType: "water", elementType: "geometry", stylers: [{ color: "#102d42" }] }
+          ]
+        });
+        var self = this;
+        google.maps.event.addListenerOnce(this.map, "idle", function() {
+          self.isLoaded = true;
+          self.emit("load");
+        });
+        google.maps.event.addListener(this.map, "idle", function() { self.emit("move"); });
+      }
+      emit(name, payload) {
+        (this.handlers.get(name) || []).slice().forEach(function(callback) {
+          try { callback(payload); } catch (error) { console.error("Dashboard map callback failed.", error); }
+        });
+      }
+      layerHandlerKey(name, layerId) { return String(name) + "|" + String(layerId); }
+      attachLayerHandler(entry, name, callback) {
+        if (name !== "click") return;
+        entry.overlays.forEach(function(item) {
+          if (!item.overlay || typeof item.overlay.addListener !== "function" || !item.feature) return;
+          var listener = item.overlay.addListener("click", function(event) {
+            var position = event && event.latLng;
+            var lat = position && typeof position.lat === "function" ? position.lat() : Number(position && position.lat);
+            var lng = position && typeof position.lng === "function" ? position.lng() : Number(position && position.lng);
+            callback({
+              type: "click",
+              target: entry,
+              features: [item.feature],
+              lngLat: { lng: lng, lat: lat },
+              originalEvent: event && (event.domEvent || event)
+            });
+          });
+          entry.listeners.push(listener);
+        });
+      }
+      on(name, layerIdOrCallback, callback) {
+        if (typeof layerIdOrCallback === "function") {
+          var callbacks = this.handlers.get(name) || [];
+          callbacks.push(layerIdOrCallback);
+          this.handlers.set(name, callbacks);
+          if (name === "load" && this.isLoaded) Promise.resolve().then(layerIdOrCallback);
+          return this;
+        }
+        var layerId = String(layerIdOrCallback);
+        var key = this.layerHandlerKey(name, layerId);
+        var layerCallbacks = this.layerHandlers.get(key) || [];
+        layerCallbacks.push(callback);
+        this.layerHandlers.set(key, layerCallbacks);
+        var entry = this.layers.get(layerId);
+        if (entry) this.attachLayerHandler(entry, name, callback);
+        return this;
+      }
+      addControl() { /* Native Google Maps controls are enabled in the map options. */ }
+      addSource(id, source) { this.sources.set(id, source); return this; }
+      getSource(id) { return this.sources.get(id); }
+      removeSource(id) { this.sources.delete(id); return this; }
+      getLayer(id) { return this.layers.get(id); }
+      removeLayer(id) {
+        var layer = this.layers.get(id);
+        if (!layer) return this;
+        layer.listeners.forEach(function(listener) {
+          if (listener && typeof listener.remove === "function") listener.remove();
+        });
+        layer.overlays.forEach(function(item) {
+          if (item.overlay && typeof item.overlay.setMap === "function") item.overlay.setMap(null);
+        });
+        this.layers.delete(id);
+        return this;
+      }
+      addLayer(spec) {
+        var source = this.sources.get(spec.source);
+        if (!source) throw new Error("Dashboard layer source is missing: " + spec.source);
+        var paint = spec.paint || {};
+        var visible = !(spec.layout && spec.layout.visibility === "none");
+        var overlays = [];
+        if (spec.type === "raster") {
+          var imageBounds = boundsForCorners(source.coordinates);
+          if (imageBounds && source.url) {
+            overlays.push({
+              overlay: new google.maps.GroundOverlay(source.url, imageBounds, {
+                opacity: Number.isFinite(Number(paint["raster-opacity"])) ? Number(paint["raster-opacity"]) : 0.82,
+                clickable: false
+              }),
+              feature: null
+            });
+          }
+        } else {
+          featuresFor(source.data).forEach(function(feature) {
+            if (!matchesFilter(spec.filter, feature)) return;
+            if (spec.type === "fill" || spec.type === "line") {
+              polygonPathGroups(feature.geometry).forEach(function(paths) {
+                var fillOpacity = Number(paint["fill-opacity"]);
+                var strokeWeight = Number(paint["line-width"]);
+                var overlay = new google.maps.Polygon({
+                  paths: paths,
+                  clickable: spec.type === "fill",
+                  geodesic: false,
+                  fillColor: paintValue(paint["fill-color"], feature, "#66e2d3"),
+                  fillOpacity: Number.isFinite(fillOpacity) ? fillOpacity : (spec.type === "fill" ? 0.08 : 0),
+                  strokeColor: paintValue(paint["line-color"], feature, "#66e2d3"),
+                  strokeOpacity: spec.type === "line" ? 0.95 : 0,
+                  strokeWeight: Number.isFinite(strokeWeight) ? strokeWeight : (spec.type === "line" ? 2 : 0),
+                  zIndex: spec.type === "line" ? 30 : 10
+                });
+                overlays.push({ overlay: overlay, feature: feature });
+              });
+            } else if (spec.type === "circle") {
+              var point = pointFor(feature.geometry);
+              if (point && Number.isFinite(point.lat) && Number.isFinite(point.lng)) {
+                overlays.push({
+                  overlay: new google.maps.Marker({
+                    position: point,
+                    clickable: false,
+                    zIndex: 50,
+                    icon: {
+                      path: google.maps.SymbolPath.CIRCLE,
+                      scale: Math.max(3, Number(paint["circle-radius"]) || 6),
+                      fillColor: paintValue(paint["circle-color"], feature, "#f7c76b"),
+                      fillOpacity: 1,
+                      strokeColor: paintValue(paint["circle-stroke-color"], feature, "#ffffff"),
+                      strokeWeight: Number(paint["circle-stroke-width"]) || 1.5
+                    }
+                  }),
+                  feature: feature
+                });
+              }
+            }
+          });
+        }
+        var entry = { id: spec.id, spec: spec, source: source, overlays: overlays, listeners: [], visible: visible };
+        this.layers.set(spec.id, entry);
+        entry.overlays.forEach(function(item) {
+          if (item.overlay && typeof item.overlay.setMap === "function") item.overlay.setMap(visible ? this.map : null);
+        }, this);
+        var self = this;
+        (this.layerHandlers.get(this.layerHandlerKey("click", spec.id)) || []).forEach(function(handler) {
+          self.attachLayerHandler(entry, "click", handler);
+        });
+        return entry;
+      }
+      setLayoutProperty(id, property, value) {
+        var layer = this.layers.get(id);
+        if (!layer || property !== "visibility") return this;
+        layer.visible = value !== "none";
+        layer.overlays.forEach(function(item) {
+          if (item.overlay && typeof item.overlay.setMap === "function") item.overlay.setMap(layer.visible ? this.map : null);
+        }, this);
+        return this;
+      }
+      setPaintProperty(id, property, value) {
+        var layer = this.layers.get(id);
+        if (!layer) return this;
+        if (property === "raster-opacity") {
+          layer.overlays.forEach(function(item) {
+            if (item.overlay && typeof item.overlay.setOpacity === "function") item.overlay.setOpacity(Math.max(0, Math.min(1, Number(value))));
+          });
+        }
+        return this;
+      }
+      moveLayer() {
+        // Google Maps uses overlay zIndex/insertion order rather than MapLibre layer order.
+        return this;
+      }
+      fitBounds(bounds, options) {
+        if (!Array.isArray(bounds) || bounds.length < 2) return;
+        var west = Number(bounds[0][0]), south = Number(bounds[0][1]);
+        var east = Number(bounds[1][0]), north = Number(bounds[1][1]);
+        if (![west, south, east, north].every(Number.isFinite)) return;
+        this.map.fitBounds(new google.maps.LatLngBounds({ south: south, west: west, north: north, east: east }), options && options.padding !== undefined ? options.padding : 48);
+        var maxZoom = options && Number(options.maxZoom);
+        if (Number.isFinite(maxZoom) && maxZoom > 0) {
+          var self = this;
+          google.maps.event.addListenerOnce(this.map, "idle", function() {
+            var zoom = self.map.getZoom();
+            if (Number.isFinite(zoom) && zoom > maxZoom) self.map.setZoom(maxZoom);
+          });
+        }
+      }
+      getCenter() { return this.map.getCenter(); }
+      getZoom() { return this.map.getZoom() || 2; }
+      getBearing() { return this.map.getHeading() || 0; }
+      getPitch() { return this.map.getTilt() || 0; }
+      loaded() { return this.isLoaded; }
+      isStyleLoaded() { return this.isLoaded; }
+      jumpTo(options) {
+        options = options || {};
+        var center = options.center;
+        if (Array.isArray(center)) center = { lat: Number(center[1]), lng: Number(center[0]) };
+        var current = this.map.getCenter();
+        var changed = false;
+        if (center && current) {
+          var lat = typeof center.lat === "function" ? center.lat() : Number(center.lat);
+          var lng = typeof center.lng === "function" ? center.lng() : Number(center.lng);
+          if (Number.isFinite(lat) && Number.isFinite(lng) && (Math.abs(current.lat() - lat) > 1e-6 || Math.abs(current.lng() - lng) > 1e-6)) changed = true;
+          if (changed) options.center = { lat: lat, lng: lng };
+        }
+        if (Number.isFinite(Number(options.zoom)) && Math.abs((this.map.getZoom() || 0) - Number(options.zoom)) > 1e-3) changed = true;
+        if (changed) {
+          var settings = {};
+          if (options.center) settings.center = options.center;
+          if (Number.isFinite(Number(options.zoom))) settings.zoom = Number(options.zoom);
+          this.map.setOptions(settings);
+        }
+      }
+      resize() {
+        var center = this.map.getCenter();
+        google.maps.event.trigger(this.map, "resize");
+        if (center) this.map.setCenter(center);
+      }
+    }
+    class GoogleMapsPopupCompatibilityAdapter {
+      constructor(options) {
+        this.options = options || {};
+        this.infoWindow = new google.maps.InfoWindow(
+          this.options.maxWidth ? { maxWidth: Number(this.options.maxWidth) } : {}
+        );
+        this.position = null;
+      }
+      setLngLat(position) {
+        var lat = Array.isArray(position) ? Number(position[1])
+          : (position && typeof position.lat === "function" ? position.lat() : Number(position && position.lat));
+        var lng = Array.isArray(position) ? Number(position[0])
+          : (position && typeof position.lng === "function" ? position.lng() : Number(position && position.lng));
+        if (Number.isFinite(lat) && Number.isFinite(lng)) this.position = { lat: lat, lng: lng };
+        return this;
+      }
+      setHTML(html) {
+        this.infoWindow.setContent(String(html == null ? "" : html));
+        return this;
+      }
+      addTo(mapAdapter) {
+        var targetMap = mapAdapter && mapAdapter.map ? mapAdapter.map : mapAdapter;
+        if (targetMap && this.position) {
+          this.infoWindow.setPosition(this.position);
+          this.infoWindow.open({ map: targetMap });
+        }
+        return this;
+      }
+      remove() {
+        this.infoWindow.close();
+        return this;
+      }
+    }
+    resolve({ Map: GoogleMapCompatibilityAdapter, NavigationControl: function() {}, Popup: GoogleMapsPopupCompatibilityAdapter });
+  };
+  script.onerror = function() {
+    unavailable(window.SARGUARDIAN_GOOGLE_MAPS_ERROR
+      || "Google Maps script request failed. Check network access, CSP, Maps JavaScript API enablement, API-key restrictions, and allowed website referrers.");
+  };
+  document.head.appendChild(script);
+});
+</script>"""
+
+
+
+def _apply_google_maps_dashboard(html: str, google_maps_api_key: str) -> str:
+    """Use the AOI workspace's Google Maps API while retaining georeferenced science overlays."""
+    static_import = "import * as maplibregl from 'https://unpkg.com/maplibre-gl@6.16.0/dist/maplibre-gl.mjs';"
+    dynamic_import = re.compile(
+        r"let maplibregl = null;\s*try\s*\{\s*"
+        r"maplibregl = await import\('https://unpkg\.com/maplibre-gl@6\.16\.0/dist/maplibre-gl\.mjs'\);\s*"
+        r"\}\s*catch\s*\(error\)\s*\{\s*"
+        r"console\.warn\('SARGuardian map library unavailable; science panels remain available\.', error\);\s*\}\s*"
+    )
+    adapter_import = "const maplibregl = await window.SARGUARDIAN_GOOGLE_MAPS_ADAPTER;"
+
+    if static_import in html:
+        html = html.replace(static_import, adapter_import, 1)
+    else:
+        html, replaced = dynamic_import.subn(adapter_import + "\n", html, count=1)
+        if replaced != 1:
+            raise ValueError("Interactive dashboard does not match the supported Google Maps migration contract.")
+
+    html = html.replace('<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@6.16.0/dist/maplibre-gl.css">', "")
+    html = html.replace("https://tile.openstreetmap.org/{z}/{x}/{y}.png", "")
+    html = html.replace("© OpenStreetMap contributors.", "Google Maps basemap.")
+    html = html.replace(
+        "The processing report and georeferenced assets remain in this bundle; the basemap/MapLibre library requires an internet connection.",
+        "Google Maps could not load. Check API access and allowed referrers; the processing report and georeferenced assets remain available.",
+    )
+    html = html.replace(
+        "Basemap tiles are blocked or unavailable. The georeferenced AOI and scientific raster overlays remain available on the map canvas.",
+        "Google Maps is unavailable. The georeferenced AOI and scientific raster overlays remain available on the map canvas.",
+    )
+    html = html.replace('content="strict-origin-when-cross-origin"', 'content="origin"')
+    html = html.replace(
+        "script-src 'unsafe-inline' https://unpkg.com;",
+        "script-src 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://*.googleapis.com https://*.gstatic.com *.google.com https://*.ggpht.com *.googleusercontent.com blob:;",
+    )
+    html = html.replace(
+        "style-src 'unsafe-inline' https://unpkg.com;",
+        "style-src 'unsafe-inline' https://unpkg.com https://fonts.googleapis.com https://*.googleapis.com https://*.gstatic.com;",
+    )
+    if "https://maps.googleapis.com/maps/api/js?key=" not in html:
+        module_marker = '<script type="module">'
+        if module_marker not in html:
+            raise ValueError("Interactive dashboard has no JavaScript module entry point.")
+        adapter_script = DASHBOARD_GOOGLE_MAPS_ADAPTER_SCRIPT.replace("__GOOGLE_MAPS_API_KEY__", google_maps_api_key)
+        html = html.replace(module_marker, adapter_script + "\n" + module_marker, 1)
+    # Surface a safe loader/CSP diagnostic in the dashboard instead of hiding it
+    # behind the original static MapLibre fallback text.
+    old_fallback = "function addFallback(){ $('mapFallback').classList.remove('hidden'); }"
+    new_fallback = (
+        "function addFallback(){var fallback=$('mapFallback');fallback.classList.remove('hidden');"
+        "var detail=fallback.querySelector('p');"
+        "if(detail&&window.SARGUARDIAN_GOOGLE_MAPS_ERROR)"
+        "detail.textContent=window.SARGUARDIAN_GOOGLE_MAPS_ERROR;}"
+    )
+    html = html.replace(old_fallback, new_fallback, 1)
+    return html
+
+
+@app.get("/api/displacement-jobs/{job_id}/dashboard")
+def get_displacement_dashboard(
+    job_id: UUID,
+    google_maps_api_key: str | None = Header(default=None, alias="X-SARGuardian-Google-Maps-Key"),
+    user: dict = Depends(get_current_user),
+) -> Response:
+    """Return the verified owner's dashboard shell and lazy, private raster URLs.
+
+    The signed Drive bundle is checksum-verified before its viewer and manifest
+    are read. Preview PNGs remain separate ZIP entries and are served on demand
+    through short-lived HMAC tickets; they are never base64-inlined into HTML.
+    """
+    owner_uid = _required_owner_uid(user)
+    try:
+        record = _require_store().get_displacement_job(owner_uid, job_id)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not read the requested interactive dashboard.") from None
+    if not record:
+        raise HTTPException(status_code=404, detail="Processing job was not found for this account.")
+    if record.get("state") != JobState.SUCCEEDED.value:
+        raise HTTPException(status_code=409, detail="The interactive dashboard is available only after processing succeeds.")
+
+    result_summary = record.get("result_summary")
+    dashboard_status = result_summary.get("web_dashboard") if isinstance(result_summary, dict) else None
+    if not isinstance(dashboard_status, dict) or dashboard_status.get("status") != "PASS":
+        raise HTTPException(status_code=404, detail="This result package does not include a validated interactive dashboard. Re-run processing after dashboard support is enabled.")
+
+    artifacts = result_summary.get("artifacts") if isinstance(result_summary, dict) else None
+    if not _valid_private_artifacts(artifacts):
+        raise HTTPException(status_code=404, detail="A verified dashboard result bundle was not found.")
+    matches = [item for item in artifacts if item.get("path") == "aoi-derived-results.zip"]
+    if len(matches) != 1:
+        raise HTTPException(status_code=404, detail="A unique verified dashboard result bundle was not found.")
+    artifact = matches[0]
+    if artifact["bytes"] > MAX_DASHBOARD_ARCHIVE_BYTES:
+        raise HTTPException(status_code=413, detail="This dashboard bundle is too large to retrieve safely. Download the result package instead.")
+    if not isinstance(google_maps_api_key, str):
+        raise HTTPException(
+            status_code=503,
+            detail="Google Maps is not configured. Check VITE_GOOGLE_MAPS_API_KEY in the frontend deployment.",
+        )
+    google_maps_api_key = google_maps_api_key.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{20,256}", google_maps_api_key):
+        raise HTTPException(
+            status_code=503,
+            detail="Google Maps is not configured. Check VITE_GOOGLE_MAPS_API_KEY in the frontend deployment.",
+        )
+
+    # Reuse the private, checksum-verified archive cache on viewer retries.
+    # A cache miss downloads the Drive object once and verifies its full SHA-256.
+    archive_path = _get_cached_dashboard_archive(job_id, artifact)
+    try:
+        with ZipFile(archive_path, "r") as archive:
+            names = archive.namelist()
+            if len(names) > 20_000:
+                raise HTTPException(status_code=413, detail="Dashboard bundle contains too many files.")
+            for name in names:
+                item_path = PurePosixPath(name)
+                if name.startswith("/") or "\\" in name or ".." in item_path.parts or "\x00" in name:
+                    raise HTTPException(status_code=409, detail="Dashboard bundle contains an unsafe archive path.")
+            if names.count(DASHBOARD_VIEWER_PATH) != 1 or names.count(DASHBOARD_MANIFEST_PATH) != 1:
+                raise HTTPException(status_code=404, detail="The result package does not contain the required interactive dashboard assets.")
+            html_info = archive.getinfo(DASHBOARD_VIEWER_PATH)
+            manifest_info = archive.getinfo(DASHBOARD_MANIFEST_PATH)
+            if html_info.file_size > MAX_DASHBOARD_HTML_BYTES:
+                raise HTTPException(status_code=413, detail="Dashboard viewer exceeds the safe browser-viewing size.")
+            if manifest_info.file_size > MAX_DASHBOARD_SOURCE_MANIFEST_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail="The source dashboard manifest exceeds the bounded server extraction size. The saved analysis is unchanged; download the original result package.",
+                )
+            html = archive.read(html_info).decode("utf-8")
+            manifest = json.loads(archive.read(manifest_info).decode("utf-8"))
+            if not isinstance(manifest, dict) or not isinstance(manifest.get("layers"), list):
+                raise HTTPException(status_code=409, detail="Dashboard manifest does not match the supported layer contract.")
+    except HTTPException:
+        raise
+    except (BadZipFile, KeyError, UnicodeDecodeError, json.JSONDecodeError, OSError):
+        raise HTTPException(status_code=409, detail="Stored result bundle does not contain a readable dashboard manifest.") from None
+
+    settings = get_settings()
+    asset_ticket = _create_dashboard_asset_ticket(
+        job_id, artifact["sha256"], owner_uid, settings.displacement_callback_secret,
+    )
+
+    layer_urls: dict[str, str] = {}
+    for layer in manifest["layers"]:
+        if not isinstance(layer, dict):
+            raise HTTPException(status_code=409, detail="Dashboard manifest contains an invalid raster layer.")
+        layer_id = layer.get("id")
+        preview_asset = layer.get("preview_asset")
+        if not isinstance(layer_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", layer_id):
+            raise HTTPException(status_code=409, detail="Dashboard manifest contains an invalid raster layer ID.")
+        asset_path = PurePosixPath(str(preview_asset or ""))
+        if (asset_path.is_absolute() or len(asset_path.parts) != 2 or asset_path.parts[0] != "layers"
+                or asset_path.suffix.lower() != ".png" or ".." in asset_path.parts
+                or asset_path.name != layer_id + ".png" or "\\" in str(preview_asset)):
+            raise HTTPException(status_code=409, detail="Dashboard manifest contains an unsafe raster asset path.")
+        if layer_id in layer_urls:
+            raise HTTPException(status_code=409, detail="Dashboard manifest contains duplicate raster layer IDs.")
+        layer_urls[layer_id] = (
+            "__SARGUARDIAN_API_BASE__/api/displacement-jobs/" + str(job_id)
+            + "/dashboard-assets/" + asset_path.as_posix() + "?ticket=" + asset_ticket
+        )
+
+    data_marker = '<script src="./dashboard-data.js"></script>'
+    if html.count(data_marker) != 1:
+        raise HTTPException(status_code=409, detail="Dashboard viewer does not match the supported external-data contract.")
+    manifest_blob, candidate_overlay_compacted, browser_screen = _serialize_dashboard_manifest_for_browser(manifest)
+    manifest_blob = manifest_blob.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    layer_blob = json.dumps(layer_urls, separators=(",", ":"), allow_nan=False)
+    embedded_data = (
+        "<script>\nwindow.SARGUARDIAN_DASHBOARD=" + manifest_blob
+        + ";\nwindow.SARGUARDIAN_LAYER_DATA=" + layer_blob + ";\n</script>"
+    )
+    html = html.replace(data_marker, embedded_data, 1)
+    html = html.replace(
+        '<a href="../index.html" style="color:var(--aqua);padding:9px">Processing report ↗</a>',
+        '<span style="color:var(--aqua);padding:9px">Verified research dashboard</span>',
+    )
+    csp = "default-src 'self' https: data: blob:; script-src 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://*.googleapis.com https://*.gstatic.com *.google.com https://*.ggpht.com *.googleusercontent.com blob:; style-src 'unsafe-inline' https://unpkg.com https://fonts.googleapis.com https://*.googleapis.com https://*.gstatic.com; img-src data: https://*.googleapis.com https://*.gstatic.com *.google.com *.googleusercontent.com https: blob:; connect-src https: data: blob:; frame-src *.google.com; worker-src blob:; font-src https://fonts.gstatic.com https://fonts.googleapis.com data:;"
+    meta = '<meta http-equiv="Content-Security-Policy" content="' + csp + '">'
+    if "<head>" not in html:
+        raise HTTPException(status_code=409, detail="Dashboard viewer has no HTML head section.")
+    html = html.replace("<head>", "<head>" + meta, 1)
+    html = _apply_dashboard_presentation(html)
+    html = _apply_google_maps_dashboard(html, google_maps_api_key)
+    screen = browser_screen
+    displayed = screen.get("candidate_features_displayed", 0)
+    total = screen.get("candidate_features_total", displayed)
+    note = (
+        f'<aside role="note" style="margin:18px auto;max-width:1200px;padding:12px 16px;'
+        f'border:1px solid rgba(255,207,120,.42);border-radius:12px;'
+        f'background:#2a2115;color:#ffe7b2;font:12px/1.6 system-ui">'
+        f'Browser-view note: {displayed} of {total} AOI-wide candidate region(s) are shown. '
+        f'The interactive viewer receives a compact display manifest; full pair-level screening receipts, '
+        f'detailed science diagnostics, source GeoJSON and native scientific artifacts remain in the '
+        f'checksum-verified saved result ZIP. This does not change the saved scientific analysis.</aside>'
+    )
+    html = html.replace("</body>", note + "</body>", 1) if "</body>" in html else html + note
+    # Stream the bounded viewer shell and manifest to stay within Vercel's 4.5 MiB buffered-response limit.
+    return StreamingResponse(_iter_response_bytes(html.encode("utf-8")), media_type="text/html", headers={
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "origin",
+    })
+
+
+@app.get("/api/displacement-jobs/{job_id}/dashboard-assets/{asset_path:path}")
+def get_displacement_dashboard_asset(job_id: UUID, asset_path: str, ticket: str) -> Response:
+    """Serve one private PNG preview using a short-lived, job-scoped capability."""
+    settings = get_settings()
+    claims = _read_dashboard_asset_ticket(ticket, settings.displacement_callback_secret)
+    if not claims or claims.get("job") != str(job_id):
+        raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
+
+    safe_asset_path = PurePosixPath(asset_path)
+    if (safe_asset_path.is_absolute() or len(safe_asset_path.parts) != 2
+            or safe_asset_path.parts[0] != "layers" or safe_asset_path.suffix.lower() != ".png"
+            or ".." in safe_asset_path.parts or "\\" in asset_path or "\x00" in asset_path):
+        raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
+
+    try:
+        record = _require_store().get_displacement_job_unscoped(job_id)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not verify the saved dashboard asset.") from None
+    if not record or record.get("state") != JobState.SUCCEEDED.value:
+        raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
+    owner_uid = record.get("owner_uid")
+    if not isinstance(owner_uid, str) or not hmac.compare_digest(
+        hashlib.sha256(owner_uid.encode("utf-8")).hexdigest(), claims["owner"],
+    ):
+        raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
+
+    summary = record.get("result_summary")
+    dashboard_status = summary.get("web_dashboard") if isinstance(summary, dict) else None
+    artifacts = summary.get("artifacts") if isinstance(summary, dict) else None
+    if not isinstance(dashboard_status, dict) or dashboard_status.get("status") != "PASS":
+        raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
+    if not _valid_private_artifacts(artifacts):
+        raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
+    matches = [
+        item for item in artifacts
+        if item.get("path") == "aoi-derived-results.zip" and item.get("sha256") == claims["digest"]
+    ]
+    if len(matches) != 1 or matches[0].get("bytes", 0) > MAX_DASHBOARD_ARCHIVE_BYTES:
+        raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
+    artifact = matches[0]
+
+    archive_path = _get_cached_dashboard_archive(job_id, artifact)
+    archive_name = "web-dashboard/" + safe_asset_path.as_posix()
+    archive: ZipFile | None = None
+    asset_stream = None
+    try:
+        archive = ZipFile(archive_path, "r")
+        if archive.namelist().count(archive_name) != 1:
+            raise HTTPException(status_code=404, detail="Dashboard asset was not found.")
+        asset_info = archive.getinfo(archive_name)
+        if asset_info.file_size <= 8 or asset_info.file_size > MAX_DASHBOARD_PREVIEW_BYTES:
+            raise HTTPException(status_code=413, detail="Dashboard raster preview exceeds the safe image size.")
+        asset_stream = archive.open(asset_info, "r")
+        signature = asset_stream.read(8)
+        if signature != b"\x89PNG\r\n\x1a\n":
+            raise HTTPException(status_code=409, detail="Dashboard raster asset is not a valid PNG preview.")
+    except HTTPException:
+        if asset_stream is not None:
+            asset_stream.close()
+        if archive is not None:
+            archive.close()
+        raise
+    except (BadZipFile, KeyError, OSError):
+        if asset_stream is not None:
+            asset_stream.close()
+        if archive is not None:
+            archive.close()
+        raise HTTPException(status_code=409, detail="Stored dashboard raster asset is unreadable.") from None
+
+    def stream_preview():
+        try:
+            yield signature
+            while chunk := asset_stream.read(256 * 1024):
+                yield chunk
+        finally:
+            asset_stream.close()
+            archive.close()
+
+    # Stream from the verified ZIP entry instead of buffering large PNGs in RAM.
+    return StreamingResponse(stream_preview(), media_type="image/png", headers={
+        "Cache-Control": "private, max-age=300",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "origin",
+    })
+
+
+@app.get("/api/displacement-jobs/{job_id}/artifacts/{artifact_index}")
+def download_displacement_artifact(job_id: UUID, artifact_index: int, user: dict = Depends(get_current_user)) -> Response:
+    """Stream one private, verified Drive artifact to its authenticated owner."""
+    if artifact_index < 0 or artifact_index > 10_000:
+        raise HTTPException(status_code=404, detail="Result artifact was not found.")
+    try:
+        record = _require_store().get_displacement_job(str(user["uid"]), job_id)
+    except PersistenceError:
+        raise HTTPException(status_code=503, detail="Could not read the requested result artifact.") from None
+    summary = record.get("result_summary") if record else None
+    artifacts = summary.get("artifacts") if isinstance(summary, dict) else None
+    if not _valid_private_artifacts(artifacts) or artifact_index >= len(artifacts):
+        raise HTTPException(status_code=404, detail="Result artifact was not found.")
+    artifact = artifacts[artifact_index]
+
+    # Verify the complete private Drive object on ephemeral disk before sending
+    # headers, then stream chunks and remove the temporary file at response end.
+    temporary_directory = TemporaryDirectory(prefix="sarguardian-private-artifact-")
+    artifact_path = Path(temporary_directory.name) / "result-artifact"
+    try:
+        received = download_private_result_to_path(
+            artifact["drive_file_id"], artifact_path, max_bytes=artifact["bytes"],
+        )
+    except (DriveUploadError, OSError):
+        temporary_directory.cleanup()
+        raise HTTPException(status_code=503, detail="Private result storage is unavailable. Retry the download.") from None
+
+    if received.get("bytes") != artifact["bytes"] or received.get("sha256") != artifact["sha256"]:
+        temporary_directory.cleanup()
+        raise HTTPException(status_code=409, detail="Stored result artifact no longer matches the validated inventory.")
+
+    filename = artifact["path"].rsplit("/", 1)[-1]
+
+    def stream_artifact():
+        try:
+            with artifact_path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    yield chunk
+        finally:
+            temporary_directory.cleanup()
+
+    return StreamingResponse(stream_artifact(), media_type="application/octet-stream", headers={
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "private, no-store",
+    })
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("app.main:app", host="0.0.0.0", port=get_settings().port)

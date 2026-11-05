@@ -1,0 +1,268 @@
+name: Know Place Analysis - render dashboard from retained evidence
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Successful author-exact run ID that produced the derived-only result bundle"
+        required: true
+        type: string
+        default: "40170290176"
+      source_attempt:
+        description: "Attempt number for that source run"
+        required: true
+        type: string
+        default: "1"
+
+
+  workflow_call:
+    inputs:
+      source_run_id:
+        description: "Successful author-exact run ID that produced the derived-only result bundle"
+        required: true
+        type: string
+      source_attempt:
+        description: "Attempt number for that source run"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: know-place-dashboard-render-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  render:
+    name: Render dashboard from previously retained derived-only artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GOOGLE_DRIVE_OAUTH_CLIENT_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_CLIENT_JSON }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_PARENT_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_PARENT_FOLDER_ID }}
+
+    steps:
+      - name: Validate source run input and Drive credentials
+        shell: bash
+        env:
+          SOURCE_RUN_ID_INPUT: ${{ inputs.source_run_id }}
+          SOURCE_ATTEMPT_INPUT: ${{ inputs.source_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID_INPUT" =~ ^[0-9]+$ ]] || { echo "ERROR=SOURCE_RUN_ID_MUST_BE_NUMERIC"; exit 1; }
+          [[ "$SOURCE_ATTEMPT_INPUT" =~ ^[0-9]+$ ]] || { echo "ERROR=SOURCE_ATTEMPT_MUST_BE_NUMERIC"; exit 1; }
+          if [[ -z "$GITHUB_TOKEN" ]]; then
+            echo "ERROR=GITHUB_TOKEN_REQUIRED_TO_READ_RETAINED_ARTIFACT"
+            exit 1
+          fi
+          if [[ -z "$GOOGLE_DRIVE_OAUTH_CLIENT_JSON" || -z "$GOOGLE_DRIVE_REFRESH_TOKEN" || -z "$GOOGLE_DRIVE_PARENT_FOLDER_ID" ]]; then
+            echo "ERROR=DRIVE_SECRETS_REQUIRED_BEFORE_DASHBOARD_UPLOAD"
+            exit 1
+          fi
+          {
+            echo "SOURCE_RUN_ID=$SOURCE_RUN_ID_INPUT"
+            echo "SOURCE_ATTEMPT=$SOURCE_ATTEMPT_INPUT"
+            echo "SOURCE_ARTIFACT_NAME=know-place-author-exact-$SOURCE_RUN_ID_INPUT-$SOURCE_ATTEMPT_INPUT"
+            echo "DASHBOARD_RUN_NAME=KnowPlaceDashboard-$SOURCE_RUN_ID_INPUT-$SOURCE_ATTEMPT_INPUT"
+          } >> "$GITHUB_ENV"
+          echo "RAW_SOURCE_DOWNLOADS=0"
+          echo "DRIVE_CREDENTIAL_PREFLIGHT=PASS"
+
+      - name: Checkout isolated dashboard renderer
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          check-latest: false
+
+      - name: Install dashboard and Drive uploader requirements
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir -r tools/know_place/requirements.txt -r tools/requirements-retention.txt
+
+      - name: Find the exact retained artifact and verify its SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p know-place-dashboard/source know-place-dashboard/results
+          curl --fail --location --silent --show-error \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts?per_page=100" \
+            --output know-place-dashboard/source/artifacts.json
+          python - know-place-dashboard/source/artifacts.json "$SOURCE_RUN_ID" "$SOURCE_ATTEMPT" know-place-dashboard/source/artifact-metadata.txt <<'PY'
+          import json,sys
+          from pathlib import Path
+          catalog_path,run_id,attempt,metadata_path=sys.argv[1:]
+          catalog=json.loads(Path(catalog_path).read_text(encoding="utf-8"))
+          expected=f"know-place-author-exact-{run_id}-{attempt}"
+          matches=[a for a in catalog.get("artifacts",[]) if a.get("name")==expected]
+          if len(matches)!=1:
+              raise SystemExit(f"ERROR=EXPECTED_ONE_RETAINED_ARTIFACT_FOUND_{len(matches)}")
+          item=matches[0]
+          if item.get("expired") is not False:
+              raise SystemExit("ERROR=SOURCE_ARTIFACT_EXPIRED")
+          if (item.get("workflow_run") or {}).get("head_branch")!="feat/know-place-analysis":
+              raise SystemExit("ERROR=SOURCE_ARTIFACT_NOT_FROM_ISOLATED_FEATURE_BRANCH")
+          digest=str(item.get("digest") or "")
+          if not digest.startswith("sha256:"):
+              raise SystemExit("ERROR=SOURCE_ARTIFACT_SHA256_DIGEST_MISSING")
+          artifact_id=str(item.get("id") or "")
+          if not artifact_id.isdigit():
+              raise SystemExit("ERROR=SOURCE_ARTIFACT_ID_INVALID")
+          digest_value=digest.split(":",1)[1]
+          if len(digest_value)!=64 or any(c not in "0123456789abcdef" for c in digest_value):
+              raise SystemExit("ERROR=SOURCE_ARTIFACT_SHA256_INVALID")
+          Path(metadata_path).write_text(artifact_id+"\n"+digest_value+"\n",encoding="utf-8")
+          print("SOURCE_ARTIFACT_NAME="+expected)
+          print("SOURCE_ARTIFACT_BRANCH=PASS")
+          print("SOURCE_ARTIFACT_DIGEST=AVAILABLE")
+          PY
+          mapfile -t artifact_metadata < know-place-dashboard/source/artifact-metadata.txt
+          if [[ "${#artifact_metadata[@]}" -ne 2 ]]; then
+            echo "ERROR=SOURCE_ARTIFACT_METADATA_INCOMPLETE"
+            exit 1
+          fi
+          ARTIFACT_ID="${artifact_metadata[0]}"
+          EXPECTED_ARTIFACT_SHA256="${artifact_metadata[1]}"
+          [[ "$ARTIFACT_ID" =~ ^[0-9]+$ ]] || { echo "ERROR=SOURCE_ARTIFACT_ID_INVALID"; exit 1; }
+          [[ "$EXPECTED_ARTIFACT_SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "ERROR=SOURCE_ARTIFACT_SHA256_INVALID"; exit 1; }
+          echo "SOURCE_ARTIFACT_ID_VALIDATED=PASS"
+          echo "SOURCE_ARTIFACT_SHA256_VALIDATED=PASS"
+          curl --fail --location --silent --show-error \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" \
+            --output know-place-dashboard/source/source-artifact.zip
+          echo "$EXPECTED_ARTIFACT_SHA256  know-place-dashboard/source/source-artifact.zip" | sha256sum --check -
+          python - know-place-dashboard/source/source-artifact.zip know-place-dashboard/source/author-exact-derived-results.zip <<'PY'
+          import sys,zipfile
+          from pathlib import Path,PurePosixPath
+          artifact_path,nested_output=map(Path,sys.argv[1:])
+          with zipfile.ZipFile(artifact_path) as archive:
+              bad=archive.testzip()
+              if bad:
+                  raise SystemExit("ERROR=SOURCE_ARTIFACT_ZIP_CRC_FAILED:"+bad)
+              names=archive.namelist()
+              if any(PurePosixPath(n).is_absolute() or ".." in PurePosixPath(n).parts for n in names):
+                  raise SystemExit("ERROR=UNSAFE_SOURCE_ARTIFACT_PATH")
+              if any(Path(n).suffix.lower() in {".h5",".hdf5"} for n in names):
+                  raise SystemExit("ERROR=RAW_HDF5_PRESENT_IN_SOURCE_ARTIFACT")
+              member="author-exact-derived-results.zip"
+              if member not in names:
+                  raise SystemExit("ERROR=DERIVED_ONLY_RESULT_BUNDLE_MISSING")
+              nested_output.write_bytes(archive.read(member))
+          with zipfile.ZipFile(nested_output) as archive:
+              bad=archive.testzip()
+              if bad:
+                  raise SystemExit("ERROR=DERIVED_BUNDLE_ZIP_CRC_FAILED:"+bad)
+              if any(Path(n).suffix.lower() in {".h5",".hdf5"} for n in archive.namelist()):
+                  raise SystemExit("ERROR=RAW_HDF5_PRESENT_IN_DERIVED_BUNDLE")
+          print("SOURCE_ARTIFACT_INTEGRITY=PASS")
+          print("DERIVED_BUNDLE_INTEGRITY=PASS")
+          print("RAW_HDF5_IN_SOURCE_ARTIFACT=0")
+          print("RAW_HDF5_IN_DERIVED_BUNDLE=0")
+          PY
+
+      - name: Extract retained derived files and render scientific dashboard
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESULT_ROOT="$GITHUB_WORKSPACE/know-place-dashboard/results"
+          python - know-place-dashboard/source/author-exact-derived-results.zip "$RESULT_ROOT" <<'PY'
+          import sys,zipfile
+          from pathlib import Path,PurePosixPath
+          archive_path,dest=map(Path,sys.argv[1:])
+          dest.mkdir(parents=True,exist_ok=True)
+          with zipfile.ZipFile(archive_path) as archive:
+              for member in archive.namelist():
+                  item=PurePosixPath(member)
+                  if item.is_absolute() or ".." in item.parts:
+                      raise SystemExit("ERROR=UNSAFE_DERIVED_BUNDLE_PATH")
+              archive.extractall(dest)
+          required=["author-exact-analysis-status.json","author-exact-source-manifest.json",
+                    "author-raw-site-series-report.json","author-raw-site-series.csv",
+                    "footprint/author-footprint-replay-report.json"]
+          missing=[name for name in required if not (dest/name).is_file()]
+          if missing:
+              raise SystemExit("ERROR=REQUIRED_AUTHOR_EVIDENCE_MISSING:"+",".join(missing))
+          print("REQUIRED_AUTHOR_EVIDENCE=PASS")
+          PY
+          python -m tools.know_place.author_dashboard --result-root "$RESULT_ROOT" --output "$RESULT_ROOT/dashboard.html"
+          python - "$RESULT_ROOT" "$SOURCE_RUN_ID" "$SOURCE_ATTEMPT" know-place-dashboard/source/source-artifact.zip <<'PY'
+          import datetime,hashlib,json,sys
+          from pathlib import Path
+          root=Path(sys.argv[1])
+          run_id,attempt,artifact_path=sys.argv[2:]
+          source=json.loads((root/"author-exact-source-manifest.json").read_text(encoding="utf-8"))
+          status=json.loads((root/"author-exact-analysis-status.json").read_text(encoding="utf-8"))
+          dashboard=root/"dashboard.html"
+          value={
+              "schema_version":"know-place-author-dashboard-render/1.0",
+              "source_run_id":run_id,
+              "source_attempt":attempt,
+              "source_artifact_sha256":hashlib.sha256(Path(artifact_path).read_bytes()).hexdigest(),
+              "source_manifest_sha256":status.get("source_manifest_sha256"),
+              "source_product_count":source.get("source_products_grid_validated",0),
+              "source_products_sha256_count":source.get("author_exact_source_sha256_count",0),
+              "dashboard_sha256":hashlib.sha256(dashboard.read_bytes()).hexdigest(),
+              "dashboard_bytes":dashboard.stat().st_size,
+              "paper_reproduction_status":status.get("paper_reproduction_status","NOT_EVALUATED"),
+              "hazard_detection_status":status.get("hazard_detection_status","NOT_EVALUATED"),
+              "raw_source_downloads_in_render_job":0,
+              "created_at_utc":datetime.datetime.now(datetime.timezone.utc).isoformat(),
+          }
+          (root/"dashboard-run-manifest.json").write_text(json.dumps(value,indent=2)+"\n",encoding="utf-8")
+          print("DASHBOARD_MANIFEST_STATUS=PASS")
+          print("DASHBOARD_RAW_SOURCE_DOWNLOADS=0")
+          print("PAPER_REPRODUCTION_STATUS="+str(value["paper_reproduction_status"]))
+          print("HAZARD_DETECTION_STATUS="+str(value["hazard_detection_status"]))
+          PY
+
+      - name: Upload dashboard and manifest to private Google Drive
+        shell: bash
+        run: |
+          set -euo pipefail
+          RESULT_ROOT="$GITHUB_WORKSPACE/know-place-dashboard/results"
+          python tools/drive_resumable_upload.py \
+            --root "$RESULT_ROOT" \
+            --run-name "$DASHBOARD_RUN_NAME" \
+            --files "$RESULT_ROOT/dashboard.html" "$RESULT_ROOT/dashboard-run-manifest.json" \
+            --out "$RESULT_ROOT/dashboard-drive-upload-receipt.json"
+          test -s "$RESULT_ROOT/dashboard-drive-upload-receipt.json"
+          python tools/drive_resumable_upload.py \
+            --root "$RESULT_ROOT" \
+            --run-name "$DASHBOARD_RUN_NAME" \
+            --files "$RESULT_ROOT/dashboard-drive-upload-receipt.json" \
+            --out "$RESULT_ROOT/dashboard-drive-receipt-upload.json"
+          python - "$RESULT_ROOT/dashboard-drive-upload-receipt.json" "$RESULT_ROOT/dashboard-drive-receipt-upload.json" <<'PY'
+          import json,sys
+          first,second=[json.load(open(p,encoding="utf-8")) for p in sys.argv[1:]]
+          for receipt in (first,second):
+              if receipt.get("remote_verification")!="PASS" or receipt.get("raw_product_uploaded") is not False:
+                  raise SystemExit("ERROR=DASHBOARD_DRIVE_RETENTION_NOT_VERIFIED")
+          print("DASHBOARD_DRIVE_RETENTION=PASS")
+          print("RAW_PRODUCT_UPLOADED=false")
+          PY
+
+      - name: Publish standalone dashboard artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: know-place-author-dashboard
+          path: |
+            know-place-dashboard/results/dashboard.html
+            know-place-dashboard/results/dashboard-run-manifest.json
+            know-place-dashboard/results/dashboard-drive-upload-receipt.json
+            know-place-dashboard/results/dashboard-drive-receipt-upload.json
+          if-no-files-found: warn
+          retention-days: 30
