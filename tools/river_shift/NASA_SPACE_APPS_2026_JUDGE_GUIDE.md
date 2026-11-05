@@ -196,9 +196,9 @@ The legacy `validate_with_sentinel2.py` tool and retained-run workflow remain av
 
 ## Demo storyboard (about 2 minutes)
 
-1. Start on the RiverShift page and explain that NISAR GCOV—not the basemap—is the analysis input.
-2. Draw a small AOI around a river reach and choose a date range.
-3. Show the ASF DAAC catalogue and explain exact acquisition comparability and why insufficient support stops analysis.
+1. Start with the world-centred AOI map. State that RiverShift accepts eligible river reaches across the global NISAR L-band land-observation footprint; the Jamuna is one demonstration case, not a fixed target.
+2. Pan/zoom to the Jamuna–Chowhali reach, draw a small WGS84 AOI and choose the observation window.
+3. Show the live ASF DAAC discovery and explain how the same AOI/date workflow is driven by the user's selected region and the actual compatible acquisitions returned.
 4. Show the real NISAR observation dates and play the time series. Point out that each frame is an actual acquisition.
 5. Turn attention to red, green and blue layers; explain each as a candidate, not ground truth.
 6. In the impact-context panel, run the AOI-bounded OpenStreetMap query. Show the OSM snapshot timestamp, gold mapped points, the independent marker toggle, unique mapped-feature count and class matches; state explicitly that this is mapped exposure context, not damage or population.
