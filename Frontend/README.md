@@ -91,5 +91,5 @@ candidates until independently reviewed for the selected region and dates.
 এটি আগের frontend-এর আলাদা কপি। ZIP extract করে এই ফোল্ডারে terminal খুলুন,
 তারপর `npm ci` এবং `npm run dev` চালান। Browser-এ `http://localhost:5173`
 খুললে Home page পাবেন। Google login ও map চালাতে `.env.example` দেখে
-নিজের configuration দিয়ে `.env.local` তৈরি করতে হবে। Landslide-এর ফলাফল
-বর্তমানে demo fixture থেকে আসে, live NISAR analysis থেকে নয়।
+নিজের configuration দিয়ে `.env.local` তৈরি করতে হবে। Landslide-এর `Reference demo` ফলাফল fixture-ভিত্তিক; এটি RiverShift থেকে আলাদা।
+RiverShift authenticated job workflow দিয়ে actual NISAR GCOV data process করে।
