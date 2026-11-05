@@ -61,11 +61,13 @@ server-side variables in that project only. The included SPA rewrite supports op
 - `landslide/fixtures/` and the existing TypeScript tests.
 - Vite, TypeScript, ESLint, package manifest, and dependency lockfile.
 
-The frontend now has two clearly separated actions in the Landslide workspace:
-`Check NISAR archive` calls the lightweight metadata preflight API, while
-`Reference demo` still uses the old precomputed fixture and is not live analysis.
-The metadata preflight does not download products or detect movement. The full
-scientific processing pipeline is not connected yet.
+## RiverShift workspace
+
+RiverShift is a separate, available NISAR L-band GCOV workflow in this frontend. A signed-in user selects a WGS84 river-reach AOI and observation window; the app discovers compatible catalogue acquisitions and dispatches the scientific processing job to the RiverShift worker in `moshiour0/SARGuardian-backend`. The workflow is designed for eligible river reaches across the mission's global L-band land-observation footprint. Its current request envelope is one valid Polygon up to 1,000 km² and a date window up to 366 days, with at least four distinct acquisition dates and 90% catalogue-footprint coverage per selected date. The worker performs additional product and valid-raster checks. Results use actual acquisition dates and remain provisional until independently reviewed.
+
+The older `Check NISAR archive` and `Reference demo` descriptions below refer only to the separate Landslide workspace: the archive action is a lightweight metadata preflight, while the reference action uses a precomputed fixture rather than live Landslide processing. They do not describe RiverShift.
+
+For the judge-facing global applicability, evidence map and current scientific interpretation, see the [RiverShift Judge Brief](https://github.com/moshiour0/SARGuardian-backend/blob/main/tools/river_shift/NASA_SPACE_APPS_2026_JUDGE_BRIEF.md) and [full Judge Guide](https://github.com/moshiour0/SARGuardian-backend/blob/main/tools/river_shift/NASA_SPACE_APPS_2026_JUDGE_GUIDE.md).
 
 ## বাংলা নির্দেশনা:
 
